@@ -30,5 +30,5 @@ def create_embedding(settings: Settings):
     return OpenAIEmbedding(
         model_name=settings.embedding_model,
         api_base=settings.embedding_api_base,
-        api_key="not-needed",  # Xinference 本地部署不需要 API Key
+        api_key=settings.embedding_api_key,
     )
