@@ -1,0 +1,19 @@
+"""
+ORM 模型包 — 导出所有模型，确保 Alembic 能够发现 Base.metadata。
+"""
+from .base import Base
+from .knowledge_base import KnowledgeBase
+from .document import Document, DocumentChunk
+from .conversation import Conversation, Message
+from .config_model import LLMConfig, EmbeddingConfig
+
+__all__ = [
+    "Base",
+    "KnowledgeBase",
+    "Document",
+    "DocumentChunk",
+    "Conversation",
+    "Message",
+    "LLMConfig",
+    "EmbeddingConfig",
+]

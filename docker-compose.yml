@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # === PostgreSQL ===
+  postgres:
+    image: postgres:16
+    container_name: bid_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ai_bid_rag
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./volumes/postgres:/var/lib/postgresql/data
+
+  # === Milvus 依赖 ===
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: bid_etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+    volumes:
+      - ./volumes/etcd:/etcd
+
+  minio:
+    image: minio/minio:latest
+    container_name: bid_minio
+    ports:
+      - "9000:9000"   # S3 API（Milvus + 文档存储）
+      - "9001:9001"   # Web Console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - ./volumes/minio:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+
+  standalone:
+    image: milvusdb/milvus:v2.4.0
+    container_name: bid_milvus
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - ./volumes/milvus:/var/lib/milvus
+    depends_on:
+      - etcd
+      - minio

@@ -1,0 +1,34 @@
+"""
+LLM 抽象工厂 — 支持 deepseek / openai / openai_compatible 灵活切换。
+"""
+from llama_index.llms.openai_like import OpenAILike
+
+from config import Settings
+
+
+def create_llm(settings: Settings) -> OpenAILike:
+    """根据配置创建 LLM 实例。
+
+    支持 provider:
+        - deepseek: DeepSeek 官方 API（默认）
+        - openai: OpenAI 官方 API
+        - openai_compatible: 任意兼容 OpenAI 接口的模型服务
+    """
+    return OpenAILike(
+        model=settings.llm_model,
+        api_base=settings.llm_api_base,
+        api_key=settings.llm_api_key,
+        temperature=settings.llm_temperature,
+        is_chat_model=True,
+    )
+
+
+def create_embedding(settings: Settings):
+    """根据配置创建 Embedding 模型实例（Xinference / OpenAI 兼容）。"""
+    from llama_index.embeddings.openai import OpenAIEmbedding
+
+    return OpenAIEmbedding(
+        model_name=settings.embedding_model,
+        api_base=settings.embedding_api_base,
+        api_key="not-needed",  # Xinference 本地部署不需要 API Key
+    )

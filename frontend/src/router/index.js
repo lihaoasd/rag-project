@@ -1,0 +1,35 @@
+import { createRouter, createWebHistory } from 'vue-router'
+
+const routes = [
+  {
+    path: '/',
+    redirect: '/knowledge-bases',
+  },
+  {
+    path: '/knowledge-bases',
+    name: 'KnowledgeBases',
+    component: () => import('@/views/KnowledgeBaseView.vue'),
+  },
+  {
+    path: '/knowledge-bases/:kbId/documents',
+    name: 'Documents',
+    component: () => import('@/views/DocumentListView.vue'),
+  },
+  {
+    path: '/search',
+    name: 'Search',
+    component: () => import('@/views/SearchView.vue'),
+  },
+  {
+    path: '/chat',
+    name: 'Chat',
+    component: () => import('@/views/ChatView.vue'),
+  },
+]
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes,
+})
+
+export default router
