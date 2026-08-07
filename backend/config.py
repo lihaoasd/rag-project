@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     temp_dir: str = "./temp"
     max_upload_size: int = 104857600  # 100MB
 
+    # === 日志配置 ===
+    log_level: str = "INFO"
+    log_dir: str = "./logs"
+
     @property
     def database_url(self) -> str:
         """构建异步 PostgreSQL 连接字符串"""

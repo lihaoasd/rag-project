@@ -5,6 +5,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 from sqlalchemy.pool import NullPool
 
 from config import settings
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+logger.info("创建数据库引擎: %s", settings.pg_host)
 
 # 异步引擎
 engine = create_async_engine(
@@ -26,5 +31,8 @@ async def get_db():
     async with async_session() as session:
         try:
             yield session
+        except Exception:
+            logger.error("数据库会话异常", exc_info=True)
+            raise
         finally:
             await session.close()

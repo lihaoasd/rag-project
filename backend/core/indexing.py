@@ -4,6 +4,10 @@ Phase 1: 仅定义接口签名，具体实现后续补全。
 """
 from typing import Any
 
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 async def build_index(
     chunks: list[str],
@@ -22,6 +26,12 @@ async def build_index(
     Returns:
         Milvus 主键 ID 列表
     """
+    logger.warning(
+        "build_index 被调用但尚未实现 (Phase 2): kb_id=%s, chunks=%d, dim=%d",
+        kb_id,
+        len(chunks),
+        embedding_dim,
+    )
     raise NotImplementedError("Indexing engine not yet implemented — Phase 2")
 
 
@@ -32,4 +42,9 @@ async def delete_index(kb_id: str, doc_id: str) -> None:
         kb_id: 知识库 ID
         doc_id: 文档 ID
     """
+    logger.warning(
+        "delete_index 被调用但尚未实现 (Phase 2): kb_id=%s, doc_id=%s",
+        kb_id,
+        doc_id,
+    )
     raise NotImplementedError("Index deletion not yet implemented — Phase 2")

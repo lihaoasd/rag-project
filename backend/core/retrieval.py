@@ -4,6 +4,10 @@ Phase 1: 仅定义接口签名，具体实现后续补全。
 """
 from typing import Any
 
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 async def retrieve(
     query: str,
@@ -22,4 +26,9 @@ async def retrieve(
     Returns:
         [{score, text, doc_id, file_name, page_number, chunk_index}, ...]
     """
+    logger.warning(
+        "retrieve 被调用但尚未实现 (Phase 2): kb_id=%s, query=%s",
+        kb_id,
+        query[:80],
+    )
     raise NotImplementedError("Retrieval engine not yet implemented — Phase 2")
