@@ -54,8 +54,8 @@
 ### 2. 配置环境变量
 
 ```bash
-cp .env.example .env
-# 编辑 .env，填入实际的 API Key 等配置
+cp backend/.env.example backend/.env
+# 编辑 backend/.env，填入实际的 API Key 等配置
 ```
 
 ### 3. 启动基础设施

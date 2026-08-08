@@ -16,6 +16,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # === 扩展：UUID 生成（PG 9.6 兼容） ===
+    op.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
+
     # === 通用函数：自动更新 updated_at ===
     op.execute("""
         CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -32,7 +35,7 @@ def upgrade() -> None:
     # ============================================
     op.create_table(
         "knowledge_bases",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("uuid_generate_v4()"), nullable=False),
         sa.Column("name", sa.String(255), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("document_count", sa.Integer(), server_default="0", nullable=False),
@@ -46,7 +49,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE TRIGGER trg_knowledge_bases_updated_at
             BEFORE UPDATE ON knowledge_bases
-            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+            FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
     """)
 
     # ============================================
@@ -54,7 +57,7 @@ def upgrade() -> None:
     # ============================================
     op.create_table(
         "documents",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("uuid_generate_v4()"), nullable=False),
         sa.Column("kb_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("file_name", sa.String(512), nullable=False),
         sa.Column("file_size", sa.BigInteger(), nullable=False),
@@ -85,7 +88,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE TRIGGER trg_documents_updated_at
             BEFORE UPDATE ON documents
-            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+            FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
     """)
 
     # ============================================
@@ -93,7 +96,7 @@ def upgrade() -> None:
     # ============================================
     op.create_table(
         "document_chunks",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("uuid_generate_v4()"), nullable=False),
         sa.Column("doc_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("kb_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("chunk_index", sa.Integer(), nullable=False),
@@ -115,7 +118,7 @@ def upgrade() -> None:
     # ============================================
     op.create_table(
         "conversations",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("uuid_generate_v4()"), nullable=False),
         sa.Column("kb_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("title", sa.String(255), nullable=True),
         sa.Column("message_count", sa.Integer(), server_default="0", nullable=False),
@@ -130,7 +133,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE TRIGGER trg_conversations_updated_at
             BEFORE UPDATE ON conversations
-            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+            FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
     """)
 
     # ============================================
@@ -138,7 +141,7 @@ def upgrade() -> None:
     # ============================================
     op.create_table(
         "messages",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("uuid_generate_v4()"), nullable=False),
         sa.Column("conversation_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("role", sa.String(20), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
@@ -160,7 +163,7 @@ def upgrade() -> None:
     # ============================================
     op.create_table(
         "llm_configs",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("uuid_generate_v4()"), nullable=False),
         sa.Column("name", sa.String(100), nullable=False),
         sa.Column("provider", sa.String(50), nullable=False),
         sa.Column("model", sa.String(100), nullable=False),
@@ -190,7 +193,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE TRIGGER trg_llm_configs_updated_at
             BEFORE UPDATE ON llm_configs
-            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+            FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
     """)
 
     # ============================================
@@ -198,7 +201,7 @@ def upgrade() -> None:
     # ============================================
     op.create_table(
         "embedding_configs",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("uuid_generate_v4()"), nullable=False),
         sa.Column("name", sa.String(100), nullable=False),
         sa.Column("model", sa.String(100), nullable=False),
         sa.Column("api_base", sa.String(512), nullable=False),
@@ -229,7 +232,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE TRIGGER trg_embedding_configs_updated_at
             BEFORE UPDATE ON embedding_configs
-            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+            FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
     """)
 
     # === 默认数据 ===

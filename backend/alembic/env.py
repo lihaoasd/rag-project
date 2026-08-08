@@ -25,8 +25,8 @@ DATABASE_URL = (
 config = context.config
 config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# fileConfig is skipped to avoid strict .ini format requirements on Windows.
+# Logging is handled by the application's own logging setup.
 
 target_metadata = Base.metadata
 
