@@ -128,7 +128,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 import { getKnowledgeBase } from '@/api/knowledgeBase'
 import { listDocuments, deleteDocument } from '@/api/document'
 
@@ -203,14 +203,18 @@ async function loadList() {
   try {
     const data = await getKnowledgeBase(kbId)
     kbName.value = data?.name || ''
-  } catch { /* ignore */ }
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '未知错误'
+    ElNotification.error({ title: '加载知识库信息失败', message: msg })
+  }
 
   try {
     const data = await listDocuments(kbId)
     docList.value = data || []
     total.value = data?.length || 0
-  } catch {
-    docList.value = []
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '未知错误'
+    ElNotification.error({ title: '加载文档列表失败', message: msg })
   }
 }
 

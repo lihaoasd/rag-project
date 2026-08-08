@@ -90,7 +90,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { Search } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 import { listKnowledgeBases } from '@/api/knowledgeBase'
 import { search as searchDocuments } from '@/api/search'
 
@@ -130,12 +130,14 @@ async function handleSearch() {
     const data = await searchDocuments(kbId.value, {
       query: query.value.trim(),
       top_k: 10,
-      offset: (currentPage.value - 1) * pageSize.value,
-      limit: pageSize.value,
+      offset: (currentPage.value - 1) * pageSize,
+      limit: pageSize,
     })
     results.value = (data?.results || []).map((r, i) => ({ ...r, rank: i + 1 }))
     total.value = data?.total || 0
-  } catch {
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '检索失败'
+    ElMessage.error(msg)
     results.value = []
     total.value = 0
   } finally {
@@ -160,8 +162,9 @@ onMounted(async () => {
   try {
     const data = await listKnowledgeBases()
     kbList.value = data || []
-  } catch {
-    kbList.value = []
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '未知错误'
+    ElNotification.error({ title: '加载知识库列表失败', message: msg })
   }
 })
 </script>

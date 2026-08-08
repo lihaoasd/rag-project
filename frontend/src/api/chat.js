@@ -51,7 +51,7 @@ export function chatStream(kbId, message, sessionId, callbacks) {
                   onError(data.message)
                   break
                 case 'done':
-                  onDone()
+                  onDone(data)
                   break
               }
             } catch {

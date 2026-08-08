@@ -69,7 +69,6 @@ def upgrade() -> None:
         sa.Column("chunk_count", sa.Integer(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
-        sa.ForeignKeyConstraint(["kb_id"], ["knowledge_bases.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("object_key", name="uq_documents_object_key"),
     )
@@ -105,8 +104,6 @@ def upgrade() -> None:
         sa.Column("text_content", sa.Text(), nullable=False),
         sa.Column("milvus_pk", sa.BigInteger(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
-        sa.ForeignKeyConstraint(["doc_id"], ["documents.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["kb_id"], ["knowledge_bases.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("doc_id", "chunk_index", name="uq_chunks_doc_chunk"),
     )
@@ -124,7 +121,6 @@ def upgrade() -> None:
         sa.Column("message_count", sa.Integer(), server_default="0", nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
-        sa.ForeignKeyConstraint(["kb_id"], ["knowledge_bases.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("idx_conversations_kb_id", "conversations", ["kb_id"], unique=False)
@@ -148,7 +144,6 @@ def upgrade() -> None:
         sa.Column("sources", postgresql.JSONB(), nullable=True),
         sa.Column("token_count", sa.Integer(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
-        sa.ForeignKeyConstraint(["conversation_id"], ["conversations.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.execute("""

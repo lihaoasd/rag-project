@@ -104,7 +104,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 import { listKnowledgeBases, createKnowledgeBase, deleteKnowledgeBase } from '@/api/knowledgeBase'
 
 const router = useRouter()
@@ -147,9 +147,9 @@ async function loadList() {
   try {
     const data = await listKnowledgeBases()
     kbList.value = data || []
-  } catch {
-    // API 未就绪时用占位数据演示
-    kbList.value = []
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '未知错误'
+    ElNotification.error({ title: '加载知识库失败', message: msg })
   }
 }
 
@@ -163,8 +163,9 @@ async function handleSubmit() {
     ElMessage.success('知识库创建成功')
     dialogVisible.value = false
     await loadList()
-  } catch {
-    ElMessage.error('创建失败，请稍后重试')
+  } catch (err) {
+    const detail = err?.response?.data?.detail || err?.message || '请稍后重试'
+    ElMessage.error('创建失败: ' + detail)
   } finally {
     submitting.value = false
   }

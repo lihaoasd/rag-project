@@ -45,7 +45,7 @@ async def get_knowledge_base(kb_id: str):
     return result
 
 
-@router.delete("/{kb_id}", status_code=204)
+@router.post("/{kb_id}/delete", status_code=204)
 async def delete_knowledge_base(kb_id: str):
     """删除知识库及其下所有文档和向量数据"""
     logger.info("删除知识库: kb_id=%s", kb_id)

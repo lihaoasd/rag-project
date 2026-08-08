@@ -26,5 +26,5 @@ export function listDocuments(kbId) {
  * 删除文档
  */
 export function deleteDocument(kbId, docId) {
-  return apiClient.delete(`/knowledge-bases/${kbId}/documents/${docId}`)
+  return apiClient.post(`/knowledge-bases/${kbId}/documents/${docId}/delete`)
 }

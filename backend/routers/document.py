@@ -46,7 +46,7 @@ async def list_documents(kb_id: str):
     return await document_service.list_documents(kb_id)
 
 
-@router.delete("/{doc_id}", status_code=204)
+@router.post("/{doc_id}/delete", status_code=204)
 async def delete_document(kb_id: str, doc_id: str):
     """删除文档及向量数据"""
     logger.info("删除文档: kb_id=%s, doc_id=%s", kb_id, doc_id)

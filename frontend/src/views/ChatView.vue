@@ -133,6 +133,7 @@
 import { ref, computed, nextTick, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { listKnowledgeBases } from '@/api/knowledgeBase'
+import { chatStream } from '@/api/chat'
 
 // --- State ---
 const kbList = ref([])
@@ -140,7 +141,9 @@ const kbId = ref(null)
 const messages = ref([])
 const inputText = ref('')
 const streaming = ref(false)
+const sessionId = ref(null)
 const messagesContainer = ref(null)
+const abortController = ref(null)
 
 // --- Computed ---
 const selectedKb = computed(() => {
@@ -154,11 +157,20 @@ function formatDate(iso) {
 }
 
 function handleKbChange() {
+  // 切换知识库时中断当前请求并清空对话
+  if (abortController.value) {
+    abortController.value.abort()
+  }
   messages.value = []
+  sessionId.value = null
 }
 
 function clearMessages() {
+  if (abortController.value) {
+    abortController.value.abort()
+  }
   messages.value = []
+  sessionId.value = null
   ElMessage.success('对话已清空')
 }
 
@@ -178,30 +190,31 @@ async function handleSend() {
   inputText.value = ''
   await scrollToBottom()
 
-  // 模拟流式输出（Phase 2 接入真实 SSE 后替换此处）
+  // 真实 SSE 流式问答
   streaming.value = true
   const aiMsg = { role: 'assistant', content: '', sources: [] }
   messages.value.push(aiMsg)
 
-  const mockReply = '这是 AI 助手的模拟回复。\n\n当前 Phase 2 RAG 核心链路尚未完成，问答 API 返回 placeholder 数据。\n\n接入真实 SSE 流后，此处的文本将逐字输出，并在回答完成后附上引用来源。\n\n请先完成文档上传、解析和索引后再使用本功能。'
-
-  let i = 0
-  const interval = setInterval(async () => {
-    if (i < mockReply.length) {
-      aiMsg.content += mockReply[i]
-      i++
+  abortController.value = chatStream(kbId.value, text, sessionId.value, {
+    onToken: async (token) => {
+      aiMsg.content += token
       await scrollToBottom()
-    } else {
-      clearInterval(interval)
-      // 模拟引用来源
-      aiMsg.sources = [
-        { file: '示例招标书.pdf', page: 12, text: '...投标保证金金额为人民币伍拾万元整...' },
-        { file: '示例投标书.docx', page: 5, text: '...项目总预算为人民币贰佰万元整...' },
-      ]
+    },
+    onSources: (sources) => {
+      aiMsg.sources = sources
+    },
+    onDone: async (data) => {
       streaming.value = false
+      if (data?.session_id) {
+        sessionId.value = data.session_id
+      }
       await scrollToBottom()
-    }
-  }, 30)
+    },
+    onError: (msg) => {
+      aiMsg.content = aiMsg.content || '抱歉，请求失败：' + msg
+      streaming.value = false
+    },
+  })
 }
 
 onMounted(async () => {

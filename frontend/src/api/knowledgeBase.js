@@ -25,5 +25,5 @@ export function getKnowledgeBase(id) {
  * 删除知识库
  */
 export function deleteKnowledgeBase(id) {
-  return apiClient.delete(`/knowledge-bases/${id}`)
+  return apiClient.post(`/knowledge-bases/${id}/delete`)
 }
