@@ -53,6 +53,18 @@ def upload(object_key: str, file_path: Path, content_type: str = "application/oc
     logger.debug("MinIO 上传成功: %s", object_key)
 
 
+def download(object_key: str, file_path: Path) -> None:
+    """从 MinIO 下载文件到本地路径。
+
+    Args:
+        object_key: 对象键，如 kb_{id}/doc_{id}.pdf
+        file_path: 本地目标文件路径
+    """
+    client = _get_client()
+    client.fget_object(settings.minio_bucket, object_key, str(file_path))
+    logger.debug("MinIO 下载成功: %s → %s", object_key, file_path.name)
+
+
 def delete(object_key: str) -> None:
     """删除单个对象。"""
     client = _get_client()

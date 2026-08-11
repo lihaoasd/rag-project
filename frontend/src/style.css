@@ -189,6 +189,16 @@ html, body, #app {
   --el-tag-border-color: #7DD3FC;
   --el-tag-text-color: #0284C7;
 }
+.status-tag.uploaded {
+  --el-tag-bg-color: #FFF7ED;
+  --el-tag-border-color: #FDBA74;
+  --el-tag-text-color: #EA580C;
+}
+.status-tag.queued {
+  --el-tag-bg-color: #F5F3FF;
+  --el-tag-border-color: #C4B5FD;
+  --el-tag-text-color: #7C3AED;
+}
 .status-tag.failed {
   --el-tag-bg-color: #FFF1F2;
   --el-tag-border-color: #FDA4AF;

@@ -2,26 +2,26 @@
 
 > 版本: v1.0 | 日期: 2026-08-07 | 状态: 初稿
 
----
+***
 
 ## 1. 技术选型
 
 ### 1.1 技术栈总览
 
-| 序号 | 层次 | 技术 | 版本 / 说明 |
-|------|------|------|------------|
-| 1 | 前端框架 | Vue 3 | Composition API |
-| 2 | UI 组件库 | Element Plus | 适合企业级后台 |
-| 3 | 后端框架 | FastAPI | Python 异步 Web 框架 |
-| 4 | RAG 框架 | LlamaIndex | 文档索引、检索管线 |
-| 5 | 向量数据库 | Milvus | Docker 部署，Python SDK 连接 |
-| 6 | Embedding 推理 | Xinference | 本地部署 Embedding 模型 |
-| 7 | 大语言模型 | DeepSeek（默认） | 兼容 OpenAI API，可灵活切换 |
-| 8 | 文档解析 — PDF | pdfplumber + PyMuPDF | 文本提取 + 表格识别 |
-| 9 | 文档解析 — Word | python-docx | .docx 格式解析 |
-| 10 | OCR | PaddleOCR | 图片文字识别（文档内嵌图片） |
-| 11 | 构建工具（前端） | Vite | Vue 3 官方推荐 |
-| 12 | 环境管理 | uv | Rust 编写的 Python 包管理器，替代 pip + venv |
+| 序号 | 层次           | 技术                   | 版本 / 说明                            |
+| -- | ------------ | -------------------- | ---------------------------------- |
+| 1  | 前端框架         | Vue 3                | Composition API                    |
+| 2  | UI 组件库       | Element Plus         | 适合企业级后台                            |
+| 3  | 后端框架         | FastAPI              | Python 异步 Web 框架                   |
+| 4  | RAG 框架       | LlamaIndex           | 文档索引、检索管线                          |
+| 5  | 向量数据库        | Milvus               | Docker 部署，Python SDK 连接            |
+| 6  | Embedding 推理 | Xinference           | 本地部署 Embedding 模型                  |
+| 7  | 大语言模型        | DeepSeek（默认）         | 兼容 OpenAI API，可灵活切换                |
+| 8  | 文档解析 — PDF   | pdfplumber + PyMuPDF | 文本提取 + 表格识别                        |
+| 9  | 文档解析 — Word  | python-docx          | .docx 格式解析                         |
+| 10 | OCR          | PaddleOCR            | 图片文字识别（文档内嵌图片）                     |
+| 11 | 构建工具（前端）     | Vite                 | Vue 3 官方推荐                         |
+| 12 | 环境管理         | uv                   | Rust 编写的 Python 包管理器，替代 pip + venv |
 
 ### 1.2 LLM 灵活切换设计
 
@@ -41,11 +41,11 @@ LLM_CONFIG = {
 
 #### 1.2.1 支持的 LLM 类型
 
-| 序号 | Provider | 说明 |
-|------|----------|------|
-| 1 | deepseek | DeepSeek 官方 API（默认） |
-| 2 | openai | OpenAI 官方 API |
-| 3 | openai_compatible | 任意兼容 OpenAI 接口的模型服务 |
+| 序号 | Provider           | 说明                  |
+| -- | ------------------ | ------------------- |
+| 1  | deepseek           | DeepSeek 官方 API（默认） |
+| 2  | openai             | OpenAI 官方 API       |
+| 3  | openai\_compatible | 任意兼容 OpenAI 接口的模型服务 |
 
 ### 1.3 Embedding 集成方案
 
@@ -63,24 +63,24 @@ embed_model = OpenAIEmbedding(
 
 #### 1.3.1 Xinference 部署要点
 
-| 序号 | 配置项 | 说明 |
-|------|--------|------|
-| 1 | 端口 | 默认 9997 |
-| 2 | 模型 | bge-large-zh-v1.5（推荐中文模型） |
-| 3 | 向量维度 | 1024 |
-| 4 | 接口协议 | 兼容 OpenAI Embedding API |
+| 序号 | 配置项  | 说明                        |
+| -- | ---- | ------------------------- |
+| 1  | 端口   | 默认 9997                   |
+| 2  | 模型   | bge-large-zh-v1.5（推荐中文模型） |
+| 3  | 向量维度 | 1024                      |
+| 4  | 接口协议 | 兼容 OpenAI Embedding API   |
 
 ### 1.4 环境管理（uv）
 
 #### 1.4.1 为什么用 uv
 
-| 维度 | pip + venv | uv |
-|------|-----------|-----|
-| 安装速度 | 慢（逐一下载解析） | 快（Rust 编写，并行下载解析） |
-| 依赖解析 | 可能冲突，手动解决 | 自动、快速、正确 |
-| 锁文件 | `pip freeze > requirements.txt` | `uv.lock` 自动生成，可复现 |
-| 虚拟环境 | 手动创建 | `uv venv` / `uv sync` 一步完成 |
-| 兼容性 | — | 完全兼容 pip、pyproject.toml |
+| 维度   | pip + venv                      | uv                         |
+| ---- | ------------------------------- | -------------------------- |
+| 安装速度 | 慢（逐一下载解析）                       | 快（Rust 编写，并行下载解析）          |
+| 依赖解析 | 可能冲突，手动解决                       | 自动、快速、正确                   |
+| 锁文件  | `pip freeze > requirements.txt` | `uv.lock` 自动生成，可复现         |
+| 虚拟环境 | 手动创建                            | `uv venv` / `uv sync` 一步完成 |
+| 兼容性  | —                               | 完全兼容 pip、pyproject.toml    |
 
 #### 1.4.2 项目配置（pyproject.toml）
 
@@ -158,7 +158,7 @@ uv run pytest
 uv lock --upgrade
 ```
 
----
+***
 
 ## 2. 系统架构
 
@@ -255,15 +255,15 @@ ai_bid_rag/
 
 ### 2.3 分层职责说明
 
-| 序号 | 分层 | 职责 |
-|------|------|------|
-| 1 | Router 层 | HTTP 请求路由、参数校验、响应格式化 |
-| 2 | Service 层 | 业务逻辑编排、事务管理 |
-| 3 | Core 层 | 核心能力（解析、索引、检索），与框架强相关 |
-| 4 | Model 层 | 数据结构定义（Pydantic Schema） |
-| 5 | Utils 层 | 通用工具（文件处理、路径工具等） |
+| 序号 | 分层        | 职责                      |
+| -- | --------- | ----------------------- |
+| 1  | Router 层  | HTTP 请求路由、参数校验、响应格式化    |
+| 2  | Service 层 | 业务逻辑编排、事务管理             |
+| 3  | Core 层    | 核心能力（解析、索引、检索），与框架强相关   |
+| 4  | Model 层   | 数据结构定义（Pydantic Schema） |
+| 5  | Utils 层   | 通用工具（文件处理、路径工具等）        |
 
----
+***
 
 ## 3. 核心模块设计
 
@@ -307,21 +307,21 @@ PDF/Word 文件
 
 #### 3.1.2 技术要点
 
-| 序号 | 要点 | 说明 |
-|------|------|------|
-| 1 | PDF 文本提取 | PyMuPDF（fitz）用于快速提取 PDF 文本和图片 |
-| 2 | PDF 表格提取 | pdfplumber 专门处理表格，保留行列结构 |
-| 3 | Word 文档解析 | python-docx 提取段落文本、表格数据和嵌入图片 |
-| 4 | OCR 识别 | PaddleOCR 处理文档中的嵌入图片文字 |
-| 5 | 输出格式 | `List[llama_index.Document]`，每个 Document 携带页面级元数据 |
+| 序号 | 要点        | 说明                                                |
+| -- | --------- | ------------------------------------------------- |
+| 1  | PDF 文本提取  | PyMuPDF（fitz）用于快速提取 PDF 文本和图片                     |
+| 2  | PDF 表格提取  | pdfplumber 专门处理表格，保留行列结构                          |
+| 3  | Word 文档解析 | python-docx 提取段落文本、表格数据和嵌入图片                      |
+| 4  | OCR 识别    | PaddleOCR 处理文档中的嵌入图片文字                            |
+| 5  | 输出格式      | `List[llama_index.Document]`，每个 Document 携带页面级元数据 |
 
 #### 3.1.3 支持的文档格式
 
-| 序号 | 格式 | 扩展名 | 解析库 |
-|------|------|--------|--------|
-| 1 | PDF | .pdf | PyMuPDF + pdfplumber |
-| 2 | Word（新格式） | .docx | python-docx |
-| 3 | Word（旧格式） | .doc | 待后续引入 LibreOffice 转换 |
+| 序号 | 格式        | 扩展名   | 解析库                  |
+| -- | --------- | ----- | -------------------- |
+| 1  | PDF       | .pdf  | PyMuPDF + pdfplumber |
+| 2  | Word（新格式） | .docx | python-docx          |
+| 3  | Word（旧格式） | .doc  | 待后续引入 LibreOffice 转换 |
 
 ### 3.2 索引引擎（基于 LlamaIndex）
 
@@ -355,15 +355,15 @@ LlamaIndex Documents
 
 #### 3.2.2 关键设计参数
 
-| 序号 | 参数 | 值 | 说明 |
-|------|------|-----|------|
-| 1 | Collection 命名 | `kb_{uuid}` | 每个知识库一个独立 Collection |
-| 2 | 分割策略 | SentenceSplitter | 按句子边界分割，中文友好 |
-| 3 | chunk_size | 512 tokens | 每个文本块大小 |
-| 4 | chunk_overlap | 64 tokens | 相邻块重叠大小，防止语义断裂 |
-| 5 | 索引类型 | IVF_FLAT | 平衡精度与速度 |
-| 6 | 相似度度量 | IP（内积） | 向量相似度计算方式 |
-| 7 | 元数据字段 | doc_id, file_name, page_number, chunk_index | 用于溯源和过滤 |
+| 序号 | 参数             | 值                                               | 说明                   |
+| -- | -------------- | ----------------------------------------------- | -------------------- |
+| 1  | Collection 命名  | `kb_{uuid}`                                     | 每个知识库一个独立 Collection |
+| 2  | 分割策略           | SentenceSplitter                                | 按句子边界分割，中文友好         |
+| 3  | chunk\_size    | 512 tokens                                      | 每个文本块大小              |
+| 4  | chunk\_overlap | 64 tokens                                       | 相邻块重叠大小，防止语义断裂       |
+| 5  | 索引类型           | IVF\_FLAT                                       | 平衡精度与速度              |
+| 6  | 相似度度量          | IP（内积）                                          | 向量相似度计算方式            |
+| 7  | 元数据字段          | doc\_id, file\_name, page\_number, chunk\_index | 用于溯源和过滤              |
 
 ### 3.3 检索与问答引擎
 
@@ -419,12 +419,12 @@ LlamaIndex Documents
 
 #### 3.3.3 检索关键参数
 
-| 序号 | 参数 | 值 | 说明 |
-|------|------|-----|------|
-| 1 | top_k | 5 | 检索返回的最相关文档片段数 |
-| 2 | 相似度阈值 | 0.6 | 低于此阈值的结果丢弃 |
-| 3 | LLM Temperature | 0.1 | 低温度保证回答准确性 |
-| 4 | 上下文窗口 | 4096 tokens | Prompt 中参考文档内容的最大长度 |
+| 序号 | 参数              | 值           | 说明                  |
+| -- | --------------- | ----------- | ------------------- |
+| 1  | top\_k          | 5           | 检索返回的最相关文档片段数       |
+| 2  | 相似度阈值           | 0.6         | 低于此阈值的结果丢弃          |
+| 3  | LLM Temperature | 0.1         | 低温度保证回答准确性          |
+| 4  | 上下文窗口           | 4096 tokens | Prompt 中参考文档内容的最大长度 |
 
 ### 3.4 文档检索引擎（纯检索，不含 LLM）
 
@@ -462,35 +462,35 @@ LlamaIndex Documents
 
 #### 3.4.2 检索关键参数
 
-| 序号 | 参数 | 值 | 说明 |
-|------|------|-----|------|
-| 1 | top_k | 10 | 检索返回的最相关文档片段数 |
-| 2 | 相似度阈值 | 0.6 | 低于此阈值的结果丢弃 |
-| 3 | 排序方式 | 相似度降序 | 按得分从高到低排列 |
-| 4 | 分页 | 支持 offset / limit | 前端分页展示大量结果 |
+| 序号 | 参数     | 值                 | 说明            |
+| -- | ------ | ----------------- | ------------- |
+| 1  | top\_k | 10                | 检索返回的最相关文档片段数 |
+| 2  | 相似度阈值  | 0.6               | 低于此阈值的结果丢弃    |
+| 3  | 排序方式   | 相似度降序             | 按得分从高到低排列     |
+| 4  | 分页     | 支持 offset / limit | 前端分页展示大量结果    |
 
 #### 3.4.3 与问答检索的区别
 
-| 序号 | 对比维度 | 文档检索（3.4） | 问答检索（3.3） |
-|------|----------|-----------------|-----------------|
-| 1 | LLM 调用 | 不调用 | 调用 |
-| 2 | 输出方式 | JSON 一次性返回 | SSE 流式返回 |
-| 3 | 返回内容 | 文档片段 + 元数据 | LLM 生成的自然语言答案 |
-| 4 | 对话上下文 | 无 | 有（多轮对话） |
-| 5 | 典型用途 | 精确查找原文内容 | 综合分析、跨文档问答 |
+| 序号 | 对比维度   | 文档检索（3.4）  | 问答检索（3.3）     |
+| -- | ------ | ---------- | ------------- |
+| 1  | LLM 调用 | 不调用        | 调用            |
+| 2  | 输出方式   | JSON 一次性返回 | SSE 流式返回      |
+| 3  | 返回内容   | 文档片段 + 元数据 | LLM 生成的自然语言答案 |
+| 4  | 对话上下文  | 无          | 有（多轮对话）       |
+| 5  | 典型用途   | 精确查找原文内容   | 综合分析、跨文档问答    |
 
----
+***
 
 ## 4. API 设计
 
 ### 4.1 知识库 API
 
-| 序号 | 方法 | 路径 | 说明 |
-|------|------|------|------|
-| 1 | POST | `/api/knowledge-bases` | 创建知识库 |
-| 2 | GET | `/api/knowledge-bases` | 获取知识库列表 |
-| 3 | GET | `/api/knowledge-bases/{id}` | 获取知识库详情 |
-| 4 | DELETE | `/api/knowledge-bases/{id}` | 删除知识库 |
+| 序号 | 方法     | 路径                          | 说明      |
+| -- | ------ | --------------------------- | ------- |
+| 1  | POST   | `/api/knowledge-bases`      | 创建知识库   |
+| 2  | GET    | `/api/knowledge-bases`      | 获取知识库列表 |
+| 3  | GET    | `/api/knowledge-bases/{id}` | 获取知识库详情 |
+| 4  | DELETE | `/api/knowledge-bases/{id}` | 删除知识库   |
 
 #### 4.1.1 创建知识库 — 请求体
 
@@ -515,11 +515,11 @@ LlamaIndex Documents
 
 ### 4.2 文档管理 API
 
-| 序号 | 方法 | 路径 | 说明 |
-|------|------|------|------|
-| 1 | POST | `/api/knowledge-bases/{kb_id}/documents` | 上传文档到指定知识库 |
-| 2 | GET | `/api/knowledge-bases/{kb_id}/documents` | 获取知识库下的文档列表 |
-| 3 | DELETE | `/api/knowledge-bases/{kb_id}/documents/{doc_id}` | 删除文档及向量数据 |
+| 序号 | 方法     | 路径                                                | 说明          |
+| -- | ------ | ------------------------------------------------- | ----------- |
+| 1  | POST   | `/api/knowledge-bases/{kb_id}/documents`          | 上传文档到指定知识库  |
+| 2  | GET    | `/api/knowledge-bases/{kb_id}/documents`          | 获取知识库下的文档列表 |
+| 3  | DELETE | `/api/knowledge-bases/{kb_id}/documents/{doc_id}` | 删除文档及向量数据   |
 
 #### 4.2.1 文档上传 — 请求
 
@@ -542,19 +542,19 @@ LlamaIndex Documents
 
 #### 4.2.3 文档状态枚举
 
-| 序号 | 状态 | 说明 |
-|------|------|------|
-| 1 | uploading | 文件上传中 |
-| 2 | processing | 解析与索引中 |
-| 3 | completed | 解析索引完成，可检索 |
-| 4 | failed | 解析失败，需重新上传 |
+| 序号 | 状态         | 说明         |
+| -- | ---------- | ---------- |
+| 1  | uploading  | 文件上传中      |
+| 2  | processing | 解析与索引中     |
+| 3  | completed  | 解析索引完成，可检索 |
+| 4  | failed     | 解析失败，需重新上传 |
 
 ### 4.3 问答 API
 
-| 序号 | 方法 | 路径 | 说明 |
-|------|------|------|------|
-| 1 | POST | `/api/knowledge-bases/{kb_id}/chat` | 发送问题，SSE 流式返回 |
-| 2 | DELETE | `/api/knowledge-bases/{kb_id}/chat/session` | 清除当前会话上下文 |
+| 序号 | 方法     | 路径                                          | 说明            |
+| -- | ------ | ------------------------------------------- | ------------- |
+| 1  | POST   | `/api/knowledge-bases/{kb_id}/chat`         | 发送问题，SSE 流式返回 |
+| 2  | DELETE | `/api/knowledge-bases/{kb_id}/chat/session` | 清除当前会话上下文     |
 
 #### 4.3.1 问答请求体
 
@@ -567,12 +567,12 @@ LlamaIndex Documents
 
 #### 4.3.2 SSE 流式响应事件类型
 
-| 序号 | 事件类型 | 说明 | 示例 |
-|------|----------|------|------|
-| 1 | token | 逐字输出的文本片段 | `{"type": "token", "content": "根据文档"}` |
-| 2 | sources | 引用来源列表（回答结束时发送） | `{"type": "sources", "sources": [...]}` |
-| 3 | error | 错误信息 | `{"type": "error", "message": "..."}` |
-| 4 | done | 回答完成标记 | `{"type": "done"}` |
+| 序号 | 事件类型    | 说明              | 示例                                      |
+| -- | ------- | --------------- | --------------------------------------- |
+| 1  | token   | 逐字输出的文本片段       | `{"type": "token", "content": "根据文档"}`  |
+| 2  | sources | 引用来源列表（回答结束时发送） | `{"type": "sources", "sources": [...]}` |
+| 3  | error   | 错误信息            | `{"type": "error", "message": "..."}`   |
+| 4  | done    | 回答完成标记          | `{"type": "done"}`                      |
 
 #### 4.3.3 SSE 流式响应示例
 
@@ -586,9 +586,9 @@ data: {"type": "done"}
 
 ### 4.4 文档检索 API
 
-| 序号 | 方法 | 路径 | 说明 |
-|------|------|------|------|
-| 1 | POST | `/api/knowledge-bases/{kb_id}/search` | 语义检索文档片段 |
+| 序号 | 方法   | 路径                                    | 说明       |
+| -- | ---- | ------------------------------------- | -------- |
+| 1  | POST | `/api/knowledge-bases/{kb_id}/search` | 语义检索文档片段 |
 
 #### 4.4.1 检索请求体
 
@@ -602,13 +602,13 @@ data: {"type": "done"}
 }
 ```
 
-| 序号 | 参数 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|------|--------|------|
-| 1 | query | string | 是 | - | 检索关键词或自然语言描述 |
-| 2 | top_k | int | 否 | 10 | 向量检索返回的候选数量 |
-| 3 | similarity_threshold | float | 否 | 0.6 | 相似度阈值，过滤低分结果 |
-| 4 | offset | int | 否 | 0 | 分页偏移 |
-| 5 | limit | int | 否 | 20 | 每页条数 |
+| 序号 | 参数                    | 类型     | 必填 | 默认值 | 说明           |
+| -- | --------------------- | ------ | -- | --- | ------------ |
+| 1  | query                 | string | 是  | -   | 检索关键词或自然语言描述 |
+| 2  | top\_k                | int    | 否  | 10  | 向量检索返回的候选数量  |
+| 3  | similarity\_threshold | float  | 否  | 0.6 | 相似度阈值，过滤低分结果 |
+| 4  | offset                | int    | 否  | 0   | 分页偏移         |
+| 5  | limit                 | int    | 否  | 20  | 每页条数         |
 
 #### 4.4.2 检索响应体
 
@@ -639,50 +639,50 @@ data: {"type": "done"}
 }
 ```
 
-| 序号 | 字段 | 类型 | 说明 |
-|------|------|------|------|
-| 1 | rank | int | 排名序号 |
-| 2 | score | float | 相似度得分（0~1） |
-| 3 | text | string | 匹配的文档片段文本 |
-| 4 | doc_id | string | 来源文档 ID |
-| 5 | file_name | string | 来源文档名称 |
-| 6 | page_number | int | 来源页码 |
-| 7 | chunk_index | int | 片段在文档中的索引 |
+| 序号 | 字段           | 类型     | 说明          |
+| -- | ------------ | ------ | ----------- |
+| 1  | rank         | int    | 排名序号        |
+| 2  | score        | float  | 相似度得分（0\~1） |
+| 3  | text         | string | 匹配的文档片段文本   |
+| 4  | doc\_id      | string | 来源文档 ID     |
+| 5  | file\_name   | string | 来源文档名称      |
+| 6  | page\_number | int    | 来源页码        |
+| 7  | chunk\_index | int    | 片段在文档中的索引   |
 
----
+***
 
 ## 5. 数据存储设计
 
 ### 5.1 Milvus Collection 设计
 
-| 序号 | 属性 | 值 |
-|------|------|-----|
-| 1 | Collection 命名规则 | `kb_{knowledge_base_id}` |
-| 2 | 向量维度 | 1024（bge-large-zh-v1.5） |
-| 3 | 索引类型 | IVF_FLAT |
-| 4 | 相似度度量 | IP（内积） |
-| 5 | 主键字段 | `id`（INT64，自增） |
-| 6 | 向量字段 | `embedding`（FLOAT_VECTOR，1024维） |
+| 序号 | 属性              | 值                                |
+| -- | --------------- | -------------------------------- |
+| 1  | Collection 命名规则 | `kb_{knowledge_base_id}`         |
+| 2  | 向量维度            | 1024（bge-large-zh-v1.5）          |
+| 3  | 索引类型            | IVF\_FLAT                        |
+| 4  | 相似度度量           | IP（内积）                           |
+| 5  | 主键字段            | `id`（INT64，自增）                   |
+| 6  | 向量字段            | `embedding`（FLOAT\_VECTOR，1024维） |
 
 ### 5.2 Milvus 标量字段
 
-| 序号 | 字段名 | 类型 | 说明 |
-|------|--------|------|------|
-| 1 | doc_id | VARCHAR(64) | 文档唯一标识 |
-| 2 | file_name | VARCHAR(512) | 原始文件名 |
-| 3 | page_number | INT64 | 页码（从 1 开始） |
-| 4 | chunk_index | INT64 | 块索引（从 0 开始） |
-| 5 | kb_id | VARCHAR(64) | 所属知识库 ID |
+| 序号 | 字段名          | 类型           | 说明          |
+| -- | ------------ | ------------ | ----------- |
+| 1  | doc\_id      | VARCHAR(64)  | 文档唯一标识      |
+| 2  | file\_name   | VARCHAR(512) | 原始文件名       |
+| 3  | page\_number | INT64        | 页码（从 1 开始）  |
+| 4  | chunk\_index | INT64        | 块索引（从 0 开始） |
+| 5  | kb\_id       | VARCHAR(64)  | 所属知识库 ID    |
 
 ### 5.3 业务数据存储
 
-| 序号 | 数据类型 | 存储方式 | 说明 |
-|------|----------|----------|------|
-| 1 | 知识库元数据 | PostgreSQL | 知识库名称、描述、创建时间等 |
-| 2 | 文档元数据 | PostgreSQL | 文档名称、大小、状态、所属知识库等 |
-| 3 | 会话上下文 | PostgreSQL（conversations / messages 表） | 多轮对话持久化，支持历史回溯 |
-| 4 | 文档原始文件 | MinIO（对象存储） | Object Key: `{kb_id}/{doc_id}.{ext}` |
-| 5 | 模型配置 | PostgreSQL（llm_configs / embedding_configs 表） | LLM 和 Embedding 配置，支持前端切换 |
+| 序号 | 数据类型   | 存储方式                                            | 说明                                   |
+| -- | ------ | ----------------------------------------------- | ------------------------------------ |
+| 1  | 知识库元数据 | PostgreSQL                                      | 知识库名称、描述、创建时间等                       |
+| 2  | 文档元数据  | PostgreSQL                                      | 文档名称、大小、状态、所属知识库等                    |
+| 3  | 会话上下文  | PostgreSQL（conversations / messages 表）          | 多轮对话持久化，支持历史回溯                       |
+| 4  | 文档原始文件 | MinIO（对象存储）                                     | Object Key: `{kb_id}/{doc_id}.{ext}` |
+| 5  | 模型配置   | PostgreSQL（llm\_configs / embedding\_configs 表） | LLM 和 Embedding 配置，支持前端切换            |
 
 详细表结构见 [05-database-design.md](05-database-design.md)。
 
@@ -721,28 +721,28 @@ data: {"type": "done"}
 
 **异常处理：**
 
-| 场景 | 处理策略 |
-|------|----------|
-| MinIO 上传成功，PG 写入失败 | 回删 MinIO 对象 |
-| PG 写入成功，Milvus 写入失败 | documents.status='failed'，记录 error_message |
-| PG 删除成功，MinIO 删除失败 | 记录日志，定时任务清理孤儿对象 |
-| PG 删除成功，Milvus 删除失败 | 记录日志，Milvus Collection 残留可后续清理 |
+| 场景                  | 处理策略                                        |
+| ------------------- | ------------------------------------------- |
+| MinIO 上传成功，PG 写入失败  | 回删 MinIO 对象                                 |
+| PG 写入成功，Milvus 写入失败 | documents.status='failed'，记录 error\_message |
+| PG 删除成功，MinIO 删除失败  | 记录日志，定时任务清理孤儿对象                             |
+| PG 删除成功，Milvus 删除失败 | 记录日志，Milvus Collection 残留可后续清理              |
 
----
+***
 
 ## 6. 部署方案
 
 ### 6.1 环境依赖
 
-| 序号 | 组件 | 部署方式 | 端口 |
-|------|------|---------|------|
-| 1 | PostgreSQL | Docker | 5432 |
-| 2 | Milvus | Docker Compose（standalone） | 19530 |
-| 3 | MinIO | Docker Compose（Milvus 内置 + 独立 Bucket 存文档） | 9000 |
-| 4 | Xinference | 本地 pip 安装运行 | 9997 |
-| 5 | uv（环境管理） | 本地安装，管理 Python 依赖和虚拟环境 | - |
-| 6 | 后端 FastAPI | uv 管理虚拟环境 + 依赖 | 8000 |
-| 7 | 前端 Vue 3 | Vite 开发服务器 | 5173 |
+| 序号 | 组件         | 部署方式                                      | 端口    |
+| -- | ---------- | ----------------------------------------- | ----- |
+| 1  | PostgreSQL | Docker                                    | 5432  |
+| 2  | Milvus     | Docker Compose（standalone）                | 19530 |
+| 3  | MinIO      | Docker Compose（Milvus 内置 + 独立 Bucket 存文档） | 9000  |
+| 4  | Xinference | 本地 pip 安装运行                               | 9997  |
+| 5  | uv（环境管理）   | 本地安装，管理 Python 依赖和虚拟环境                    | -     |
+| 6  | 后端 FastAPI | uv 管理虚拟环境 + 依赖                            | 8000  |
+| 7  | 前端 Vue 3   | Vite 开发服务器                                | 5173  |
 
 ### 6.2 启动步骤
 
@@ -830,14 +830,14 @@ services:
 
 ### 6.4 硬件要求
 
-| 序号 | 资源 | 最低要求 | 推荐配置 |
-|------|------|----------|----------|
-| 1 | CPU | 4 核 | 8 核 |
-| 2 | 内存 | 8 GB | 16 GB |
-| 3 | 磁盘 | 20 GB（不含文档存储） | 100 GB |
-| 4 | GPU | 无硬性要求 | 推荐用于 Xinference 推理加速 |
+| 序号 | 资源  | 最低要求          | 推荐配置                 |
+| -- | --- | ------------- | -------------------- |
+| 1  | CPU | 4 核           | 8 核                  |
+| 2  | 内存  | 8 GB          | 16 GB                |
+| 3  | 磁盘  | 20 GB（不含文档存储） | 100 GB               |
+| 4  | GPU | 无硬性要求         | 推荐用于 Xinference 推理加速 |
 
----
+***
 
 ## 7. 关键配置项
 
@@ -894,28 +894,29 @@ MAX_UPLOAD_SIZE=104857600         # 100MB
 VITE_API_BASE_URL=http://localhost:8000/api
 ```
 
----
+***
 
 ## 8. 风险与注意事项
 
-| 序号 | 风险 | 说明 | 应对措施 |
-|------|------|------|---------|
-| 1 | OCR 准确率 | PaddleOCR 对复杂排版识别有限 | 后续可接入更专业的 OCR 服务 |
-| 2 | .doc 格式兼容 | python-docx 不支持旧 .doc 格式 | 后续引入 LibreOffice 转换层 |
-| 3 | Milvus 内存占用 | Milvus 需要一定内存（建议 ≥ 4GB） | 使用 Standalone 模式，索引类型选 IVF_FLAT 降低内存 |
-| 4 | Xinference 模型下载 | 首次启动需下载模型文件 | 提前下载至本地缓存目录 |
-| 5 | DeepSeek API 限流 | 高并发下可能触发限流 | 前端会话级别控制并发，后续可加入重试机制 |
+| 序号 | 风险              | 说明                       | 应对措施                                  |
+| -- | --------------- | ------------------------ | ------------------------------------- |
+| 1  | OCR 准确率         | PaddleOCR 对复杂排版识别有限      | 后续可接入更专业的 OCR 服务                      |
+| 2  | .doc 格式兼容       | python-docx 不支持旧 .doc 格式 | 后续引入 LibreOffice 转换层                  |
+| 3  | Milvus 内存占用     | Milvus 需要一定内存（建议 ≥ 4GB）  | 使用 Standalone 模式，索引类型选 IVF\_FLAT 降低内存 |
+| 4  | Xinference 模型下载 | 首次启动需下载模型文件              | 提前下载至本地缓存目录                           |
+| 5  | DeepSeek API 限流 | 高并发下可能触发限流               | 前端会话级别控制并发，后续可加入重试机制                  |
 
----
+***
 
 ## 9. 后续迭代方向
 
-| 序号 | 方向 | 说明 |
-|------|------|------|
-| 1 | Milvus 集群模式 | 高可用部署，支撑大规模文档 |
-| 2 | 混合检索 | 向量检索 + BM25 关键词检索，提升召回率 |
-| 3 | Rerank 模型 | 引入重排序模型，提升检索精度 |
-| 4 | 用户登录与权限控制 | 多用户隔离，操作审计 |
-| 5 | 对话历史持久化 | 历史会话保存与回溯 |
-| 6 | 异步文档解析 | Celery / Background Tasks 异步处理大文档 |
-| 7 | 解析进度推送 | WebSocket 实时推送文档解析进度 |
+| 序号 | 方向          | 说明                                |
+| -- | ----------- | --------------------------------- |
+| 1  | Milvus 集群模式 | 高可用部署，支撑大规模文档                     |
+| 2  | 混合检索        | 向量检索 + BM25 关键词检索，提升召回率           |
+| 3  | Rerank 模型   | 引入重排序模型，提升检索精度                    |
+| 4  | 用户登录与权限控制   | 多用户隔离，操作审计                        |
+| 5  | 对话历史持久化     | 历史会话保存与回溯                         |
+| 6  | 异步文档解析      | Celery / Background Tasks 异步处理大文档 |
+| 7  | 解析进度推送      | WebSocket 实时推送文档解析进度              |
+

@@ -1,9 +1,12 @@
 """
-文档管理 API。
+文档管理 API — 上传与解析分离，解析使用队列 FIFO 执行。
 """
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from models.schemas import DocumentResponse
+from core import parse_queue
+from core.database import async_session
+from models.schemas import DocumentResponse, ParseResponse
+from repositories.document_repository import DocumentRepository
 from services import document_service
 from utils.file_utils import validate_file_type
 from utils.logging import get_logger
@@ -15,14 +18,13 @@ router = APIRouter(prefix="/api/knowledge-bases/{kb_id}/documents", tags=["文�
 
 @router.post("", response_model=DocumentResponse, status_code=201)
 async def upload_document(kb_id: str, file: UploadFile = File(...)):
-    """上传文档到指定知识库"""
+    """上传文档到指定知识库（仅上传，不解析）"""
     logger.info("上传文档: kb_id=%s, file=%s, size=%d", kb_id, file.filename, file.size or 0)
 
     if not file.filename:
         logger.warning("上传失败：未提供文件")
         raise HTTPException(status_code=400, detail="未提供文件")
 
-    # 格式校验
     if not validate_file_type(file.filename):
         logger.warning("上传失败：不支持的文件格式 %s", file.filename)
         raise HTTPException(
@@ -44,6 +46,55 @@ async def list_documents(kb_id: str):
     """获取知识库下的文档列表"""
     logger.debug("获取文档列表: kb_id=%s", kb_id)
     return await document_service.list_documents(kb_id)
+
+
+@router.get("/queue/status")
+async def queue_status():
+    """获取解析队列状态"""
+    return {
+        "queue_size": parse_queue.queue_size(),
+        "worker_running": parse_queue.is_worker_running(),
+    }
+
+
+@router.get("/{doc_id}", response_model=DocumentResponse)
+async def get_document(kb_id: str, doc_id: str):
+    """获取单个文档信息"""
+    logger.debug("获取文档: kb_id=%s, doc_id=%s", kb_id, doc_id)
+    doc = await document_service.get_document(kb_id, doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return doc
+
+
+@router.post("/{doc_id}/parse", response_model=ParseResponse)
+async def parse_document(kb_id: str, doc_id: str):
+    """将文档加入解析队列，异步 FIFO 执行"""
+    logger.info("触发文档解析: kb_id=%s, doc_id=%s", kb_id, doc_id)
+
+    doc = await document_service.get_document(kb_id, doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+    if doc["status"] == "queued":
+        raise HTTPException(status_code=400, detail="文档已在解析队列中")
+
+    if doc["status"] == "processing":
+        raise HTTPException(status_code=400, detail="文档正在解析中")
+
+    if doc["status"] == "completed":
+        raise HTTPException(status_code=400, detail="文档已解析完成，无需重复解析")
+
+    # 更新状态 → queued
+    async with async_session() as session:
+        repo = DocumentRepository(session)
+        await repo.update_status(doc_id, "queued")
+
+    # 加入解析队列
+    position = await parse_queue.enqueue(kb_id, doc_id)
+
+    logger.info("文档已加入解析队列: doc_id=%s, queue_position=%d", doc_id, position)
+    return {"id": doc_id, "status": "queued", "queue_position": position}
 
 
 @router.post("/{doc_id}/delete", status_code=204)

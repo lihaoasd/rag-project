@@ -1,6 +1,7 @@
 """
 FastAPI 应用入口 — 投标文档 RAG 智能问答系统。
 """
+import asyncio
 import time
 from contextlib import asynccontextmanager
 
@@ -8,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
+from core import parse_queue
 from routers import knowledge_base, document, search, chat
 from utils.logging import get_logger, setup_logging
 
@@ -17,14 +19,26 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    # 启动时：初始化日志系统
+    # 启动时：初始化日志系统、启动解析队列 worker
     setup_logging(level=settings.log_level, log_dir=settings.log_dir)
     logger.info("Bid Document RAG System v0.1.0 启动中...")
     logger.info("LLM: %s / %s", settings.llm_provider, settings.llm_model)
     logger.info("Embedding: %s (dim=%d)", settings.embedding_model, settings.embedding_dim)
+
+    worker_task = asyncio.create_task(parse_queue.start_worker())
+    logger.info("解析队列 worker 已就绪")
+
     yield
-    # 关闭时
-    logger.info("应用关闭")
+
+    # 关闭时：停止 worker
+    logger.info("应用关闭中...")
+    await parse_queue.stop_worker()
+    worker_task.cancel()
+    try:
+        await worker_task
+    except asyncio.CancelledError:
+        pass
+    logger.info("应用已关闭")
 
 
 app = FastAPI(

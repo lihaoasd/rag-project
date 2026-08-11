@@ -1,5 +1,8 @@
 """
-文档管理业务逻辑 — 上传 → MinIO → 解析 → 切片 → 索引 → 状态更新。
+文档管理业务逻辑 — 上传与解析分离。
+
+上传：暂存 → MinIO → PG 记录（status=uploaded）→ 清理临时文件
+解析：MinIO 下载 → 解析 → 切片 → 索引 → 状态更新（异步触发）
 """
 import os
 import uuid
@@ -10,7 +13,7 @@ from fastapi import UploadFile
 from config import settings
 from core.database import async_session
 from core.indexing import build_index, chunk_documents, delete_index
-from core.parser import parse_document
+from core.parser import parse_document as parse_file
 from repositories.document_repository import DocumentRepository
 from repositories.kb_repository import KnowledgeBaseRepository
 from utils import minio_client
@@ -36,19 +39,13 @@ def _doc_to_dict(doc) -> dict:
 
 
 async def upload_document(kb_id: str, file: UploadFile) -> dict:
-    """完整文档上传管道。
+    """文档上传 — 仅做存储，不解析。
 
     流程:
         1. 暂存到临时目录
         2. 上传到 MinIO
-        3. PG 写入文档记录（status=uploading）
-        4. 更新状态 → processing
-        5. 解析文档
-        6. 文本切片
-        7. Embedding + Milvus 索引
-        8. PG 写入切片记录
-        9. 更新状态 → completed
-        10. 清理临时文件
+        3. PG 写入文档记录（status=uploaded）
+        4. 清理临时文件
 
     异常处理：任一步骤失败 → status=failed，记录 error_message
     """
@@ -71,7 +68,7 @@ async def upload_document(kb_id: str, file: UploadFile) -> dict:
         object_key = f"{kb_id}/{doc_id}.{file_type}"
         minio_client.upload(object_key, temp_path)
 
-        # 3. PG 写入文档记录
+        # 3. PG 写入文档记录（status=uploaded）
         async with async_session() as session:
             doc_repo = DocumentRepository(session)
             doc = await doc_repo.create(
@@ -83,47 +80,19 @@ async def upload_document(kb_id: str, file: UploadFile) -> dict:
             )
             doc_id_str = str(doc.id)
 
-            # 4. 更新状态 → processing
-            await doc_repo.update_status(doc_id_str, "processing")
+        logger.info("文档上传完成: doc_id=%s, file=%s", doc_id_str, file.filename)
 
-        # 5. 解析文档
-        llama_docs = await parse_document(temp_path, file_type)
-        if not llama_docs:
-            raise ValueError("文档解析结果为空，可能是不支持的格式或文件损坏")
-
-        # 将 doc_id 写入 metadata
-        for d in llama_docs:
-            d.metadata["doc_id"] = doc_id_str
-
-        # 6. 文本切片
-        chunks, metadatas = chunk_documents(llama_docs)
-
-        # 7. Embedding + Milvus 索引
-        milvus_pks = await build_index(chunks, metadatas, kb_id)
-
-        # 8. PG 写入切片记录 + 更新状态 → completed
-        async with async_session() as session:
-            doc_repo = DocumentRepository(session)
-            kb_repo = KnowledgeBaseRepository(session)
-
-            await doc_repo.batch_create_chunks(doc_id_str, kb_id, metadatas, milvus_pks)
-            page_count = len(llama_docs)
-            chunk_count = len(chunks)
-            await doc_repo.update_status(
-                doc_id_str,
-                "completed",
-                page_count=page_count,
-                chunk_count=chunk_count,
-            )
-            await kb_repo.increment_doc_count(kb_id)
-
-        logger.info("文档上传管道完成: doc_id=%s, pages=%d, chunks=%d", doc_id_str, page_count, chunk_count)
-
-        # 返回最终状态的文档
-        async with async_session() as session:
-            doc_repo = DocumentRepository(session)
-            doc = await doc_repo.get_by_id(doc_id_str)
-            return _doc_to_dict(doc) if doc else {"id": doc_id_str, "status": "completed"}
+        return {
+            "id": doc_id_str,
+            "file_name": file.filename,
+            "file_size": file_size,
+            "file_type": file_type,
+            "status": "uploaded",
+            "page_count": None,
+            "error_message": None,
+            "chunk_count": None,
+            "created_at": doc.created_at.isoformat() if doc.created_at else "",
+        }
 
     except Exception as e:
         error_msg = str(e)
@@ -140,8 +109,102 @@ async def upload_document(kb_id: str, file: UploadFile) -> dict:
         raise
 
     finally:
-        # 10. 清理临时文件
+        # 4. 清理临时文件
         if temp_path.exists():
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+async def parse_document(kb_id: str, doc_id: str) -> None:
+    """异步解析文档 — 下载 → 解析 → 切片 → 向量化 → 索引。
+
+    流程:
+        1. 更新 PG 状态 → processing
+        2. 从 MinIO 下载文件到临时目录
+        3. 解析文档
+        4. 文本切片
+        5. Embedding + Milvus 索引
+        6. PG 写入切片记录
+        7. 更新状态 → completed
+        8. 更新知识库文档计数 +1
+
+    异常处理：任一步骤失败 → status=failed，记录 error_message
+    清理：finally 中删除临时文件
+    """
+    temp_path = None
+
+    try:
+        # 1. 获取文档记录
+        async with async_session() as session:
+            doc_repo = DocumentRepository(session)
+            doc = await doc_repo.get_by_id(doc_id)
+            if doc is None:
+                logger.error("解析失败：文档不存在 doc_id=%s", doc_id)
+                return
+
+            object_key = doc.object_key
+            file_type = doc.file_type
+
+            # 更新状态 → processing，清除旧错误信息
+            await doc_repo.update_status(doc_id, "processing", error_message="")
+
+        # 2. 从 MinIO 下载文件到临时目录
+        temp_dir = ensure_temp_dir(settings.temp_dir)
+        temp_path = Path(temp_dir) / f"{doc_id}.{file_type}"
+        minio_client.download(object_key, temp_path)
+        logger.info("文档下载完成: %s → %s", object_key, temp_path.name)
+
+        # 3. 解析文档
+        llama_docs = await parse_file(temp_path, file_type)
+        if not llama_docs:
+            raise ValueError("文档解析结果为空，可能是不支持的格式或文件损坏")
+
+        # 将 doc_id 写入 metadata
+        for d in llama_docs:
+            d.metadata["doc_id"] = doc_id
+
+        # 4. 文本切片
+        chunks, metadatas = chunk_documents(llama_docs)
+
+        # 5. Embedding + Milvus 索引
+        milvus_pks = await build_index(chunks, metadatas, kb_id)
+
+        # 6. PG 写入切片记录 + 7. 更新状态 → completed
+        async with async_session() as session:
+            doc_repo = DocumentRepository(session)
+            kb_repo = KnowledgeBaseRepository(session)
+
+            await doc_repo.batch_create_chunks(doc_id, kb_id, metadatas, milvus_pks)
+            page_count = len(llama_docs)
+            chunk_count = len(chunks)
+            await doc_repo.update_status(
+                doc_id,
+                "completed",
+                page_count=page_count,
+                chunk_count=chunk_count,
+            )
+            # 8. 更新知识库文档计数
+            await kb_repo.increment_doc_count(kb_id)
+
+        logger.info("文档解析完成: doc_id=%s, pages=%d, chunks=%d", doc_id, page_count, chunk_count)
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error("文档解析失败: doc_id=%s, error=%s", doc_id, error_msg, exc_info=True)
+
+        # 更新状态 → failed
+        try:
+            async with async_session() as session:
+                doc_repo = DocumentRepository(session)
+                await doc_repo.update_status(doc_id, "failed", error_message=error_msg)
+        except Exception as db_err:
+            logger.error("更新文档失败状态异常: %s", db_err)
+
+    finally:
+        # 清理临时文件
+        if temp_path and temp_path.exists():
             try:
                 os.remove(temp_path)
             except OSError:
@@ -154,6 +217,16 @@ async def list_documents(kb_id: str) -> list[dict]:
         doc_repo = DocumentRepository(session)
         docs = await doc_repo.list_by_kb(kb_id)
         return [_doc_to_dict(d) for d in docs]
+
+
+async def get_document(kb_id: str, doc_id: str) -> dict | None:
+    """获取单个文档信息。"""
+    async with async_session() as session:
+        doc_repo = DocumentRepository(session)
+        doc = await doc_repo.get_by_id(doc_id)
+        if doc is None:
+            return None
+        return _doc_to_dict(doc)
 
 
 async def delete_document(kb_id: str, doc_id: str) -> bool:

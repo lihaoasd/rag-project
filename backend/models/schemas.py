@@ -47,6 +47,12 @@ class DocumentListResponse(BaseModel):
     total: int
 
 
+class ParseResponse(BaseModel):
+    id: str
+    status: str
+    queue_position: int
+
+
 # ============================================================
 # 检索
 # ============================================================

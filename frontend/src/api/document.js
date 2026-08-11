@@ -1,7 +1,7 @@
 import apiClient from './request'
 
 /**
- * 上传文档到知识库
+ * 上传文档到知识库（仅上传，不解析）
  */
 export function uploadDocument(kbId, file) {
   const formData = new FormData()
@@ -19,6 +19,24 @@ export function uploadDocument(kbId, file) {
 export function listDocuments(kbId) {
   return apiClient
     .get(`/knowledge-bases/${kbId}/documents`)
+    .then((res) => res.data)
+}
+
+/**
+ * 获取单个文档
+ */
+export function getDocument(kbId, docId) {
+  return apiClient
+    .get(`/knowledge-bases/${kbId}/documents/${docId}`)
+    .then((res) => res.data)
+}
+
+/**
+ * 触发异步文档解析
+ */
+export function parseDocument(kbId, docId) {
+  return apiClient
+    .post(`/knowledge-bases/${kbId}/documents/${docId}/parse`)
     .then((res) => res.data)
 }
 

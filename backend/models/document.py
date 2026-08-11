@@ -16,7 +16,7 @@ class Document(Base, UUIDMixin, TimestampMixin):
     file_type: Mapped[str] = mapped_column(String(10), nullable=False)
     object_key: Mapped[str] = mapped_column(String(1024), unique=True, nullable=False)
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), default="uploading", server_default="uploading", nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="uploaded", server_default="uploaded", nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     chunk_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 

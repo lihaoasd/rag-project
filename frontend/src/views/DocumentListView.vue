@@ -57,8 +57,18 @@
             {{ formatDate(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" align="center" fixed="right">
+        <el-table-column label="操作" width="160" align="center" fixed="right">
           <template #default="{ row }">
+            <el-button
+              v-if="row.status === 'uploaded' || row.status === 'failed'"
+              text
+              type="primary"
+              size="small"
+              :loading="row._parsing"
+              @click="handleParse(row)"
+            >
+              解析
+            </el-button>
             <el-popconfirm
               title="删除后文档的向量数据也将被清除，确定删除？"
               confirm-button-text="确认"
@@ -126,11 +136,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElNotification } from 'element-plus'
 import { getKnowledgeBase } from '@/api/knowledgeBase'
-import { listDocuments, deleteDocument } from '@/api/document'
+import { listDocuments, deleteDocument, parseDocument } from '@/api/document'
 
 const route = useRoute()
 const kbId = route.params.kbId
@@ -143,13 +153,21 @@ const currentPage = ref(1)
 const pageSize = 10
 const uploadDialogVisible = ref(false)
 const fileList = ref([])
+let pollTimer = null
 
 const uploadUrl = `/api/knowledge-bases/${kbId}/documents`
 const uploadHeaders = {}
 
 // --- Methods ---
 function statusLabel(s) {
-  const map = { uploading: '上传中', processing: '解析中', completed: '就绪', failed: '失败' }
+  const map = {
+    uploaded: '待解析',
+    queued: '排队中',
+    uploading: '上传中',
+    processing: '解析中',
+    completed: '就绪',
+    failed: '失败',
+  }
   return map[s] || s
 }
 
@@ -185,7 +203,7 @@ function beforeUpload(file) {
 }
 
 function onUploadSuccess() {
-  ElMessage.success('文档上传成功，正在解析中...')
+  ElMessage.success('上传成功，请点击"解析"按钮开始解析文档')
   uploadDialogVisible.value = false
   loadList()
 }
@@ -210,11 +228,32 @@ async function loadList() {
 
   try {
     const data = await listDocuments(kbId)
-    docList.value = data || []
+    // 保留各行的 _parsing 标记
+    const oldMap = new Map(docList.value.map((d) => [d.id, d._parsing]))
+    docList.value = (data || []).map((d) => ({
+      ...d,
+      _parsing: oldMap.get(d.id) || false,
+    }))
     total.value = data?.length || 0
+
+    // 检查是否需要轮询
+    managePolling()
   } catch (err) {
     const msg = err?.response?.data?.detail || err?.message || '未知错误'
     ElNotification.error({ title: '加载文档列表失败', message: msg })
+  }
+}
+
+async function handleParse(row) {
+  row._parsing = true
+  try {
+    await parseDocument(kbId, row.id)
+    ElMessage.success('解析已触发，正在后台处理...')
+    await loadList()
+  } catch (err) {
+    row._parsing = false
+    const msg = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.error('解析失败: ' + msg)
   }
 }
 
@@ -228,7 +267,34 @@ async function handleDelete(docId) {
   }
 }
 
+// --- 轮询：存在 processing 状态的文档时自动刷新 ---
+function hasProcessing() {
+  return docList.value.some((d) => d.status === 'processing' || d.status === 'queued')
+}
+
+function managePolling() {
+  if (hasProcessing()) {
+    if (!pollTimer) {
+      pollTimer = setInterval(loadList, 3000)
+    }
+  } else {
+    stopPolling()
+  }
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+// 监听 docList 变化以管理轮询
+watch(docList, managePolling, { deep: true })
+
 onMounted(() => loadList())
+
+onBeforeUnmount(() => stopPolling())
 </script>
 
 <style scoped>

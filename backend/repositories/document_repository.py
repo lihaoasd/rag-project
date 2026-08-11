@@ -34,7 +34,7 @@ class DocumentRepository:
             file_size=file_size,
             file_type=file_type,
             object_key=object_key,
-            status="uploading",
+            status="uploaded",
         )
         self.session.add(doc)
         await self.session.commit()
