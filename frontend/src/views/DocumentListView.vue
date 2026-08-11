@@ -57,7 +57,7 @@
             {{ formatDate(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="160" align="center" fixed="right">
+        <el-table-column label="操作" width="220" align="center" fixed="right">
           <template #default="{ row }">
             <el-button
               v-if="row.status === 'uploaded' || row.status === 'failed'"
@@ -68,6 +68,15 @@
               @click="handleParse(row)"
             >
               解析
+            </el-button>
+            <el-button
+              v-if="row.status === 'completed'"
+              text
+              type="primary"
+              size="small"
+              @click="$router.push(`/knowledge-bases/${kbId}/documents/${row.id}/chunks`)"
+            >
+              切片
             </el-button>
             <el-popconfirm
               title="删除后文档的向量数据也将被清除，确定删除？"

@@ -105,6 +105,50 @@ class ChatSSEEvent(BaseModel):
 
 
 # ============================================================
+# 切片
+# ============================================================
+class ChunkResponse(BaseModel):
+    """切片列表项（text 截断为前 200 字符预览）"""
+    id: str
+    chunk_index: int
+    page_number: int
+    char_count: int
+    text_preview: str
+    created_at: str
+
+
+class ChunkDetailResponse(BaseModel):
+    """切片详情（完整文本）"""
+    id: str
+    doc_id: str
+    chunk_index: int
+    page_number: int
+    char_count: int
+    text_content: str
+    milvus_pk: int | None
+    created_at: str
+
+
+class ChunkListResponse(BaseModel):
+    """分页切片列表"""
+    items: list[ChunkResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class ChunkUpdateRequest(BaseModel):
+    """编辑切片文本"""
+    text: str = Field(..., min_length=1, description="新的切片文本内容")
+
+
+class RechunkRequest(BaseModel):
+    """重新切片参数"""
+    chunk_size: int = Field(512, ge=128, le=4096, description="切片大小（tokens）")
+    chunk_overlap: int = Field(64, ge=0, le=512, description="切片重叠（tokens）")
+
+
+# ============================================================
 # 通用
 # ============================================================
 class ErrorResponse(BaseModel):

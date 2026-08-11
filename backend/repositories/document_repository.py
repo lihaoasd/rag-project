@@ -162,3 +162,84 @@ class DocumentRepository:
         self.session.add_all(chunks)
         await self.session.commit()
         logger.info("切片记录写入 PG: doc_id=%s, count=%d", doc_id, len(chunks))
+
+    # ============================================================
+    # 单切片操作
+    # ============================================================
+
+    async def list_chunks_by_doc_id(
+        self, doc_id: str, offset: int = 0, limit: int = 20
+    ) -> tuple[list[DocumentChunk], int]:
+        """分页查询文档的切片列表（按 chunk_index 升序）。"""
+        try:
+            uid = uuid.UUID(doc_id)
+        except ValueError:
+            return [], 0
+
+        count_stmt = select(DocumentChunk).where(DocumentChunk.doc_id == uid)
+        count_result = await self.session.execute(count_stmt)
+        total = len(list(count_result.scalars().all()))
+
+        stmt = (
+            select(DocumentChunk)
+            .where(DocumentChunk.doc_id == uid)
+            .order_by(DocumentChunk.chunk_index.asc())
+            .offset(offset)
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        chunks = list(result.scalars().all())
+        logger.debug(
+            "切片列表查询: doc_id=%s, offset=%d, limit=%d, total=%d",
+            doc_id, offset, limit, total,
+        )
+        return chunks, total
+
+    async def get_chunk_by_id(self, chunk_id: str) -> DocumentChunk | None:
+        """按 ID 获取单个切片。"""
+        try:
+            uid = uuid.UUID(chunk_id)
+        except ValueError:
+            return None
+        stmt = select(DocumentChunk).where(DocumentChunk.id == uid)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def delete_chunk_by_id(self, chunk_id: str) -> DocumentChunk | None:
+        """删除单条切片，返回被删除对象（调用方需获取 milvus_pk 和 doc_id）。"""
+        chunk = await self.get_chunk_by_id(chunk_id)
+        if chunk is None:
+            return None
+        await self.session.delete(chunk)
+        await self.session.commit()
+        logger.debug("切片已从 PG 删除: chunk_id=%s", chunk_id)
+        return chunk
+
+    async def update_chunk_text(
+        self,
+        chunk_id: str,
+        new_text: str,
+        new_char_count: int,
+        new_milvus_pk: int | None = None,
+    ) -> None:
+        """更新切片文本、字符数，可选更新 Milvus PK。"""
+        uid = uuid.UUID(chunk_id)
+        values: dict = {"text_content": new_text, "char_count": new_char_count}
+        if new_milvus_pk is not None:
+            values["milvus_pk"] = new_milvus_pk
+        stmt = update(DocumentChunk).where(DocumentChunk.id == uid).values(**values)
+        await self.session.execute(stmt)
+        await self.session.commit()
+        logger.debug("切片文本已更新: chunk_id=%s, char_count=%d", chunk_id, new_char_count)
+
+    async def update_doc_chunk_count(self, doc_id: str, delta: int) -> None:
+        """原子更新文档的切片计数（+1 或 -1）。"""
+        uid = uuid.UUID(doc_id)
+        stmt = (
+            update(Document)
+            .where(Document.id == uid)
+            .values(chunk_count=Document.chunk_count + delta)
+        )
+        await self.session.execute(stmt)
+        await self.session.commit()
+        logger.debug("文档切片计数更新: doc_id=%s, delta=%+d", doc_id, delta)

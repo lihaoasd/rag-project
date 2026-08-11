@@ -16,6 +16,11 @@ const routes = [
     component: () => import('@/views/DocumentListView.vue'),
   },
   {
+    path: '/knowledge-bases/:kbId/documents/:docId/chunks',
+    name: 'Chunks',
+    component: () => import('@/views/ChunkListView.vue'),
+  },
+  {
     path: '/search',
     name: 'Search',
     component: () => import('@/views/SearchView.vue'),

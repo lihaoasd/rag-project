@@ -238,3 +238,71 @@ def chunk_documents(
         metadatas.append(meta)
 
     return chunks, metadatas
+
+
+# ============================================================
+# 单向量操作（切片管理用）
+# ============================================================
+
+async def delete_single_vector(kb_id: str, milvus_pk: int) -> None:
+    """从 Milvus Collection 中删除单个向量（按主键）。
+
+    Args:
+        kb_id: 知识库 ID
+        milvus_pk: Milvus 自动生成的 INT64 主键
+    """
+    _ensure_connection()
+    col_name = _collection_name(kb_id)
+
+    if not utility.has_collection(col_name):
+        logger.warning("delete_single_vector: Collection 不存在 %s", col_name)
+        return
+
+    coll = Collection(col_name)
+    coll.load()
+    expr = f"id in [{milvus_pk}]"
+    coll.delete(expr)
+    coll.flush()
+    logger.info("delete_single_vector 完成: kb_id=%s, pk=%d", kb_id, milvus_pk)
+
+
+async def insert_single_vector(kb_id: str, text: str, metadata: dict) -> int:
+    """对单段文本向量化并插入 Milvus Collection。
+
+    Args:
+        kb_id: 知识库 ID
+        text: 文本内容
+        metadata: 元数据字典（doc_id, file_name, page_number, chunk_index）
+
+    Returns:
+        新插入向量的 Milvus 自动生成主键
+    """
+    if len(text) > 65535:
+        raise ValueError(f"文本超过 Milvus VARCHAR 最大长度限制 (65535)，当前 {len(text)} 字符")
+
+    _ensure_connection()
+    dim = settings.embedding_dim
+    embed_model = create_embedding(settings)
+
+    # 单文本向量化
+    embedding = await embed_model.aget_text_embedding(text)
+
+    # 获取或创建 Collection
+    coll = _get_or_create_collection(kb_id, dim)
+
+    insert_data = {
+        "embedding": [embedding],
+        "doc_id": [metadata.get("doc_id", "")],
+        "file_name": [metadata.get("file_name", "")],
+        "page_number": [metadata.get("page_number", 1)],
+        "chunk_index": [metadata.get("chunk_index", 0)],
+        "text": [text],
+    }
+
+    mr = coll.insert(list(insert_data.values()))
+    coll.flush()
+    _ensure_index(coll)
+
+    new_pk = int(mr.primary_keys[0])
+    logger.info("insert_single_vector 完成: kb_id=%s, new_pk=%d", kb_id, new_pk)
+    return new_pk

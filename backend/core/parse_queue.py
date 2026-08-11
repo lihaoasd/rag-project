@@ -4,6 +4,7 @@
 特点：
 - 逐个解析，避免多文档同时解析抢占 CPU / Embedding API 资源
 - 服务重启时队列清空（内存队列），但 PG 中 queued 状态的文档可通过重新触发解析恢复
+- 支持两种任务类型：parse（解析文档）和 rechunk（重新切片）
 """
 import asyncio
 
@@ -14,8 +15,9 @@ logger = get_logger(__name__)
 # 最大队列容量
 MAX_QUEUE_SIZE = 100
 
-# 解析任务队列：(kb_id, doc_id)
-_parse_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+# 队列项格式: (task_type, kb_id, doc_id, chunk_size, chunk_overlap)
+# task_type: "parse" | "rechunk"
+_parse_queue: asyncio.Queue[tuple] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
 
 # worker 运行状态
 _worker_running = False
@@ -27,9 +29,23 @@ async def enqueue(kb_id: str, doc_id: str) -> int:
     Returns:
         当前队列位置（1-based，1 表示下一个执行）
     """
-    await _parse_queue.put((kb_id, doc_id))
+    await _parse_queue.put(("parse", kb_id, doc_id, None, None))
     position = _parse_queue.qsize()
     logger.info("解析任务入队: doc_id=%s, queue_position=%d", doc_id, position)
+    return position
+
+
+async def enqueue_rechunk(
+    kb_id: str, doc_id: str, chunk_size: int | None = None, chunk_overlap: int | None = None
+) -> int:
+    """将重新切片任务加入队列。
+
+    Returns:
+        当前队列位置（1-based，1 表示下一个执行）
+    """
+    await _parse_queue.put(("rechunk", kb_id, doc_id, chunk_size, chunk_overlap))
+    position = _parse_queue.qsize()
+    logger.info("重切片任务入队: doc_id=%s, queue_position=%d", doc_id, position)
     return position
 
 
@@ -44,7 +60,7 @@ def is_worker_running() -> bool:
 
 
 async def start_worker() -> None:
-    """启动队列 worker，从队列中逐一出队并执行解析。
+    """启动队列 worker，从队列中逐一出队并执行解析或重切片。
 
     需要在 FastAPI lifespan 启动阶段调用。
     """
@@ -52,24 +68,31 @@ async def start_worker() -> None:
     _worker_running = True
     logger.info("解析队列 worker 已启动")
 
-    from services.document_service import parse_document
+    from services.document_service import parse_document, rechunk_document
 
     while _worker_running:
         try:
-            kb_id, doc_id = await _parse_queue.get()
-            logger.info("解析任务出队: doc_id=%s, queue_remaining=%d", doc_id, _parse_queue.qsize())
-            await parse_document(kb_id, doc_id)
+            task_type, kb_id, doc_id, chunk_size, chunk_overlap = await _parse_queue.get()
+            logger.info(
+                "任务出队: type=%s, doc_id=%s, queue_remaining=%d",
+                task_type, doc_id, _parse_queue.qsize(),
+            )
+
+            if task_type == "rechunk":
+                await rechunk_document(kb_id, doc_id, chunk_size, chunk_overlap)
+            else:
+                await parse_document(kb_id, doc_id)
+
             _parse_queue.task_done()
         except asyncio.CancelledError:
             logger.info("解析队列 worker 已取消")
             break
         except Exception as e:
-            logger.error("解析队列 worker 异常: %s", e, exc_info=True)
-            # 单个任务失败不影响后续任务
+            logger.error("队列 worker 任务异常: %s", e, exc_info=True)
             try:
                 _parse_queue.task_done()
             except ValueError:
-                pass  # 如果 task_done 调用次数超过 put，忽略
+                pass
 
 
 async def stop_worker() -> None:
