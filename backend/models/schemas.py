@@ -125,7 +125,7 @@ class ChunkDetailResponse(BaseModel):
     page_number: int
     char_count: int
     text_content: str
-    milvus_pk: int | None
+    milvus_pk: str | None
     created_at: str
 
 

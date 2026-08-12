@@ -166,7 +166,7 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
             d.metadata["doc_id"] = doc_id
 
         # 4. 文本切片
-        chunks, metadatas = chunk_documents(llama_docs)
+        chunks, metadatas, _ = chunk_documents(llama_docs)
 
         # 5. Embedding + Milvus 索引
         milvus_pks = await build_index(chunks, metadatas, kb_id)
@@ -450,7 +450,7 @@ async def rechunk_document(
             d.metadata["doc_id"] = doc_id
 
         # 7. 重切片（用新参数）
-        chunks, metadatas = chunk_documents(llama_docs, chunk_size=cs, chunk_overlap=co)
+        chunks, metadatas, _ = chunk_documents(llama_docs, chunk_size=cs, chunk_overlap=co)
 
         # 8. 向量化 + 索引
         milvus_pks = await build_index(chunks, metadatas, kb_id)

@@ -30,4 +30,4 @@ class DocumentChunk(Base, UUIDMixin, CreatedAtMixin):
     page_number: Mapped[int] = mapped_column(Integer, nullable=False)
     char_count: Mapped[int] = mapped_column(Integer, nullable=False)
     text_content: Mapped[str] = mapped_column(Text, nullable=False)
-    milvus_pk: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    milvus_pk: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     milvus_host: str = "localhost"
     milvus_port: int = 19530
 
+    @property
+    def milvus_uri(self) -> str:
+        """构建 Milvus 连接 URI（MilvusClient 格式）。"""
+        return f"http://{self.milvus_host}:{self.milvus_port}"
+
     # === PostgreSQL 配置 ===
     pg_host: str = "localhost"
     pg_port: int = 5432

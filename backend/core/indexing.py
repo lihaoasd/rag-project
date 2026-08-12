@@ -1,19 +1,14 @@
 """
-索引引擎 — LlamaIndex 文本分割 + Embedding 向量化 + Milvus 写入。
+索引引擎 — LlamaIndex 文本分割 + MilvusVectorStore 向量写入。
 每个知识库一个 Collection（kb_{kb_id}），使用 IVF_FLAT 索引。
 """
 from typing import Any
 
 from llama_index.core import Document as LlamaDocument
 from llama_index.core.node_parser import SentenceSplitter
-from pymilvus import (
-    Collection,
-    CollectionSchema,
-    DataType,
-    FieldSchema,
-    connections,
-    utility,
-)
+from llama_index.core.schema import NodeRelationship, RelatedNodeInfo, TextNode
+from llama_index.vector_stores.milvus import MilvusVectorStore
+from pymilvus import DataType
 
 from config import settings
 from core.llm_factory import create_embedding
@@ -21,73 +16,29 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Milvus 连接状态
-_connected = False
-
 # 集合过期时间（秒），默认 7 天清理
 TTL_SECONDS = 7 * 24 * 3600
 
 
-def _ensure_connection() -> None:
-    """确保 Milvus 已连接（幂等）。"""
-    global _connected
-    if not _connected:
-        connections.connect(
-            alias="default",
-            host=settings.milvus_host,
-            port=settings.milvus_port,
-        )
-        _connected = True
-        logger.info("Milvus 连接成功: %s:%d", settings.milvus_host, settings.milvus_port)
+def _get_vector_store(kb_id: str) -> MilvusVectorStore:
+    """为指定知识库创建或获取 MilvusVectorStore 实例。
 
-
-def _collection_name(kb_id: str) -> str:
-    """生成 Collection 名称。Milvus 不支持连字符，替换为下划线。"""
+    Schema、Collection、Index 均由 MilvusVectorStore 自动管理。
+    """
     safe = kb_id.replace("-", "_")
-    return f"kb_{safe}"
-
-
-def _create_schema(embedding_dim: int) -> CollectionSchema:
-    """定义 Collection Schema：主键 + 向量 + 标量元数据。"""
-    fields = [
-        FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
-        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=embedding_dim),
-        FieldSchema(name="doc_id", dtype=DataType.VARCHAR, max_length=64),
-        FieldSchema(name="file_name", dtype=DataType.VARCHAR, max_length=512),
-        FieldSchema(name="page_number", dtype=DataType.INT64),
-        FieldSchema(name="chunk_index", dtype=DataType.INT64),
-        FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
-    ]
-    return CollectionSchema(fields, description="Bid Document RAG — Vector Index")
-
-
-def _get_or_create_collection(kb_id: str, embedding_dim: int) -> Collection:
-    """获取已有 Collection 或创建新 Collection。"""
-    _ensure_connection()
-    col_name = _collection_name(kb_id)
-
-    if utility.has_collection(col_name):
-        coll = Collection(col_name)
-        logger.debug("Milvus Collection 已存在: %s", col_name)
-        return coll
-
-    schema = _create_schema(embedding_dim)
-    coll = Collection(col_name, schema)
-    logger.info("Milvus Collection 已创建: %s (dim=%d)", col_name, embedding_dim)
-    return coll
-
-
-def _ensure_index(coll: Collection) -> None:
-    """确保 Collection 有索引。没索引就创建 IVF_FLAT。"""
-    if coll.has_index():
-        return
-    index_params = {
-        "index_type": "IVF_FLAT",
-        "metric_type": "IP",
-        "params": {"nlist": 128},
-    }
-    coll.create_index("embedding", index_params)
-    logger.info("Milvus 索引已创建: %s (IVF_FLAT)", coll.name)
+    return MilvusVectorStore(
+        uri=settings.milvus_uri,
+        collection_name=f"kb_{safe}",
+        dim=settings.embedding_dim,
+        similarity_metric="IP",
+        index_config={"index_type": "IVF_FLAT", "params": {"nlist": 128}},
+        search_config={"nprobe": 16},
+        scalar_field_names=["file_name", "page_number", "chunk_index"],
+        scalar_field_types=[DataType.VARCHAR, DataType.INT64, DataType.INT64],
+        text_key="text",
+        overwrite=False,
+        collection_properties={"collection.ttl.seconds": TTL_SECONDS},
+    )
 
 
 async def build_index(
@@ -95,7 +46,7 @@ async def build_index(
     metadata_list: list[dict[str, Any]],
     kb_id: str,
     embedding_dim: int | None = None,
-) -> list[int]:
+) -> list[str]:
     """为文档切片构建向量索引并写入 Milvus。
 
     Args:
@@ -105,24 +56,41 @@ async def build_index(
         embedding_dim: 向量维度，默认从 settings 读取
 
     Returns:
-        Milvus 自动生成的主键 ID 列表
+        llama_index TextNode ID 列表（VARCHAR 格式，用于 PG 存储）
     """
     if not chunks:
         logger.warning("build_index: 空切片列表，跳过")
         return []
 
-    dim = embedding_dim or settings.embedding_dim
     logger.info(
         "build_index 开始: kb_id=%s, chunks=%d, dim=%d",
         kb_id,
         len(chunks),
-        dim,
+        embedding_dim or settings.embedding_dim,
     )
 
     # 1. 获取 Embedding 模型
     embed_model = create_embedding(settings)
 
-    # 2. 批量向量化
+    # 2. 创建 TextNode 列表（含 SOURCE 关系，确保 ref_doc_id 正确映射到 doc_id 字段）
+    text_nodes: list[TextNode] = []
+    for i, (text, meta) in enumerate(zip(chunks, metadata_list)):
+        doc_id = meta.get("doc_id", "")
+        node = TextNode(
+            text=text,
+            metadata={
+                "doc_id": doc_id,
+                "file_name": meta.get("file_name", ""),
+                "page_number": meta.get("page_number", 1),
+                "chunk_index": meta.get("chunk_index", i),
+            },
+            relationships={
+                NodeRelationship.SOURCE: RelatedNodeInfo(node_id=doc_id),
+            },
+        )
+        text_nodes.append(node)
+
+    # 3. 批量向量化并设置到 node.embedding
     logger.debug("正在向量化 %d 个切片...", len(chunks))
     embeddings = []
     batch_size = 32
@@ -132,32 +100,19 @@ async def build_index(
         embeddings.extend(batch_embeddings)
     logger.debug("向量化完成: %d 个向量", len(embeddings))
 
-    # 3. 获取或创建 Collection
-    coll = _get_or_create_collection(kb_id, dim)
+    for node, emb in zip(text_nodes, embeddings):
+        node.embedding = emb
 
-    # 4. 准备插入数据
-    insert_data = {
-        "embedding": embeddings,
-        "doc_id": [m["doc_id"] for m in metadata_list],
-        "file_name": [m.get("file_name", "") for m in metadata_list],
-        "page_number": [m.get("page_number", 1) for m in metadata_list],
-        "chunk_index": [m.get("chunk_index", 0) for m in metadata_list],
-        "text": [chunks[i] if i < len(chunks) else "" for i in range(len(metadata_list))],
-    }
-
-    # 5. 插入
-    mr = coll.insert(list(insert_data.values()))
-    coll.flush()
-    _ensure_index(coll)
-
-    pk_list = list(mr.primary_keys)
+    # 4. 通过 MilvusVectorStore 写入
+    vector_store = _get_vector_store(kb_id)
+    node_ids = vector_store.add(text_nodes)
     logger.info(
         "build_index 完成: kb_id=%s, collection=%s, inserted=%d",
         kb_id,
-        coll.name,
-        len(pk_list),
+        vector_store.collection_name,
+        len(node_ids),
     )
-    return pk_list
+    return node_ids
 
 
 async def delete_index(kb_id: str, doc_id: str) -> None:
@@ -165,20 +120,10 @@ async def delete_index(kb_id: str, doc_id: str) -> None:
 
     Args:
         kb_id: 知识库 ID
-        doc_id: 文档 ID（UUID 字符串）
+        doc_id: 文档 ID（UUID 字符串）— 对应 TextNode 的 ref_doc_id
     """
-    _ensure_connection()
-    col_name = _collection_name(kb_id)
-
-    if not utility.has_collection(col_name):
-        logger.warning("delete_index: Collection 不存在 %s", col_name)
-        return
-
-    coll = Collection(col_name)
-    coll.load()
-    expr = f'doc_id == "{doc_id}"'
-    coll.delete(expr)
-    coll.flush()
+    vector_store = _get_vector_store(kb_id)
+    vector_store.delete(ref_doc_id=doc_id)
     logger.info("delete_index 完成: kb_id=%s, doc_id=%s", kb_id, doc_id)
 
 
@@ -188,11 +133,10 @@ def drop_kb_collection(kb_id: str) -> None:
     Args:
         kb_id: 知识库 ID
     """
-    _ensure_connection()
-    col_name = _collection_name(kb_id)
-
-    if utility.has_collection(col_name):
-        utility.drop_collection(col_name)
+    vector_store = _get_vector_store(kb_id)
+    col_name = vector_store.collection_name
+    if col_name in vector_store.client.list_collections():
+        vector_store.client.drop_collection(col_name)
         logger.info("Milvus Collection 已删除: %s", col_name)
     else:
         logger.debug("drop_kb_collection: Collection 不存在 %s", col_name)
@@ -202,8 +146,11 @@ def chunk_documents(
     documents: list[LlamaDocument],
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
-) -> tuple[list[str], list[dict[str, Any]]]:
-    """将 LlamaIndex Document 列表分割为文本切片。
+) -> tuple[list[str], list[dict[str, Any]], list[TextNode]]:
+    """将 LlamaIndex Document 列表分割为文本切片和 TextNode。
+
+    SentenceSplitter 生成的 raw_nodes 已携带 SOURCE 关系，
+    此处仅增补 metadata 默认值，不创建新节点以保持关系链完整。
 
     Args:
         documents: 解析好的 LlamaIndex Document 列表
@@ -211,7 +158,7 @@ def chunk_documents(
         chunk_overlap: 切片重叠（tokens），默认从 settings 读取
 
     Returns:
-        (chunks_text_list, metadata_dict_list)
+        (chunks_text_list, metadata_dict_list, text_node_list)
     """
     size = chunk_size or settings.chunk_size
     overlap = chunk_overlap or settings.chunk_overlap
@@ -221,52 +168,51 @@ def chunk_documents(
         chunk_overlap=overlap,
     )
 
-    nodes = splitter.get_nodes_from_documents(documents)
-    logger.info("文档切片完成: documents=%d → chunks=%d", len(documents), len(nodes))
+    raw_nodes = splitter.get_nodes_from_documents(documents)
+    logger.info("文档切片完成: documents=%d → chunks=%d", len(documents), len(raw_nodes))
 
     chunks: list[str] = []
     metadatas: list[dict[str, Any]] = []
+    text_nodes: list[TextNode] = []
 
-    for node in nodes:
+    for i, node in enumerate(raw_nodes):
         chunks.append(node.text)
-        meta = dict(node.metadata)
-        # 确保必要字段存在
-        meta.setdefault("doc_id", "unknown")
-        meta.setdefault("file_name", "unknown")
-        meta.setdefault("page_number", 1)
-        meta.setdefault("chunk_index", 0)
-        metadatas.append(meta)
 
-    return chunks, metadatas
+        # 在 raw node 的 metadata 上增补必要字段
+        node.metadata.setdefault("doc_id", "unknown")
+        node.metadata.setdefault("file_name", "unknown")
+        node.metadata.setdefault("page_number", 1)
+        node.metadata.setdefault("chunk_index", i)
+        # 将 text 加入 metadata，供 batch_create_chunks 使用
+        node.metadata["text"] = node.text
+
+        meta = dict(node.metadata)
+        metadatas.append(meta)
+        text_nodes.append(node)
+
+    return chunks, metadatas, text_nodes
 
 
 # ============================================================
 # 单向量操作（切片管理用）
 # ============================================================
 
-async def delete_single_vector(kb_id: str, milvus_pk: int) -> None:
-    """从 Milvus Collection 中删除单个向量（按主键）。
+async def delete_single_vector(kb_id: str, node_id: str) -> None:
+    """从 Milvus Collection 中删除单个向量（按 llama_index node_id）。
 
     Args:
         kb_id: 知识库 ID
-        milvus_pk: Milvus 自动生成的 INT64 主键
+        node_id: llama_index TextNode ID（VARCHAR）
     """
-    _ensure_connection()
-    col_name = _collection_name(kb_id)
-
-    if not utility.has_collection(col_name):
-        logger.warning("delete_single_vector: Collection 不存在 %s", col_name)
-        return
-
-    coll = Collection(col_name)
-    coll.load()
-    expr = f"id in [{milvus_pk}]"
-    coll.delete(expr)
-    coll.flush()
-    logger.info("delete_single_vector 完成: kb_id=%s, pk=%d", kb_id, milvus_pk)
+    vector_store = _get_vector_store(kb_id)
+    vector_store.client.delete(
+        collection_name=vector_store.collection_name,
+        pks=[node_id],
+    )
+    logger.info("delete_single_vector 完成: kb_id=%s, node_id=%s", kb_id, node_id)
 
 
-async def insert_single_vector(kb_id: str, text: str, metadata: dict) -> int:
+async def insert_single_vector(kb_id: str, text: str, metadata: dict) -> str:
     """对单段文本向量化并插入 Milvus Collection。
 
     Args:
@@ -275,34 +221,37 @@ async def insert_single_vector(kb_id: str, text: str, metadata: dict) -> int:
         metadata: 元数据字典（doc_id, file_name, page_number, chunk_index）
 
     Returns:
-        新插入向量的 Milvus 自动生成主键
+        新插入向量的 llama_index node_id
     """
     if len(text) > 65535:
         raise ValueError(f"文本超过 Milvus VARCHAR 最大长度限制 (65535)，当前 {len(text)} 字符")
 
-    _ensure_connection()
-    dim = settings.embedding_dim
     embed_model = create_embedding(settings)
 
-    # 单文本向量化
+    doc_id = metadata.get("doc_id", "")
+
+    # 创建 TextNode，设置 SOURCE 关系使 ref_doc_id 正确映射到 Milvus doc_id 字段
+    node = TextNode(
+        text=text,
+        metadata={
+            "doc_id": doc_id,
+            "file_name": metadata.get("file_name", ""),
+            "page_number": metadata.get("page_number", 1),
+            "chunk_index": metadata.get("chunk_index", 0),
+        },
+        relationships={
+            NodeRelationship.SOURCE: RelatedNodeInfo(node_id=doc_id),
+        },
+    )
+
+    # 向量化
     embedding = await embed_model.aget_text_embedding(text)
+    node.embedding = embedding
 
-    # 获取或创建 Collection
-    coll = _get_or_create_collection(kb_id, dim)
+    # 写入 Milvus
+    vector_store = _get_vector_store(kb_id)
+    node_ids = vector_store.add([node])
+    new_node_id = node_ids[0]
 
-    insert_data = {
-        "embedding": [embedding],
-        "doc_id": [metadata.get("doc_id", "")],
-        "file_name": [metadata.get("file_name", "")],
-        "page_number": [metadata.get("page_number", 1)],
-        "chunk_index": [metadata.get("chunk_index", 0)],
-        "text": [text],
-    }
-
-    mr = coll.insert(list(insert_data.values()))
-    coll.flush()
-    _ensure_index(coll)
-
-    new_pk = int(mr.primary_keys[0])
-    logger.info("insert_single_vector 完成: kb_id=%s, new_pk=%d", kb_id, new_pk)
-    return new_pk
+    logger.info("insert_single_vector 完成: kb_id=%s, new_node_id=%s", kb_id, new_node_id)
+    return new_node_id

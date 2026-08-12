@@ -141,7 +141,7 @@ class DocumentRepository:
         doc_id: str,
         kb_id: str,
         metadatas: list[dict],
-        milvus_pks: list[int],
+        milvus_pks: list[str],
     ) -> None:
         """批量写入切片记录。"""
         uid = uuid.UUID(doc_id)
@@ -220,7 +220,7 @@ class DocumentRepository:
         chunk_id: str,
         new_text: str,
         new_char_count: int,
-        new_milvus_pk: int | None = None,
+        new_milvus_pk: str | None = None,
     ) -> None:
         """更新切片文本、字符数，可选更新 Milvus PK。"""
         uid = uuid.UUID(chunk_id)
