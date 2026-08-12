@@ -3,7 +3,11 @@
 
 上传：暂存 → MinIO → PG 记录（status=uploaded）→ 清理临时文件
 解析：MinIO 下载 → 解析 → 切片 → 索引 → 状态更新（异步触发）
+
+重要：所有同步 I/O（MinIO 上传/下载、文件读写）均通过
+asyncio.to_thread() 放到线程池执行，避免阻塞 asyncio 事件循环。
 """
+import asyncio
 import os
 import uuid
 from pathlib import Path
@@ -60,13 +64,14 @@ async def upload_document(kb_id: str, file: UploadFile) -> dict:
     try:
         # 1. 暂存到临时目录
         content = await file.read()
-        temp_path.write_bytes(content)
         file_size = len(content)
+        # 大文件写入放到线程池，避免阻塞事件循环
+        await asyncio.to_thread(temp_path.write_bytes, content)
         logger.info("文档暂存: %s (%d bytes)", temp_path.name, file_size)
 
-        # 2. 上传到 MinIO
+        # 2. 上传到 MinIO（同步 I/O，放到线程池）
         object_key = f"{kb_id}/{doc_id}.{file_type}"
-        minio_client.upload(object_key, temp_path)
+        await asyncio.to_thread(minio_client.upload, object_key, temp_path)
 
         # 3. PG 写入文档记录（status=uploaded）
         async with async_session() as session:
@@ -150,10 +155,10 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
             # 更新状态 → processing，清除旧错误信息
             await doc_repo.update_status(doc_id, "processing", error_message="")
 
-        # 2. 从 MinIO 下载文件到临时目录
+        # 2. 从 MinIO 下载文件到临时目录（同步 I/O，放到线程池）
         temp_dir = ensure_temp_dir(settings.temp_dir)
         temp_path = Path(temp_dir) / f"{doc_id}.{file_type}"
-        minio_client.download(object_key, temp_path)
+        await asyncio.to_thread(minio_client.download, object_key, temp_path)
         logger.info("文档下载完成: %s → %s", object_key, temp_path.name)
 
         # 3. 解析文档
@@ -246,9 +251,9 @@ async def delete_document(kb_id: str, doc_id: str) -> bool:
     except Exception as e:
         logger.error("删除 Milvus 向量失败: %s", e, exc_info=True)
 
-    # 3. MinIO 删除
+    # 3. MinIO 删除（同步 I/O，放到线程池）
     try:
-        minio_client.delete(doc.object_key)
+        await asyncio.to_thread(minio_client.delete, doc.object_key)
     except Exception as e:
         logger.error("删除 MinIO 文件失败: %s", e, exc_info=True)
 
@@ -436,10 +441,10 @@ async def rechunk_document(
         # 4. 删除旧向量（Milvus）
         await delete_index(kb_id, doc_id)
 
-        # 5. 从 MinIO 下载文件
+        # 5. 从 MinIO 下载文件（同步 I/O，放到线程池）
         temp_dir = ensure_temp_dir(settings.temp_dir)
         temp_path = Path(temp_dir) / f"{doc_id}_rechunk.{file_type}"
-        minio_client.download(object_key, temp_path)
+        await asyncio.to_thread(minio_client.download, object_key, temp_path)
         logger.info("重切片下载完成: %s → %s", object_key, temp_path.name)
 
         # 6. 解析文档

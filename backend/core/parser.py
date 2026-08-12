@@ -1,7 +1,12 @@
 """
 文档解析引擎 — Strategy 模式：PDF / DOCX / DOC 各自实现。
 输出 LlamaIndex Document 列表，供索引引擎消费。
+
+重要：所有 CPU 密集型同步操作（PyMuPDF, pdfplumber, PaddleOCR）
+必须通过 asyncio.to_thread() 放到线程池执行，避免阻塞 asyncio 事件循环
+导致前端请求无响应（"页面阻塞"）。
 """
+import asyncio
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -35,13 +40,30 @@ class BaseParser(ABC):
 # PDF 解析器
 # ============================================================
 class PDFParser(BaseParser):
-    """PDF 解析：PyMuPDF 提取文本 + pdfplumber 提取表格 + PaddleOCR 识别图片文字。"""
+    """PDF 解析：PyMuPDF 提取文本 + pdfplumber 提取表格 + PaddleOCR 识别图片文字。
+
+    所有 CPU 密集型操作均通过 asyncio.to_thread() 放到线程池执行，
+    避免阻塞 asyncio 事件循环导致前端页面无响应。
+    """
+
+    def __init__(self):
+        self._ocr = None  # PaddleOCR 懒加载，全局只初始化一次
 
     async def parse(self, file_path: Path) -> list[LlamaDocument]:
+        """异步解析入口：将整个同步解析逻辑交给线程池执行。"""
+        logger.info("PDF 解析开始: %s", file_path.name)
+        documents = await asyncio.to_thread(self._parse_sync, file_path)
+        logger.info("PDF 解析完成: %s, pages=%d", file_path.name, len(documents))
+        return documents
+
+    def _parse_sync(self, file_path: Path) -> list[LlamaDocument]:
+        """同步解析核心逻辑（在线程池中执行，不阻塞事件循环）。"""
         import fitz  # PyMuPDF
 
-        logger.info("PDF 解析开始: %s", file_path.name)
         documents: list[LlamaDocument] = []
+
+        # 一次性打开 pdfplumber（而非每页重复打开）
+        tables_by_page = self._extract_all_tables(file_path)
 
         with fitz.open(file_path) as doc:
             for page_num, page in enumerate(doc, start=1):
@@ -52,13 +74,13 @@ class PDFParser(BaseParser):
                 if page_text:
                     text_parts.append(page_text.strip())
 
-                # 2. 提取表格（通过 pdfplumber）
-                table_text = await self._extract_tables(file_path, page_num)
+                # 2. 获取预提取的表格
+                table_text = tables_by_page.get(page_num, "")
                 if table_text:
                     text_parts.append(table_text)
 
                 # 3. OCR 识别嵌入图片中的文字
-                ocr_text = await self._ocr_images(page, page_num)
+                ocr_text = self._ocr_images_sync(page, page_num)
                 if ocr_text:
                     text_parts.append(ocr_text)
 
@@ -77,24 +99,20 @@ class PDFParser(BaseParser):
                     )
                 )
 
-        logger.info(
-            "PDF 解析完成: %s, pages=%d",
-            file_path.name,
-            len(documents),
-        )
         return documents
 
-    async def _extract_tables(self, file_path: Path, page_num: int) -> str:
-        """使用 pdfplumber 提取表格数据并转为结构化文本。"""
+    def _extract_all_tables(self, file_path: Path) -> dict[int, str]:
+        """一次性提取整个 PDF 的所有表格（只打开一次 pdfplumber）。"""
         try:
             import pdfplumber
 
             with pdfplumber.open(file_path) as pdf:
-                if page_num - 1 < len(pdf.pages):
-                    page = pdf.pages[page_num - 1]
-                    tables = page.extract_tables()
+                result: dict[int, str] = {}
+                for page_idx, pdf_page in enumerate(pdf.pages):
+                    page_num = page_idx + 1
+                    tables = pdf_page.extract_tables()
                     if not tables:
-                        return ""
+                        continue
                     lines: list[str] = []
                     for table_idx, table in enumerate(tables):
                         lines.append(f"[表格 {table_idx + 1}]")
@@ -102,18 +120,34 @@ class PDFParser(BaseParser):
                             if row:
                                 cells = [str(c) if c else "" for c in row]
                                 lines.append(" | ".join(cells))
-                    return "\n".join(lines)
+                    result[page_num] = "\n".join(lines)
+                return result
         except Exception as e:
-            logger.debug("pdfplumber 表格提取异常: %s (page %d)", e, page_num)
-        return ""
+            logger.debug("pdfplumber 表格提取异常: %s", e)
+            return {}
 
-    async def _ocr_images(self, page: Any, page_num: int) -> str:
-        """OCR 识别页面中的嵌入图片。PaddleOCR 为可选依赖。"""
+    def _get_ocr(self):
+        """懒加载 PaddleOCR 实例（全局只初始化一次，避免每页重复加载模型）。"""
+        if self._ocr is None:
+            try:
+                from paddleocr import PaddleOCR
+                self._ocr = PaddleOCR(lang="ch", show_log=False)
+                logger.info("PaddleOCR 初始化完成")
+            except ImportError:
+                logger.debug("PaddleOCR 未安装，跳过图片 OCR")
+                self._ocr = False  # 标记为不可用
+            except Exception as e:
+                logger.warning("PaddleOCR 初始化失败: %s", e)
+                self._ocr = False
+        return self._ocr if self._ocr is not False else None
+
+    def _ocr_images_sync(self, page: Any, page_num: int) -> str:
+        """OCR 识别页面中的嵌入图片（同步方法，在线程池中执行）。"""
         try:
-            import fitz
-            from paddleocr import PaddleOCR
+            ocr = self._get_ocr()
+            if ocr is None:
+                return ""
 
-            ocr = PaddleOCR(lang="ch", show_log=False)
             images = page.get_images(full=True)
             if not images:
                 return ""
@@ -132,23 +166,33 @@ class PDFParser(BaseParser):
                     )
                     texts.append(f"[图片 {img_idx + 1}] {img_text}")
             return "\n".join(texts)
-        except ImportError:
-            logger.debug("PaddleOCR 未安装，跳过图片 OCR")
         except Exception as e:
             logger.warning("OCR 异常 (page %d): %s", page_num, e)
-        return ""
+            return ""
 
 
 # ============================================================
 # DOCX 解析器
 # ============================================================
 class DocxParser(BaseParser):
-    """Word (.docx) 解析：python-docx 提取段落和表格。"""
+    """Word (.docx) 解析：python-docx 提取段落和表格。
+
+    CPU 密集型操作通过 asyncio.to_thread() 放到线程池执行。
+    """
 
     async def parse(self, file_path: Path) -> list[LlamaDocument]:
-        from docx import Document as DocxDocument
-
+        """异步解析入口：将同步解析逻辑交给线程池执行。"""
         logger.info("DOCX 解析开始: %s", file_path.name)
+        result = await asyncio.to_thread(self._parse_sync, file_path)
+        if result:
+            logger.info("DOCX 解析完成: %s", file_path.name)
+        else:
+            logger.warning("DOCX 解析结果为空: %s", file_path.name)
+        return result
+
+    def _parse_sync(self, file_path: Path) -> list[LlamaDocument]:
+        """同步解析核心逻辑（在线程池中执行，不阻塞事件循环）。"""
+        from docx import Document as DocxDocument
 
         doc = DocxDocument(file_path)
         text_parts: list[str] = []
@@ -168,11 +212,10 @@ class DocxParser(BaseParser):
 
         full_text = "\n\n".join(text_parts)
         if not full_text.strip():
-            logger.warning("DOCX 解析结果为空: %s", file_path.name)
             return []
 
         # DOCX 无天然页码概念，整篇作为一个 Document
-        result = [
+        return [
             LlamaDocument(
                 text=full_text,
                 metadata={
@@ -182,8 +225,6 @@ class DocxParser(BaseParser):
                 },
             )
         ]
-        logger.info("DOCX 解析完成: %s", file_path.name)
-        return result
 
 
 # ============================================================

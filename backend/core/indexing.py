@@ -1,7 +1,11 @@
 """
 索引引擎 — LlamaIndex 文本分割 + MilvusVectorStore 向量写入。
 每个知识库一个 Collection（kb_{kb_id}），使用 IVF_FLAT 索引。
+
+重要：所有同步 Milvus 操作（add/delete）均通过 asyncio.to_thread()
+放到线程池执行，embedding 批次间添加 yield 点，避免阻塞事件循环。
 """
+import asyncio
 from typing import Any
 
 from llama_index.core import Document as LlamaDocument
@@ -98,14 +102,16 @@ async def build_index(
         batch = chunks[i : i + batch_size]
         batch_embeddings = await embed_model.aget_text_embedding_batch(batch)
         embeddings.extend(batch_embeddings)
+        # 每批次之间让出事件循环，避免长时间占据
+        await asyncio.sleep(0)
     logger.debug("向量化完成: %d 个向量", len(embeddings))
 
     for node, emb in zip(text_nodes, embeddings):
         node.embedding = emb
 
-    # 4. 通过 MilvusVectorStore 写入
+    # 4. 通过 MilvusVectorStore 写入（同步 I/O，放到线程池）
     vector_store = _get_vector_store(kb_id)
-    node_ids = vector_store.add(text_nodes)
+    node_ids = await asyncio.to_thread(vector_store.add, text_nodes)
     logger.info(
         "build_index 完成: kb_id=%s, collection=%s, inserted=%d",
         kb_id,
@@ -123,7 +129,7 @@ async def delete_index(kb_id: str, doc_id: str) -> None:
         doc_id: 文档 ID（UUID 字符串）— 对应 TextNode 的 ref_doc_id
     """
     vector_store = _get_vector_store(kb_id)
-    vector_store.delete(ref_doc_id=doc_id)
+    await asyncio.to_thread(vector_store.delete, ref_doc_id=doc_id)
     logger.info("delete_index 完成: kb_id=%s, doc_id=%s", kb_id, doc_id)
 
 
@@ -205,7 +211,8 @@ async def delete_single_vector(kb_id: str, node_id: str) -> None:
         node_id: llama_index TextNode ID（VARCHAR）
     """
     vector_store = _get_vector_store(kb_id)
-    vector_store.client.delete(
+    await asyncio.to_thread(
+        vector_store.client.delete,
         collection_name=vector_store.collection_name,
         pks=[node_id],
     )
@@ -248,9 +255,9 @@ async def insert_single_vector(kb_id: str, text: str, metadata: dict) -> str:
     embedding = await embed_model.aget_text_embedding(text)
     node.embedding = embedding
 
-    # 写入 Milvus
+    # 写入 Milvus（同步 I/O，放到线程池）
     vector_store = _get_vector_store(kb_id)
-    node_ids = vector_store.add([node])
+    node_ids = await asyncio.to_thread(vector_store.add, [node])
     new_node_id = node_ids[0]
 
     logger.info("insert_single_vector 完成: kb_id=%s, new_node_id=%s", kb_id, new_node_id)

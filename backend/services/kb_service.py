@@ -1,6 +1,10 @@
 """
 知识库业务逻辑 — PostgreSQL CRUD + Milvus 清理。
+
+重要：同步 MinIO/Milvus 操作通过 asyncio.to_thread() 放到线程池。
 """
+import asyncio
+
 from core.database import async_session
 from core.indexing import drop_kb_collection
 from utils import minio_client
@@ -73,15 +77,15 @@ async def delete_knowledge_base(kb_id: str) -> bool:
         # 1e. 删除知识库
         await kb_repo.delete(kb_id)
 
-    # 2. 删除 Milvus Collection
+    # 2. 删除 Milvus Collection（同步操作，放到线程池）
     try:
-        drop_kb_collection(kb_id)
+        await asyncio.to_thread(drop_kb_collection, kb_id)
     except Exception as e:
         logger.error("删除 Milvus Collection 失败: %s", e, exc_info=True)
 
-    # 3. 删除 MinIO 中该知识库的所有文档文件
+    # 3. 删除 MinIO 中该知识库的所有文档文件（同步 I/O，放到线程池）
     try:
-        minio_client.delete_prefix(f"{kb_id}/")
+        await asyncio.to_thread(minio_client.delete_prefix, f"{kb_id}/")
     except Exception as e:
         logger.error("删除 MinIO 文件失败: %s", e, exc_info=True)
 
