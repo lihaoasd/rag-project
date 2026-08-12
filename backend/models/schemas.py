@@ -62,6 +62,7 @@ class SearchRequest(BaseModel):
     similarity_threshold: float = Field(0.6, ge=0, le=1, description="相似度阈值")
     offset: int = Field(0, ge=0, description="分页偏移")
     limit: int = Field(20, ge=1, le=100, description="每页条数")
+    kb_ids: list[str] | None = Field(None, description="知识库 ID 列表，支持多知识库检索")
 
 
 class SearchResultItem(BaseModel):
@@ -72,6 +73,8 @@ class SearchResultItem(BaseModel):
     file_name: str
     page_number: int
     chunk_index: int
+    kb_id: str = ""
+    kb_name: str = ""
 
 
 class SearchResponse(BaseModel):

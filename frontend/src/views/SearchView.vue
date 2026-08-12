@@ -1,89 +1,132 @@
 <template>
   <div class="search-view">
-    <div class="page-header">
-      <h1>文档检索</h1>
-      <p class="desc">基于语义搜索知识库中的文档片段，无需精确匹配关键词</p>
-    </div>
-
-    <!-- 搜索栏 -->
-    <div class="search-bar">
-      <div class="search-row">
-        <el-select
-          v-model="kbId"
-          placeholder="选择知识库"
-          style="width: 220px"
-          @change="handleKbChange"
-        >
-          <el-option
-            v-for="kb in kbList"
-            :key="kb.id"
-            :label="kb.name"
-            :value="kb.id"
-          />
-        </el-select>
-        <el-input
-          v-model="query"
-          placeholder="输入检索关键词或自然语言描述..."
-          size="large"
-          clearable
-          @keyup.enter="handleSearch"
-        >
-          <template #append>
-            <el-button
-              type="primary"
-              :loading="searching"
-              :icon="Search"
-              @click="handleSearch"
-            >
-              检索
-            </el-button>
-          </template>
-        </el-input>
-      </div>
-    </div>
-
-    <!-- 结果区域 -->
-    <div v-if="searched" class="results-area">
-      <div class="results-header">
-        检索结果<span class="count">（共 {{ total }} 条，耗时 {{ elapsed }}ms）</span>
+    <!-- 左侧参数面板 -->
+    <div class="search-left">
+      <div class="panel-header">
+        <h1>文档检索</h1>
+        <p class="desc">基于语义搜索知识库中的文档片段，无需精确匹配关键词</p>
       </div>
 
-      <div v-if="results.length > 0" class="results-list">
-        <div v-for="item in results" :key="item.rank" class="result-card">
-          <div class="result-header">
-            <div class="result-score">
-              <span class="score-label">相关性</span>
-              <div class="score-bar">
-                <div class="score-fill" :style="{ width: (item.score * 100).toFixed(0) + '%' }" />
-              </div>
-              <span class="score-num">{{ (item.score * 100).toFixed(0) }}%</span>
-            </div>
-            <span class="result-rank">#{{ item.rank }}</span>
-          </div>
-          <div class="result-text" v-html="highlightText(item.text, query)" />
-          <div class="result-meta">
-            <span><el-icon><Document /></el-icon> {{ item.file_name }}</span>
-            <span><el-icon><Location /></el-icon> 第 {{ item.page_number }} 页</span>
-          </div>
+      <div class="param-card">
+        <div class="param-group">
+          <label class="param-label">知识库</label>
+          <el-select
+            v-model="kbIds"
+            placeholder="选择知识库（支持多选）"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            @change="handleKbChange"
+          >
+            <el-option
+              v-for="kb in kbList"
+              :key="kb.id"
+              :label="kb.name"
+              :value="kb.id"
+            />
+          </el-select>
         </div>
 
-        <el-pagination
-          v-if="total > pageSize"
-          :current-page="currentPage"
-          :page-size="pageSize"
-          :total="total"
-          layout="total, prev, pager, next"
-          @current-change="onPageChange"
-        />
-      </div>
+        <div class="param-group">
+          <label class="param-label">检索内容</label>
+          <el-input
+            v-model="query"
+            type="textarea"
+            :rows="4"
+            placeholder="输入检索关键词或自然语言描述..."
+            @keyup.enter="handleSearch"
+          />
+        </div>
 
-      <el-empty v-else description="未找到相关内容，请尝试其他检索词" :image-size="80" />
+        <div class="param-group">
+          <label class="param-label">
+            Top K
+            <span class="param-hint">{{ topK }}</span>
+          </label>
+          <el-slider
+            v-model="topK"
+            :min="1"
+            :max="50"
+            :step="1"
+            show-stops
+          />
+        </div>
+
+        <div class="param-group">
+          <label class="param-label">
+            相似度阈值
+            <span class="param-hint">{{ (similarityThreshold * 100).toFixed(0) }}%</span>
+          </label>
+          <el-slider
+            v-model="similarityThreshold"
+            :min="0"
+            :max="1"
+            :step="0.05"
+            :format-tooltip="(v) => (v * 100).toFixed(0) + '%'"
+            show-stops
+          />
+        </div>
+
+        <el-button
+          type="primary"
+          :loading="searching"
+          :icon="Search"
+          size="large"
+          style="width: 100%"
+          @click="handleSearch"
+        >
+          开始检索
+        </el-button>
+      </div>
     </div>
 
-    <!-- 未搜索时的引导 -->
-    <el-card v-if="!searched">
-      <el-empty description="选择知识库并输入检索词，开始语义搜索" :image-size="100" />
-    </el-card>
+    <!-- 右侧结果面板 -->
+    <div class="search-right">
+      <!-- 未搜索时的引导 -->
+      <div v-if="!searched" class="empty-guide">
+        <el-empty description="选择知识库并输入检索词，开始语义搜索" :image-size="120" />
+      </div>
+
+      <!-- 搜索结果 -->
+      <template v-else>
+        <div class="results-header">
+          <span>检索结果<span class="count">（共 {{ total }} 条，耗时 {{ elapsed }}ms）</span></span>
+        </div>
+
+        <div v-if="results.length > 0" class="results-list">
+          <div v-for="item in results" :key="item.rank" class="result-card">
+            <div class="result-header">
+              <div class="result-score">
+                <span class="score-label">相关性</span>
+                <div class="score-bar">
+                  <div class="score-fill" :style="{ width: (item.score * 100).toFixed(0) + '%' }" />
+                </div>
+                <span class="score-num">{{ (item.score * 100).toFixed(0) }}%</span>
+              </div>
+              <span class="result-rank">#{{ item.rank }}</span>
+            </div>
+            <div class="result-text" v-html="highlightText(item.text, query)" />
+            <div class="result-meta">
+              <span><el-icon><Folder /></el-icon> {{ item.kb_name || '未知知识库' }}</span>
+              <span><el-icon><Document /></el-icon> {{ item.file_name }}</span>
+              <span><el-icon><Location /></el-icon> 第 {{ item.page_number }} 页</span>
+            </div>
+          </div>
+
+          <el-pagination
+            v-if="total > pageSize"
+            :current-page="currentPage"
+            :page-size="pageSize"
+            :total="total"
+            layout="total, prev, pager, next"
+            small
+            @current-change="onPageChange"
+          />
+        </div>
+
+        <el-empty v-else description="未找到相关内容，请尝试其他检索词" :image-size="80" />
+      </template>
+    </div>
   </div>
 </template>
 
@@ -96,7 +139,7 @@ import { search as searchDocuments } from '@/api/search'
 
 // --- State ---
 const kbList = ref([])
-const kbId = ref(null)
+const kbIds = ref([])
 const query = ref('')
 const results = ref([])
 const total = ref(0)
@@ -105,6 +148,8 @@ const searching = ref(false)
 const elapsed = ref(0)
 const currentPage = ref(1)
 const pageSize = 20
+const topK = ref(10)
+const similarityThreshold = ref(0.6)
 
 // --- Methods ---
 function handleKbChange() {
@@ -113,7 +158,7 @@ function handleKbChange() {
 }
 
 async function handleSearch() {
-  if (!kbId.value) {
+  if (kbIds.value.length === 0) {
     ElMessage.warning('请先选择知识库')
     return
   }
@@ -127,9 +172,11 @@ async function handleSearch() {
   const t0 = performance.now()
 
   try {
-    const data = await searchDocuments(kbId.value, {
+    const data = await searchDocuments({
+      kb_ids: kbIds.value,
       query: query.value.trim(),
-      top_k: 10,
+      top_k: topK.value,
+      similarity_threshold: similarityThreshold.value,
       offset: (currentPage.value - 1) * pageSize,
       limit: pageSize,
     })
@@ -170,29 +217,92 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.search-view { max-width: var(--page-max-width, 1400px); }
+.search-view {
+  display: flex;
+  gap: 24px;
+  height: calc(100vh - 80px);
+  max-width: var(--page-max-width, 1400px);
+}
 
-.search-bar {
+/* ===== 左侧面板 ===== */
+.search-left {
+  width: 320px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+.panel-header h1 {
+  font-size: 20px;
+  margin: 0 0 4px;
+  color: var(--color-text-primary);
+}
+
+.panel-header .desc {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.param-card {
   background: #fff;
-  padding: 24px;
   border-radius: var(--radius-md);
+  padding: 20px;
   box-shadow: var(--shadow-card);
   border: 1px solid var(--color-border);
-  margin-bottom: 24px;
-}
-
-.search-row {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 18px;
 }
 
-.search-row .el-input { flex: 1; }
+.param-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.param-group .param-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.param-group .param-hint {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-primary);
+}
+
+/* ===== 右侧结果面板 ===== */
+.search-right {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.empty-guide {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
 
 .results-header {
   font-size: 15px;
   font-weight: 600;
   color: var(--color-text-primary);
   margin-bottom: 16px;
+  position: sticky;
+  top: 0;
+  background: var(--color-bg);
+  padding: 8px 0;
+  z-index: 1;
 }
 
 .results-header .count {
@@ -205,6 +315,7 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  padding-bottom: 24px;
 }
 
 .result-card {
@@ -292,6 +403,7 @@ onMounted(async () => {
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--color-border);
+  flex-wrap: wrap;
 }
 
 .result-meta span {

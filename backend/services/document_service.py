@@ -161,9 +161,10 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
         if not llama_docs:
             raise ValueError("文档解析结果为空，可能是不支持的格式或文件损坏")
 
-        # 将 doc_id 写入 metadata
+        # 将 doc_id 和原始文件名写入 metadata（覆盖解析器使用的临时文件名）
         for d in llama_docs:
             d.metadata["doc_id"] = doc_id
+            d.metadata["file_name"] = doc.file_name
 
         # 4. 文本切片
         chunks, metadatas, _ = chunk_documents(llama_docs)
@@ -448,6 +449,7 @@ async def rechunk_document(
 
         for d in llama_docs:
             d.metadata["doc_id"] = doc_id
+            d.metadata["file_name"] = doc.file_name
 
         # 7. 重切片（用新参数）
         chunks, metadatas, _ = chunk_documents(llama_docs, chunk_size=cs, chunk_overlap=co)
