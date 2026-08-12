@@ -33,8 +33,8 @@ class ConversationRepository:
         """
         if session_id:
             try:
-                uid = uuid.UUID(session_id)
-                stmt = select(Conversation).where(Conversation.id == uid)
+                uuid.UUID(session_id)  # 验证格式
+                stmt = select(Conversation).where(Conversation.id == session_id)
                 result = await self.session.execute(stmt)
                 conv = result.scalar_one_or_none()
                 if conv:
@@ -44,8 +44,8 @@ class ConversationRepository:
 
         # 创建新会话
         conv = Conversation(
-            id=uuid.uuid4(),
-            kb_id=uuid.UUID(kb_id),
+            id=str(uuid.uuid4()),
+            kb_id=kb_id,
             title=title,
             message_count=0,
         )
@@ -64,10 +64,10 @@ class ConversationRepository:
         token_count: int | None = None,
     ) -> Message:
         """创建消息并更新会话消息计数。"""
-        uid = uuid.UUID(conv_id)
+        uuid.UUID(conv_id)  # 验证格式
         msg = Message(
-            id=uuid.uuid4(),
-            conversation_id=uid,
+            id=str(uuid.uuid4()),
+            conversation_id=conv_id,
             role=role,
             content=content,
             sources=sources,
@@ -78,7 +78,7 @@ class ConversationRepository:
         # 原子更新消息计数
         stmt = (
             update(Conversation)
-            .where(Conversation.id == uid)
+            .where(Conversation.id == conv_id)
             .values(message_count=Conversation.message_count + 1)
         )
         await self.session.execute(stmt)
@@ -92,7 +92,7 @@ class ConversationRepository:
             uid = uuid.UUID(conv_id)
         except ValueError:
             return
-        stmt = delete(Message).where(Message.conversation_id == uid)
+        stmt = delete(Message).where(Message.conversation_id == str(uid))
         result = await self.session.execute(stmt)
         await self.session.commit()
         logger.debug("消息已删除: conv_id=%s, count=%d", conv_id, result.rowcount)
@@ -104,9 +104,9 @@ class ConversationRepository:
         except ValueError:
             return
         # 先找出该 KB 下的所有会话
-        stmt = select(Conversation.id).where(Conversation.kb_id == uid)
+        stmt = select(Conversation.id).where(Conversation.kb_id == str(uid))
         result = await self.session.execute(stmt)
-        conv_ids = [row[0] for row in result.all()]
+        conv_ids = [str(row[0]) for row in result.all()]
         if not conv_ids:
             return
         stmt = delete(Message).where(Message.conversation_id.in_(conv_ids))
@@ -120,7 +120,7 @@ class ConversationRepository:
             uid = uuid.UUID(kb_id)
         except ValueError:
             return
-        stmt = delete(Conversation).where(Conversation.kb_id == uid)
+        stmt = delete(Conversation).where(Conversation.kb_id == str(uid))
         result = await self.session.execute(stmt)
         await self.session.commit()
         logger.debug("会话已删除: kb_id=%s, count=%d", kb_id, result.rowcount)
@@ -137,7 +137,7 @@ class ConversationRepository:
             return []
         stmt = (
             select(Message)
-            .where(Message.conversation_id == uid)
+            .where(Message.conversation_id == str(uid))
             .order_by(Message.created_at.asc())
             .limit(limit)
         )

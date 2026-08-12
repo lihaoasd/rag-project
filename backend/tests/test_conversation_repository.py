@@ -136,7 +136,7 @@ class TestConversationRepository:
     async def test_delete_messages_by_kb_id(self, repo, mock_session):
         # 模拟有会话
         mock_result1 = MagicMock()
-        mock_result1.all.return_value = [(uuid.UUID(CONV_ID),)]
+        mock_result1.all.return_value = [(CONV_ID,)]
         mock_session.execute = AsyncMock(return_value=mock_result1)
 
         await repo.delete_messages_by_kb_id(KB_ID)

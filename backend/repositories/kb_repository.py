@@ -21,7 +21,7 @@ class KnowledgeBaseRepository:
     async def create(self, name: str, description: str | None = None) -> KnowledgeBase:
         """创建知识库。"""
         kb = KnowledgeBase(
-            id=uuid.uuid4(),
+            id=str(uuid.uuid4()),
             name=name,
             description=description,
             document_count=0,
@@ -41,10 +41,10 @@ class KnowledgeBaseRepository:
     async def get_by_id(self, kb_id: str) -> KnowledgeBase | None:
         """按 ID 获取知识库。"""
         try:
-            uid = uuid.UUID(kb_id)
+            uuid.UUID(kb_id)  # 验证格式
         except ValueError:
             return None
-        stmt = select(KnowledgeBase).where(KnowledgeBase.id == uid)
+        stmt = select(KnowledgeBase).where(KnowledgeBase.id == kb_id)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -60,10 +60,10 @@ class KnowledgeBaseRepository:
 
     async def increment_doc_count(self, kb_id: str) -> None:
         """文档数量 +1（原子操作）。"""
-        uid = uuid.UUID(kb_id)
+        uuid.UUID(kb_id)  # 验证格式
         stmt = (
             update(KnowledgeBase)
-            .where(KnowledgeBase.id == uid)
+            .where(KnowledgeBase.id == kb_id)
             .values(document_count=KnowledgeBase.document_count + 1)
         )
         await self.session.execute(stmt)
@@ -71,10 +71,10 @@ class KnowledgeBaseRepository:
 
     async def decrement_doc_count(self, kb_id: str) -> None:
         """文档数量 -1（原子操作）。"""
-        uid = uuid.UUID(kb_id)
+        uuid.UUID(kb_id)  # 验证格式
         stmt = (
             update(KnowledgeBase)
-            .where(KnowledgeBase.id == uid)
+            .where(KnowledgeBase.id == kb_id)
             .values(document_count=KnowledgeBase.document_count - 1)
         )
         await self.session.execute(stmt)

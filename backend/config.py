@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     # === Embedding 配置 (Xinference) ===
     embedding_api_base: str = "http://localhost:9997/v1"
     embedding_api_key: str = ""
-    embedding_model: str = "bge-large-zh-v1.5"
+    embedding_model: str = "bge-m3"
     embedding_dim: int = 1024
 
     # === Milvus 配置 ===

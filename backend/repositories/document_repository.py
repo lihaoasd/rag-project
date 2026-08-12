@@ -28,8 +28,8 @@ class DocumentRepository:
     ) -> Document:
         """创建文档记录（初始状态 uploading）。"""
         doc = Document(
-            id=uuid.uuid4(),
-            kb_id=uuid.UUID(kb_id),
+            id=str(uuid.uuid4()),
+            kb_id=kb_id,
             file_name=file_name,
             file_size=file_size,
             file_type=file_type,
@@ -51,7 +51,7 @@ class DocumentRepository:
         chunk_count: int | None = None,
     ) -> None:
         """更新文档状态和相关字段。"""
-        uid = uuid.UUID(doc_id)
+        uuid.UUID(doc_id)  # 验证格式
         values = {"status": status}
         if error_message is not None:
             values["error_message"] = error_message
@@ -59,7 +59,7 @@ class DocumentRepository:
             values["page_count"] = page_count
         if chunk_count is not None:
             values["chunk_count"] = chunk_count
-        stmt = update(Document).where(Document.id == uid).values(**values)
+        stmt = update(Document).where(Document.id == doc_id).values(**values)
         await self.session.execute(stmt)
         await self.session.commit()
         logger.debug("文档状态更新: doc_id=%s, status=%s", doc_id, status)
@@ -72,7 +72,7 @@ class DocumentRepository:
             return []
         stmt = (
             select(Document)
-            .where(Document.kb_id == uid)
+            .where(Document.kb_id == str(uid))
             .order_by(Document.created_at.desc())
         )
         result = await self.session.execute(stmt)
@@ -81,17 +81,17 @@ class DocumentRepository:
     async def get_by_id(self, doc_id: str) -> Document | None:
         """按 ID 获取文档。"""
         try:
-            uid = uuid.UUID(doc_id)
+            uuid.UUID(doc_id)  # 验证格式
         except ValueError:
             return None
-        stmt = select(Document).where(Document.id == uid)
+        stmt = select(Document).where(Document.id == doc_id)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
     async def delete_chunks_by_doc_id(self, doc_id: str) -> None:
         """手动删除文档的所有切片（无 FK，需手动级联）。"""
-        uid = uuid.UUID(doc_id)
-        stmt = delete(DocumentChunk).where(DocumentChunk.doc_id == uid)
+        uuid.UUID(doc_id)  # 验证格式
+        stmt = delete(DocumentChunk).where(DocumentChunk.doc_id == doc_id)
         result = await self.session.execute(stmt)
         await self.session.commit()
         logger.debug("切片已删除: doc_id=%s, count=%d", doc_id, result.rowcount)
@@ -102,7 +102,7 @@ class DocumentRepository:
             uid = uuid.UUID(kb_id)
         except ValueError:
             return
-        stmt = delete(DocumentChunk).where(DocumentChunk.kb_id == uid)
+        stmt = delete(DocumentChunk).where(DocumentChunk.kb_id == str(uid))
         result = await self.session.execute(stmt)
         await self.session.commit()
         logger.debug("切片已删除: kb_id=%s, count=%d", kb_id, result.rowcount)
@@ -114,11 +114,11 @@ class DocumentRepository:
         except ValueError:
             return []
         # 获取文档列表（用于后续 MinIO 清理）
-        stmt = select(Document).where(Document.kb_id == uid)
+        stmt = select(Document).where(Document.kb_id == str(uid))
         result = await self.session.execute(stmt)
         docs = list(result.scalars().all())
         # 删除文档记录
-        stmt = delete(Document).where(Document.kb_id == uid)
+        stmt = delete(Document).where(Document.kb_id == str(uid))
         await self.session.execute(stmt)
         await self.session.commit()
         logger.info("文档已从 PG 删除: kb_id=%s, count=%d", kb_id, len(docs))
@@ -144,14 +144,14 @@ class DocumentRepository:
         milvus_pks: list[str],
     ) -> None:
         """批量写入切片记录。"""
-        uid = uuid.UUID(doc_id)
-        kb_uid = uuid.UUID(kb_id)
+        uuid.UUID(doc_id)  # 验证格式
+        uuid.UUID(kb_id)   # 验证格式
         chunks = []
         for i, (meta, pk) in enumerate(zip(metadatas, milvus_pks)):
             chunk = DocumentChunk(
-                id=uuid.uuid4(),
-                doc_id=uid,
-                kb_id=kb_uid,
+                id=str(uuid.uuid4()),
+                doc_id=doc_id,
+                kb_id=kb_id,
                 chunk_index=meta.get("chunk_index", i),
                 page_number=meta.get("page_number", 1),
                 char_count=len(meta.get("text", "")),
@@ -172,17 +172,17 @@ class DocumentRepository:
     ) -> tuple[list[DocumentChunk], int]:
         """分页查询文档的切片列表（按 chunk_index 升序）。"""
         try:
-            uid = uuid.UUID(doc_id)
+            uuid.UUID(doc_id)  # 验证格式
         except ValueError:
             return [], 0
 
-        count_stmt = select(DocumentChunk).where(DocumentChunk.doc_id == uid)
+        count_stmt = select(DocumentChunk).where(DocumentChunk.doc_id == doc_id)
         count_result = await self.session.execute(count_stmt)
         total = len(list(count_result.scalars().all()))
 
         stmt = (
             select(DocumentChunk)
-            .where(DocumentChunk.doc_id == uid)
+            .where(DocumentChunk.doc_id == doc_id)
             .order_by(DocumentChunk.chunk_index.asc())
             .offset(offset)
             .limit(limit)
@@ -198,10 +198,10 @@ class DocumentRepository:
     async def get_chunk_by_id(self, chunk_id: str) -> DocumentChunk | None:
         """按 ID 获取单个切片。"""
         try:
-            uid = uuid.UUID(chunk_id)
+            uuid.UUID(chunk_id)  # 验证格式
         except ValueError:
             return None
-        stmt = select(DocumentChunk).where(DocumentChunk.id == uid)
+        stmt = select(DocumentChunk).where(DocumentChunk.id == chunk_id)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -223,21 +223,21 @@ class DocumentRepository:
         new_milvus_pk: str | None = None,
     ) -> None:
         """更新切片文本、字符数，可选更新 Milvus PK。"""
-        uid = uuid.UUID(chunk_id)
+        uuid.UUID(chunk_id)  # 验证格式
         values: dict = {"text_content": new_text, "char_count": new_char_count}
         if new_milvus_pk is not None:
             values["milvus_pk"] = new_milvus_pk
-        stmt = update(DocumentChunk).where(DocumentChunk.id == uid).values(**values)
+        stmt = update(DocumentChunk).where(DocumentChunk.id == chunk_id).values(**values)
         await self.session.execute(stmt)
         await self.session.commit()
         logger.debug("切片文本已更新: chunk_id=%s, char_count=%d", chunk_id, new_char_count)
 
     async def update_doc_chunk_count(self, doc_id: str, delta: int) -> None:
         """原子更新文档的切片计数（+1 或 -1）。"""
-        uid = uuid.UUID(doc_id)
+        uuid.UUID(doc_id)  # 验证格式
         stmt = (
             update(Document)
-            .where(Document.id == uid)
+            .where(Document.id == doc_id)
             .values(chunk_count=Document.chunk_count + delta)
         )
         await self.session.execute(stmt)

@@ -28,10 +28,10 @@ class TestSettingsDefaults:
 
     def test_default_embedding_settings(self):
         s = Settings(embedding_api_base="http://localhost:9997/v1",
-                     embedding_model="bge-large-zh-v1.5",
+                     embedding_model="bge-m3",
                      embedding_dim=1024)
         assert s.embedding_api_base == "http://localhost:9997/v1"
-        assert s.embedding_model == "bge-large-zh-v1.5"
+        assert s.embedding_model == "bge-m3"
         assert s.embedding_dim == 1024
 
     def test_default_milvus_settings(self):

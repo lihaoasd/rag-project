@@ -15,6 +15,8 @@ Pipeline 阶段:
 import json
 from typing import AsyncGenerator
 
+from llama_index.core.base.llms.types import ChatMessage, MessageRole
+
 from config import settings
 from core.database import async_session
 from core.llm_factory import create_llm
@@ -116,13 +118,13 @@ async def chat_stream(
         system_prompt = RAG_SYSTEM_PROMPT.format(context_str=context_str)
 
         llm_messages = [
-            {"role": "system", "content": system_prompt},
+            ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
         ]
-        # 添加历史消息作为上下文（排除 system role）
+        # 添加历史消息作为上下文
         for h in history[-10:]:
-            llm_messages.append({"role": h.role, "content": h.content})
+            llm_messages.append(ChatMessage(role=h.role, content=h.content))
         # 添加当前用户问题
-        llm_messages.append({"role": "user", "content": message})
+        llm_messages.append(ChatMessage(role=MessageRole.USER, content=message))
 
         # Stage 5: 保存用户消息
         async with async_session() as session:

@@ -3,9 +3,8 @@ SQLAlchemy 基础模型 — DeclarativeBase + 通用 Mixin。
 """
 import uuid
 from datetime import datetime
-from sqlalchemy import DateTime, func
+from sqlalchemy import DateTime, String, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import UUID
 
 
 class Base(DeclarativeBase):
@@ -14,12 +13,12 @@ class Base(DeclarativeBase):
 
 
 class UUIDMixin:
-    """UUID 主键 Mixin"""
+    """UUID 主键 Mixin（存储为 VARCHAR(36)）"""
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    id: Mapped[str] = mapped_column(
+        String(36),
         primary_key=True,
-        server_default=func.uuid_generate_v4(),
+        default=lambda: str(uuid.uuid4()),
     )
 
 
