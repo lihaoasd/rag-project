@@ -10,7 +10,7 @@ from services.chat_service import (
     _build_history,
     _sse_event,
     _extract_sources,
-    RAG_SYSTEM_PROMPT,
+    FALLBACK_RAG_PROMPT,
 )
 from tests.helpers import MockMessage
 
@@ -121,7 +121,12 @@ class TestExtractSources:
 
 class TestRAGPrompt:
     def test_prompt_contains_context(self):
-        prompt = RAG_SYSTEM_PROMPT.format(context_str="测试上下文")
+        prompt = FALLBACK_RAG_PROMPT.format(
+            context_str="测试上下文",
+            query="测试问题",
+            history="无历史对话",
+            kb_name="测试知识库",
+        )
         assert "测试上下文" in prompt
         assert "投标文档分析助手" in prompt
 
@@ -182,6 +187,12 @@ class TestChatStreamBehavior:
 
     def test_rag_prompt_template(self):
         """验证 RAG prompt 模板。"""
-        prompt = RAG_SYSTEM_PROMPT.format(context_str="TEST_CONTEXT")
+        prompt = FALLBACK_RAG_PROMPT.format(
+            context_str="TEST_CONTEXT",
+            query="TEST_QUERY",
+            history="TEST_HISTORY",
+            kb_name="TEST_KB",
+        )
         assert "TEST_CONTEXT" in prompt
+        assert "TEST_QUERY" in prompt
         assert "投标文档分析助手" in prompt

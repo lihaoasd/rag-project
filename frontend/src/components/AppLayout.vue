@@ -34,6 +34,12 @@
             <span>智能问答</span>
           </template>
         </el-menu-item>
+        <el-menu-item index="/prompts">
+          <template #title>
+            <el-icon><EditPen /></el-icon>
+            <span>提示词管理</span>
+          </template>
+        </el-menu-item>
       </el-menu>
     </el-aside>
 

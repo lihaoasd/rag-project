@@ -149,6 +149,77 @@ class RechunkRequest(BaseModel):
 
 
 # ============================================================
+# 提示词模板
+# ============================================================
+class PromptVariableDef(BaseModel):
+    """变量定义"""
+    name: str = Field(..., description="变量名（如 context_str）")
+    label: str = Field(..., description="变量标签（如 检索上下文）")
+    required: bool = Field(True, description="是否必填")
+    description: str = Field("", description="变量描述")
+
+
+class PromptTemplateCreate(BaseModel):
+    """创建提示词模板请求"""
+    name: str = Field(..., min_length=1, max_length=255, description="模板名称")
+    description: str | None = Field(None, description="模板描述")
+    scenario: str = Field(..., description="场景类型: rag_qa / entity_extraction / document_summary / custom")
+    system_prompt: str = Field(..., min_length=1, description="系统提示词（含变量占位符）")
+    user_prompt: str | None = Field(None, description="用户提示词模板（可选）")
+    variables: list[PromptVariableDef] | None = Field(None, description="变量定义列表")
+    is_active: bool = Field(False, description="是否激活")
+    sort_order: int = Field(0, ge=0, description="排序序号")
+
+
+class PromptTemplateUpdate(BaseModel):
+    """更新提示词模板请求"""
+    name: str | None = Field(None, min_length=1, max_length=255, description="模板名称")
+    description: str | None = Field(None, description="模板描述")
+    scenario: str | None = Field(None, description="场景类型")
+    system_prompt: str | None = Field(None, min_length=1, description="系统提示词")
+    user_prompt: str | None = Field(None, description="用户提示词模板")
+    variables: list[PromptVariableDef] | None = Field(None, description="变量定义列表")
+    is_active: bool | None = Field(None, description="是否激活")
+    sort_order: int | None = Field(None, ge=0, description="排序序号")
+
+
+class PromptTemplateResponse(BaseModel):
+    """提示词模板响应"""
+    id: str
+    name: str
+    description: str | None
+    scenario: str
+    system_prompt: str
+    user_prompt: str | None
+    variables: list[PromptVariableDef] | None
+    is_active: bool
+    is_default: bool
+    sort_order: int
+    created_at: str
+    updated_at: str
+
+
+class PromptTemplateListResponse(BaseModel):
+    """提示词模板列表响应"""
+    items: list[PromptTemplateResponse]
+    total: int
+
+
+class PromptPreviewRequest(BaseModel):
+    """提示词预览请求"""
+    template_id: str | None = Field(None, description="模板 ID（从 DB 读取模板内容）")
+    system_prompt: str | None = Field(None, description="直接传入模板内容（与 template_id 二选一）")
+    variables: dict[str, str] = Field(default_factory=dict, description="变量键值对")
+
+
+class PromptPreviewResponse(BaseModel):
+    """提示词预览响应"""
+    rendered: str
+    missing_variables: list[str] = Field(default_factory=list, description="缺失的必填变量")
+    template_variables: list[PromptVariableDef] | None = Field(None, description="模板中定义的变量列表")
+
+
+# ============================================================
 # 通用
 # ============================================================
 class ErrorResponse(BaseModel):

@@ -30,6 +30,11 @@ const routes = [
     name: 'Chat',
     component: () => import('@/views/ChatView.vue'),
   },
+  {
+    path: '/prompts',
+    name: 'Prompts',
+    component: () => import('@/views/PromptManagementView.vue'),
+  },
 ]
 
 const router = createRouter({

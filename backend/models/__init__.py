@@ -6,6 +6,7 @@ from .knowledge_base import KnowledgeBase
 from .document import Document, DocumentChunk
 from .conversation import Conversation, Message
 from .config_model import LLMConfig, EmbeddingConfig
+from .prompt_template import PromptTemplate
 
 __all__ = [
     "Base",
@@ -16,4 +17,5 @@ __all__ = [
     "Message",
     "LLMConfig",
     "EmbeddingConfig",
+    "PromptTemplate",
 ]

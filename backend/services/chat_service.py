@@ -5,7 +5,7 @@ Pipeline 阶段:
     1. 获取或创建会话
     2. 检索相关文档片段
     3. 加载对话历史
-    4. 构建 RAG Prompt
+    4. 构建 RAG Prompt（从 DB 读取或使用 fallback）
     5. 保存用户消息
     6. LLM 流式生成
     7. 保存 AI 回复
@@ -20,17 +20,25 @@ from llama_index.core.base.llms.types import ChatMessage, MessageRole
 from config import settings
 from core.database import async_session
 from core.llm_factory import create_llm
+from core.prompt_renderer import render_prompt, extract_variables
 from core.retrieval import retrieve
 from repositories.conversation_repository import ConversationRepository
+from services import prompt_service
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# RAG Prompt 模板（来自技术设计文档 3.3.2）
-RAG_SYSTEM_PROMPT = """你是一个投标文档分析助手。请根据以下文档内容回答用户问题。
+# Fallback Prompt（数据库无模板时使用，与迁移默认数据保持一致）
+FALLBACK_RAG_PROMPT = """你是一个投标文档分析助手。请根据以下文档内容回答用户问题。
 
 【参考文档内容】
 {context_str}
+
+【对话历史】
+{history}
+
+【用户问题】
+{query}
 
 请基于参考文档内容回答。如果文档中找不到相关信息，请明确说明。
 回答时请注明信息来源（文档名、页码）。"""
@@ -77,6 +85,39 @@ def _extract_sources(retrieved: list[dict]) -> list[dict]:
     ]
 
 
+async def _get_system_prompt(
+    context_str: str,
+    query: str,
+    history_str: str,
+    kb_name: str = "",
+) -> str:
+    """获取并渲染 RAG 系统提示词。
+
+    优先从 DB 读取激活模板，不存在则使用内置 fallback。
+    """
+    try:
+        active = await prompt_service.get_active_prompt("rag_qa")
+        if active:
+            variables = {
+                "context_str": context_str,
+                "query": query,
+                "history": history_str,
+                "kb_name": kb_name,
+            }
+            variable_defs = active.get("variables") or []
+            return render_prompt(active["system_prompt"], variables, variable_defs)
+    except Exception as e:
+        logger.warning("获取动态 Prompt 失败，使用 fallback: %s", e)
+
+    # Fallback
+    return FALLBACK_RAG_PROMPT.format(
+        context_str=context_str,
+        query=query,
+        history=history_str,
+        kb_name=kb_name,
+    )
+
+
 async def chat_stream(
     kb_id: str,
     message: str,
@@ -112,10 +153,15 @@ async def chat_stream(
             conv_repo = ConversationRepository(session)
             history = await conv_repo.get_history(conv_id, limit=10)
 
-        # Stage 4: 构建 Prompt
+        # Stage 4: 构建 Prompt（从 DB 动态获取）
         context_str = _build_context(retrieved) if retrieved else "（未找到相关文档内容）"
         history_str = _build_history(history)
-        system_prompt = RAG_SYSTEM_PROMPT.format(context_str=context_str)
+        system_prompt = await _get_system_prompt(
+            context_str=context_str,
+            query=message,
+            history_str=history_str,
+            kb_name=kb_id,  # 后续可替换为真实知识库名
+        )
 
         llm_messages = [
             ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
