@@ -387,42 +387,82 @@ class DocxParser(BaseParser):
         return result
 
     def _parse_sync(self, file_path: Path) -> list[ParagraphItem]:
-        """同步解析核心逻辑（在线程池中执行，不阻塞事件循环）。"""
+        """同步解析核心逻辑（在线程池中执行，不阻塞事件循环）。
+
+        按文档 body 的 XML 元素顺序遍历，段落和表格保持原始交错顺序。
+        """
         from docx import Document as DocxDocument
+        from docx.oxml.ns import qn
 
         doc = DocxDocument(file_path)
         items: list[ParagraphItem] = []
 
-        # 提取段落（含样式名用于标题判定）
-        for para in doc.paragraphs:
-            text = para.text.strip()
-            if not text:
-                continue
-            style_name = para.style.name if para.style else None
-            heading, level = is_heading(text, style_name)
-            items.append(ParagraphItem(
-                text=text,
-                is_heading=heading,
-                heading_level=level,
-                is_table=False,
-            ))
-
-        # 提取表格（表格归属于上方的段落流中，由 WordChunker 分配）
-        for table in doc.tables:
-            rows: list[str] = []
-            for row in table.rows:
-                cells = [cell.text.strip() for cell in row.cells]
-                rows.append(" | ".join(cells))
-            table_text = "\n".join(rows)
-            if table_text.strip():
+        # 按文档顺序遍历 body 中的每个块级元素
+        for child in doc.element.body:
+            tag = child.tag
+            if tag == qn("w:p"):
+                # 段落
+                text = self._extract_paragraph_text(child)
+                if not text:
+                    continue
+                style_name = self._get_style_name(child, doc)
+                heading, level = is_heading(text, style_name)
                 items.append(ParagraphItem(
-                    text=table_text,
-                    is_heading=False,
-                    heading_level=None,
-                    is_table=True,
+                    text=text,
+                    is_heading=heading,
+                    heading_level=level,
+                    is_table=False,
                 ))
+            elif tag == qn("w:tbl"):
+                # 表格
+                table_text = self._extract_table_text(child)
+                if table_text:
+                    items.append(ParagraphItem(
+                        text=table_text,
+                        is_heading=False,
+                        heading_level=None,
+                        is_table=True,
+                    ))
 
         return items
+
+    @staticmethod
+    def _extract_paragraph_text(p_elem) -> str:
+        """从 w:p XML 元素提取文本。"""
+        texts: list[str] = []
+        for t in p_elem.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"):
+            if t.text:
+                texts.append(t.text)
+        return "".join(texts).strip()
+
+    @staticmethod
+    def _get_style_name(p_elem, doc) -> str | None:
+        """从 w:p XML 元素获取样式名。"""
+        from docx.oxml.ns import qn
+        style_elem = p_elem.find(qn("w:pPr"))
+        if style_elem is not None:
+            style_id_elem = style_elem.find(qn("w:pStyle"))
+            if style_id_elem is not None:
+                style_id = style_id_elem.get(qn("w:val"))
+                if style_id and doc.styles:
+                    style = doc.styles[style_id]
+                    return style.name if style else None
+        return None
+
+    @staticmethod
+    def _extract_table_text(tbl_elem) -> str:
+        """从 w:tbl XML 元素提取表格文本。"""
+        rows: list[str] = []
+        for tr in tbl_elem.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr"):
+            cells: list[str] = []
+            for tc in tr.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tc"):
+                cell_texts: list[str] = []
+                for t in tc.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"):
+                    if t.text:
+                        cell_texts.append(t.text)
+                cells.append("".join(cell_texts).strip())
+            rows.append(" | ".join(cells))
+        return "\n".join(rows)
 
 
 # ============================================================

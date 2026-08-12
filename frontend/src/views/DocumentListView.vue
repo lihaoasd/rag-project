@@ -78,6 +78,16 @@
             >
               切片
             </el-button>
+            <el-button
+              v-if="row.status === 'completed' || row.status === 'failed'"
+              text
+              type="warning"
+              size="small"
+              :loading="row._reparsing"
+              @click="handleReparse(row)"
+            >
+              重解析
+            </el-button>
             <el-popconfirm
               title="删除后文档的向量数据也将被清除，确定删除？"
               confirm-button-text="确认"
@@ -149,7 +159,7 @@ import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElNotification } from 'element-plus'
 import { getKnowledgeBase } from '@/api/knowledgeBase'
-import { listDocuments, deleteDocument, parseDocument } from '@/api/document'
+import { listDocuments, deleteDocument, parseDocument, reparseDocument } from '@/api/document'
 
 const route = useRoute()
 const kbId = route.params.kbId
@@ -263,6 +273,19 @@ async function handleParse(row) {
     row._parsing = false
     const msg = err?.response?.data?.detail || err?.message || '未知错误'
     ElMessage.error('解析失败: ' + msg)
+  }
+}
+
+async function handleReparse(row) {
+  row._reparsing = true
+  try {
+    await reparseDocument(kbId, row.id)
+    ElMessage.success('重新解析已触发，正在后台处理...')
+    await loadList()
+  } catch (err) {
+    row._reparsing = false
+    const msg = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.error('重新解析失败: ' + msg)
   }
 }
 

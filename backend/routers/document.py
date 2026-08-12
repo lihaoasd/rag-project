@@ -97,6 +97,39 @@ async def parse_document(kb_id: str, doc_id: str):
     return {"id": doc_id, "status": "queued", "queue_position": position}
 
 
+@router.post("/{doc_id}/reparse", response_model=ParseResponse, status_code=202)
+async def reparse_document(kb_id: str, doc_id: str):
+    """将已完成的文档重新加入解析队列，清旧切片后重解析"""
+    logger.info("触发重新解析: kb_id=%s, doc_id=%s", kb_id, doc_id)
+
+    doc = await document_service.get_document(kb_id, doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+    if doc["status"] == "queued":
+        raise HTTPException(status_code=400, detail="文档已在解析队列中")
+
+    if doc["status"] == "processing":
+        raise HTTPException(status_code=400, detail="文档正在解析中")
+
+    if doc["status"] == "uploaded":
+        raise HTTPException(
+            status_code=400,
+            detail="文档尚未首次解析，请使用 /parse 接口",
+        )
+
+    # 更新状态 → queued
+    async with async_session() as session:
+        repo = DocumentRepository(session)
+        await repo.update_status(doc_id, "queued")
+
+    # 加入解析队列
+    position = await parse_queue.enqueue_reparse(kb_id, doc_id)
+
+    logger.info("文档已加入重新解析队列: doc_id=%s, queue_position=%d", doc_id, position)
+    return {"id": doc_id, "status": "queued", "queue_position": position}
+
+
 @router.post("/{doc_id}/delete", status_code=204)
 async def delete_document(kb_id: str, doc_id: str):
     """删除文档及向量数据"""

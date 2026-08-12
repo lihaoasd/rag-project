@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 MAX_QUEUE_SIZE = 100
 
 # 队列项格式: (task_type, kb_id, doc_id, chunk_size, chunk_overlap)
-# task_type: "parse" | "rechunk"
+# task_type: "parse" | "rechunk" | "reparse"
 _parse_queue: asyncio.Queue[tuple] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
 
 # worker 运行状态
@@ -49,6 +49,18 @@ async def enqueue_rechunk(
     return position
 
 
+async def enqueue_reparse(kb_id: str, doc_id: str) -> int:
+    """将重新解析任务加入队列。
+
+    Returns:
+        当前队列位置（1-based，1 表示下一个执行）
+    """
+    await _parse_queue.put(("reparse", kb_id, doc_id, None, None))
+    position = _parse_queue.qsize()
+    logger.info("重新解析任务入队: doc_id=%s, queue_position=%d", doc_id, position)
+    return position
+
+
 def queue_size() -> int:
     """当前队列中的任务数（不含正在执行的）。"""
     return _parse_queue.qsize()
@@ -68,7 +80,7 @@ async def start_worker() -> None:
     _worker_running = True
     logger.info("解析队列 worker 已启动")
 
-    from services.document_service import parse_document, rechunk_document
+    from services.document_service import parse_document, rechunk_document, reparse_document
 
     while _worker_running:
         try:
@@ -80,6 +92,8 @@ async def start_worker() -> None:
 
             if task_type == "rechunk":
                 await rechunk_document(kb_id, doc_id, chunk_size, chunk_overlap)
+            elif task_type == "reparse":
+                await reparse_document(kb_id, doc_id)
             else:
                 await parse_document(kb_id, doc_id)
 

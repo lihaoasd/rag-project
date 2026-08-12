@@ -41,6 +41,15 @@ export function parseDocument(kbId, docId) {
 }
 
 /**
+ * 触发重新解析（仅 completed / failed 状态可用）
+ */
+export function reparseDocument(kbId, docId) {
+  return apiClient
+    .post(`/knowledge-bases/${kbId}/documents/${docId}/reparse`)
+    .then((res) => res.data)
+}
+
+/**
  * 删除文档
  */
 export function deleteDocument(kbId, docId) {

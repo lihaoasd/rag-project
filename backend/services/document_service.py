@@ -510,3 +510,96 @@ async def rechunk_document(
                 os.remove(temp_path)
             except OSError:
                 pass
+
+
+async def reparse_document(kb_id: str, doc_id: str) -> None:
+    """重新解析文档 — 清旧切片 → 下载 MinIO → 重新解析 → 切分 → 向量化 → 索引。
+
+    与 parse_document 的区别：
+        - parse_document: 首次解析，不清旧数据，文档计数 +1
+        - reparse_document: 清旧数据后重解析，文档计数不变
+    """
+    temp_path = None
+
+    try:
+        # 1. 获取文档记录
+        async with async_session() as session:
+            doc_repo = DocumentRepository(session)
+            doc = await doc_repo.get_by_id(doc_id)
+            if doc is None:
+                logger.error("重新解析失败：文档不存在 doc_id=%s", doc_id)
+                return
+
+            object_key = doc.object_key
+            file_type = doc.file_type
+
+            # 2. 更新状态 → processing
+            await doc_repo.update_status(doc_id, "processing", error_message="")
+
+            # 3. 删除旧切片（PG）
+            await doc_repo.delete_chunks_by_doc_id(doc_id)
+
+        # 4. 删除旧向量（Milvus）
+        await delete_index(kb_id, doc_id)
+
+        # 5. 从 MinIO 下载文件
+        temp_dir = ensure_temp_dir(settings.temp_dir)
+        temp_path = Path(temp_dir) / f"{doc_id}_reparse.{file_type}"
+        await asyncio.to_thread(minio_client.download, object_key, temp_path)
+        logger.info("重新解析下载完成: %s → %s", object_key, temp_path.name)
+
+        # 6. 解析文档
+        parsed = await parse_file(temp_path, file_type)
+        if not parsed:
+            raise ValueError("文档解析结果为空")
+
+        # 7. 切片 — Word 走段落聚合，PDF 走 SentenceSplitter
+        if file_type in ("docx", "doc"):
+            chunks, metadatas, _ = word_chunk(
+                parsed, doc_id, doc.file_name,
+                chunk_size=None, chunk_overlap=None,
+            )
+            page_count = 1
+        else:
+            for d in parsed:
+                d.metadata["doc_id"] = doc_id
+                d.metadata["file_name"] = doc.file_name
+            chunks, metadatas, _ = chunk_documents(parsed)
+            page_count = len(parsed)
+
+        # 8. 向量化 + 索引
+        milvus_pks = await build_index(chunks, metadatas, kb_id)
+
+        # 9. PG 写入新切片 + 更新状态
+        async with async_session() as session:
+            doc_repo = DocumentRepository(session)
+            await doc_repo.batch_create_chunks(doc_id, kb_id, metadatas, milvus_pks)
+            chunk_count = len(chunks)
+            await doc_repo.update_status(
+                doc_id,
+                "completed",
+                page_count=page_count,
+                chunk_count=chunk_count,
+            )
+
+        logger.info(
+            "重新解析完成: doc_id=%s, pages=%d, chunks=%d",
+            doc_id, page_count, chunk_count,
+        )
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error("重新解析失败: doc_id=%s, error=%s", doc_id, error_msg, exc_info=True)
+        try:
+            async with async_session() as session:
+                doc_repo = DocumentRepository(session)
+                await doc_repo.update_status(doc_id, "failed", error_message=error_msg)
+        except Exception as db_err:
+            logger.error("更新文档失败状态异常: %s", db_err)
+
+    finally:
+        if temp_path and temp_path.exists():
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass

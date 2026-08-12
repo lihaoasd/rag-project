@@ -70,8 +70,8 @@ class TestAggregateParagraphs:
         assert block_tech.heading == "二、技术条款"
         assert block_tech.heading_path == ["二、技术条款"]
 
-    def test_table_independent_block(self):
-        """表格独立成块，继承当前标题路径"""
+    def test_table_attached_to_heading(self):
+        """表格归入当前标题块，与正文在同一块中"""
         items = [
             ParagraphItem(text="第一章 报价", is_heading=True, heading_level=1),
             ParagraphItem(text="报价说明正文。"),
@@ -80,19 +80,11 @@ class TestAggregateParagraphs:
         ]
         blocks = aggregate_paragraphs(items)
 
-        # 块 0: 正文块（标题 + 报价说明正文）
-        # 块 1: 表格块（独立，继承标题路径）
-        # 块 2: 后续正文块
-        assert len(blocks) == 3
-
-        # 表格块
-        table_block = blocks[1]
-        assert len(table_block.tables) == 1
-        assert "设备A" in table_block.tables[0]
-        assert table_block.heading == "第一章 报价"
-        assert table_block.heading_path == ["第一章 报价"]
-        # 表格块不含正文
-        assert table_block.paragraphs == []
+        assert len(blocks) == 1
+        assert blocks[0].heading == "第一章 报价"
+        assert len(blocks[0].paragraphs) == 2
+        assert len(blocks[0].tables) == 1
+        assert "设备A" in blocks[0].tables[0]
 
     def test_empty_input(self):
         """空输入 → 空输出"""
@@ -111,45 +103,43 @@ class TestAggregateParagraphs:
 
 
 class TestChunkBlocks:
-    """测试逻辑块 → TextNode 转换。"""
+    """测试逻辑块 → TextNode 转换 — 每个块就是一个 TextNode，不做切分。"""
 
-    def test_small_block_direct_node(self):
-        """小块直接作为 1 个 TextNode"""
+    def test_block_to_node(self):
+        """逻辑块转为 TextNode，标题、正文、表格在同一节点内"""
         block = LogicalBlock(
             heading="第一章 总则",
             heading_level=1,
             heading_path=["第一章 总则"],
-            paragraphs=["这是一段简短的说明。"],
-            tables=[],
+            paragraphs=["这是段落一。", "这是段落二。"],
+            tables=["名称 | 金额\n设备A | 10000"],
         )
-        nodes = chunk_blocks([block], chunk_size=512, chunk_overlap=64)
+        nodes = chunk_blocks([block])
 
         assert len(nodes) == 1
         assert nodes[0].metadata["heading"] == "第一章 总则"
         assert nodes[0].metadata["heading_path"] == "第一章 总则"
-        assert nodes[0].metadata["chunk_method"] == "paragraph_aggregate"
+        assert "设备A" in nodes[0].text
+        assert "段落一" in nodes[0].text
 
-    def test_large_block_sentence_split(self):
-        """超大块用 SentenceSplitter 细切"""
-        long_text = "这是测试文本。" * 200  # 约 1200 字符
+    def test_large_block_kept_intact(self):
+        """大块也不切分，段落和表格保持在一起"""
+        long_text = "这是测试文本。" * 200
         block = LogicalBlock(
             heading="第二章 技术方案",
             heading_level=1,
             heading_path=["第二章 技术方案"],
             paragraphs=[long_text],
-            tables=[],
+            tables=["表格内容"],
         )
-        nodes = chunk_blocks([block], chunk_size=200, chunk_overlap=20)
+        nodes = chunk_blocks([block])
 
-        # 应该有多个切块
-        assert len(nodes) > 1
-        for node in nodes:
-            assert node.metadata["heading"] == "第二章 技术方案"
-            assert node.metadata["heading_path"] == "第二章 技术方案"
-            assert node.metadata["chunk_method"] == "sentence_splitter"
+        # 不切分，就是一个节点
+        assert len(nodes) == 1
+        assert "表格内容" in nodes[0].text
 
     def test_empty_block_skipped(self):
-        """仅有标题无正文的块 — 标题本身就是内容，保留为一个节点"""
+        """无内容的块跳过"""
         block = LogicalBlock(
             heading="空章节",
             heading_level=1,
@@ -158,29 +148,25 @@ class TestChunkBlocks:
             tables=[],
         )
         nodes = chunk_blocks([block])
-        # 标题文本作为节点内容
         assert len(nodes) == 1
-        assert nodes[0].text == "空章节"
 
-    def test_mixed_block_sizes(self):
-        """混合大小块"""
-        small = LogicalBlock(
+    def test_multiple_blocks(self):
+        """多个块各自独立"""
+        block1 = LogicalBlock(
             heading="第一章", heading_level=1,
             heading_path=["第一章"],
             paragraphs=["短文本。"],
         )
-        large = LogicalBlock(
+        block2 = LogicalBlock(
             heading="第二章", heading_level=1,
             heading_path=["第二章"],
-            paragraphs=["长文本。" * 300],
+            paragraphs=["另一段文本。"],
         )
-        nodes = chunk_blocks([small, large], chunk_size=200, chunk_overlap=20)
+        nodes = chunk_blocks([block1, block2])
 
-        small_nodes = [n for n in nodes if n.metadata["chunk_method"] == "paragraph_aggregate"]
-        split_nodes = [n for n in nodes if n.metadata["chunk_method"] == "sentence_splitter"]
-
-        assert len(small_nodes) == 1
-        assert len(split_nodes) > 1
+        assert len(nodes) == 2
+        assert nodes[0].metadata["heading"] == "第一章"
+        assert nodes[1].metadata["heading"] == "第二章"
 
 
 class TestWordChunk:
@@ -214,7 +200,6 @@ class TestWordChunk:
             assert "text" in meta
             assert "heading" in meta
             assert "heading_path" in meta
-            assert "chunk_method" in meta
 
     def test_empty_paragraphs(self):
         """空段落列表"""

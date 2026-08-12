@@ -13,18 +13,12 @@ Word 文档分片引擎 — 段落聚合 + 中文标题识别。
 from dataclasses import dataclass, field
 from typing import Any
 
-from llama_index.core import Document as LlamaDocument
-from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import TextNode
 
-from config import settings
 from core.parser import ParagraphItem
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-# 超长逻辑块判定阈值：超过 chunk_size * OVERFLOW_RATIO 才用 SentenceSplitter 细切
-OVERFLOW_RATIO = 1.5
 
 
 # ============================================================
@@ -91,25 +85,8 @@ def aggregate_paragraphs(paragraphs: list[ParagraphItem]) -> list[LogicalBlock]:
                 tables=[],
             )
         elif item.is_table:
-            # 表格独立成块：先保存当前正文块，再创建表格块，然后开新块继续
-            if current_block.paragraphs:
-                blocks.append(current_block)
-
-            blocks.append(LogicalBlock(
-                heading=current_block.heading,
-                heading_level=current_block.heading_level,
-                heading_path=list(current_block.heading_path),
-                paragraphs=[],
-                tables=[item.text],
-            ))
-
-            current_block = LogicalBlock(
-                heading=current_block.heading,
-                heading_level=current_block.heading_level,
-                heading_path=list(current_block.heading_path),
-                paragraphs=[],
-                tables=[],
-            )
+            # 表格归入当前块
+            current_block.tables.append(item.text)
         else:
             current_block.paragraphs.append(item.text)
 
@@ -128,35 +105,17 @@ def aggregate_paragraphs(paragraphs: list[ParagraphItem]) -> list[LogicalBlock]:
 # 逻辑块 → TextNode（含超长兜底）
 # ============================================================
 
-def chunk_blocks(
-    blocks: list[LogicalBlock],
-    chunk_size: int | None = None,
-    chunk_overlap: int | None = None,
-) -> list[TextNode]:
-    """将逻辑块转换为 TextNode，超长块用 SentenceSplitter 细切。
+def chunk_blocks(blocks: list[LogicalBlock]) -> list[TextNode]:
+    """将每个逻辑块直接转换为一个 TextNode，段落和表格保持在同一块中。
 
-    策略：
-        - 块大小 ≤ chunk_size * OVERFLOW_RATIO → 直接作为 1 个 TextNode
-        - 块大小 > chunk_size * OVERFLOW_RATIO → SentenceSplitter 细切
-        - 所有子块继承父块的 heading 和 heading_path
+    不做额外切分，确保标题、正文、表格全部在同一个节点内。
 
     Args:
         blocks: aggregate_paragraphs() 输出的逻辑块列表
-        chunk_size: 切片大小（tokens），默认从 settings 读取
-        chunk_overlap: 切片重叠（tokens），默认从 settings 读取
 
     Returns:
-        TextNode 列表，每个节点带 heading / heading_path / chunk_method metadata
+        TextNode 列表，每个节点对应一个逻辑块
     """
-    size = chunk_size or settings.chunk_size
-    overlap = chunk_overlap or settings.chunk_overlap
-    max_chars = int(size * OVERFLOW_RATIO * 2)  # 中文约 2 字符/token，加上 1.5 倍阈值
-
-    sentence_splitter = SentenceSplitter(
-        chunk_size=size,
-        chunk_overlap=overlap,
-    )
-
     all_nodes: list[TextNode] = []
 
     for block in blocks:
@@ -166,42 +125,26 @@ def chunk_blocks(
             body_parts.append(block.heading)
         body_parts.extend(block.paragraphs)
         if block.tables:
-            for table_text in block.tables:
-                body_parts.append(table_text)
-        body = "\n\n".join(body_parts)
+            body_parts.extend(block.tables)
 
+        body = "\n\n".join(body_parts)
         if not body.strip():
             continue
 
         heading_path_str = " > ".join(block.heading_path) if block.heading_path else ""
 
-        if len(body) <= max_chars:
-            # 小逻辑块：直接作为一个 TextNode
-            node = TextNode(
-                text=body,
-                metadata={
-                    "heading": block.heading or "",
-                    "heading_path": heading_path_str,
-                    "chunk_method": "paragraph_aggregate",
-                },
-            )
-            all_nodes.append(node)
-        else:
-            # 大逻辑块：SentenceSplitter 细切，子块继承标题元数据
-            doc = LlamaDocument(text=body)
-            sub_nodes = sentence_splitter.get_nodes_from_documents([doc])
-            for sub_node in sub_nodes:
-                sub_node.metadata["heading"] = block.heading or ""
-                sub_node.metadata["heading_path"] = heading_path_str
-                sub_node.metadata["chunk_method"] = "sentence_splitter"
-            all_nodes.extend(sub_nodes)
+        node = TextNode(
+            text=body,
+            metadata={
+                "heading": block.heading or "",
+                "heading_path": heading_path_str,
+            },
+        )
+        all_nodes.append(node)
 
     logger.info(
-        "分块完成: blocks=%d → nodes=%d (direct=%d, split=%d)",
-        len(blocks),
-        len(all_nodes),
-        sum(1 for n in all_nodes if n.metadata.get("chunk_method") == "paragraph_aggregate"),
-        sum(1 for n in all_nodes if n.metadata.get("chunk_method") == "sentence_splitter"),
+        "分块完成: blocks=%d → nodes=%d",
+        len(blocks), len(all_nodes),
     )
     return all_nodes
 
@@ -233,7 +176,7 @@ def word_chunk(
         (chunks_text, metadatas, text_nodes) — 与 chunk_documents() 签名一致
     """
     blocks = aggregate_paragraphs(paragraphs)
-    nodes = chunk_blocks(blocks, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    nodes = chunk_blocks(blocks)
 
     chunks: list[str] = []
     metadatas: list[dict[str, Any]] = []
