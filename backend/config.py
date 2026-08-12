@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000
     temp_dir: str = "./temp"
-    max_upload_size: int = 104857600  # 100MB
+    max_upload_size: int = 524288000  # 500MB
 
     # === 日志配置 ===
     log_level: str = "INFO"

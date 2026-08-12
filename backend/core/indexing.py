@@ -37,8 +37,8 @@ def _get_vector_store(kb_id: str) -> MilvusVectorStore:
         similarity_metric="IP",
         index_config={"index_type": "IVF_FLAT", "params": {"nlist": 128}},
         search_config={"nprobe": 16},
-        scalar_field_names=["file_name", "page_number", "chunk_index"],
-        scalar_field_types=[DataType.VARCHAR, DataType.INT64, DataType.INT64],
+        scalar_field_names=["file_name", "page_number", "chunk_index", "heading", "heading_path"],
+        scalar_field_types=[DataType.VARCHAR, DataType.INT64, DataType.INT64, DataType.VARCHAR, DataType.VARCHAR],
         text_key="text",
         overwrite=False,
         collection_properties={"collection.ttl.seconds": TTL_SECONDS},
@@ -87,6 +87,8 @@ async def build_index(
                 "file_name": meta.get("file_name", ""),
                 "page_number": meta.get("page_number", 1),
                 "chunk_index": meta.get("chunk_index", i),
+                "heading": meta.get("heading", ""),
+                "heading_path": meta.get("heading_path", ""),
             },
             relationships={
                 NodeRelationship.SOURCE: RelatedNodeInfo(node_id=doc_id),
@@ -189,6 +191,8 @@ def chunk_documents(
         node.metadata.setdefault("file_name", "unknown")
         node.metadata.setdefault("page_number", 1)
         node.metadata.setdefault("chunk_index", i)
+        node.metadata.setdefault("heading", "")          # PDF 无标题概念，Word 由 word_chunker 填充
+        node.metadata.setdefault("heading_path", "")     # 同上
         # 将 text 加入 metadata，供 batch_create_chunks 使用
         node.metadata["text"] = node.text
 
@@ -245,6 +249,8 @@ async def insert_single_vector(kb_id: str, text: str, metadata: dict) -> str:
             "file_name": metadata.get("file_name", ""),
             "page_number": metadata.get("page_number", 1),
             "chunk_index": metadata.get("chunk_index", 0),
+            "heading": metadata.get("heading", ""),
+            "heading_path": metadata.get("heading_path", ""),
         },
         relationships={
             NodeRelationship.SOURCE: RelatedNodeInfo(node_id=doc_id),

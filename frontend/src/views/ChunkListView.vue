@@ -28,56 +28,95 @@
       </p>
     </div>
 
-    <!-- 表格 -->
-    <el-card v-if="chunkList.length > 0">
-      <el-table :data="chunkList" stripe style="width: 100%">
-        <el-table-column prop="chunk_index" label="序号" width="70" align="center" />
-        <el-table-column label="页码" width="70" align="center">
-          <template #default="{ row }">
-            {{ row.page_number }}
-          </template>
-        </el-table-column>
-        <el-table-column label="字符数" width="90" align="right">
-          <template #default="{ row }">
-            {{ row.char_count.toLocaleString() }}
-          </template>
-        </el-table-column>
-        <el-table-column label="文本预览" min-width="300">
-          <template #default="{ row }">
-            <span class="text-preview">{{ row.text_preview }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="200" align="center" fixed="right">
-          <template #default="{ row }">
-            <el-button text type="primary" size="small" @click="handleView(row)">
-              查看
-            </el-button>
-            <el-button text type="primary" size="small" @click="handleEdit(row)">
-              编辑
-            </el-button>
-            <el-popconfirm
-              title="确定删除该切片？"
-              confirm-button-text="确认"
-              cancel-button-text="取消"
-              @confirm="handleDelete(row.id)"
-            >
-              <template #reference>
-                <el-button text type="danger" size="small">删除</el-button>
+    <!-- 切片列表（有数据时） -->
+    <div v-if="chunkList.length > 0" class="split-panel">
+      <!-- 左侧：切片列表 -->
+      <div :class="['panel-left', { 'has-detail': selectedChunk }]">
+        <el-card>
+          <el-table
+            :data="chunkList"
+            stripe
+            style="width: 100%"
+            highlight-current-row
+            @row-click="handleView"
+          >
+            <el-table-column prop="chunk_index" label="序号" width="70" align="center" />
+            <el-table-column label="页码" width="70" align="center">
+              <template #default="{ row }">
+                {{ row.page_number }}
               </template>
-            </el-popconfirm>
-          </template>
-        </el-table-column>
-      </el-table>
+            </el-table-column>
+            <el-table-column label="字符数" width="90" align="right">
+              <template #default="{ row }">
+                {{ row.char_count.toLocaleString() }}
+              </template>
+            </el-table-column>
+            <el-table-column label="文本预览" min-width="200">
+              <template #default="{ row }">
+                <span class="text-preview">{{ row.text_preview }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="200" align="center" fixed="right">
+              <template #default="{ row }">
+                <el-button text type="primary" size="small" @click.stop="handleView(row)">
+                  查看
+                </el-button>
+                <el-button text type="primary" size="small" @click.stop="handleEdit(row)">
+                  编辑
+                </el-button>
+                <el-popconfirm
+                  title="确定删除该切片？"
+                  confirm-button-text="确认"
+                  cancel-button-text="取消"
+                  @confirm="handleDelete(row.id)"
+                >
+                  <template #reference>
+                    <el-button text type="danger" size="small" @click.stop>删除</el-button>
+                  </template>
+                </el-popconfirm>
+              </template>
+            </el-table-column>
+          </el-table>
 
-      <el-pagination
-        v-if="total > pageSize"
-        :current-page="currentPage"
-        :page-size="pageSize"
-        :total="total"
-        layout="total, prev, pager, next"
-        @current-change="onPageChange"
-      />
-    </el-card>
+          <el-pagination
+            v-if="total > pageSize"
+            :current-page="currentPage"
+            :page-size="pageSize"
+            :total="total"
+            layout="total, prev, pager, next"
+            @current-change="onPageChange"
+          />
+        </el-card>
+      </div>
+
+      <!-- 右侧：切片详情 -->
+      <div v-if="selectedChunk" class="panel-right">
+        <el-card class="detail-card">
+          <template #header>
+            <div class="detail-header">
+              <span>切片详情</span>
+              <el-button text type="primary" size="small" @click="selectedChunk = null">
+                <el-icon><Close /></el-icon>
+              </el-button>
+            </div>
+          </template>
+          <div class="chunk-detail">
+            <div class="detail-meta">
+              <span>序号: {{ selectedChunk.chunk_index }}</span>
+              <span>页码: {{ selectedChunk.page_number }}</span>
+              <span>字符数: {{ selectedChunk.char_count.toLocaleString() }}</span>
+            </div>
+            <el-input
+              type="textarea"
+              :rows="24"
+              :model-value="selectedChunk.text_content"
+              readonly
+              resize="vertical"
+            />
+          </div>
+        </el-card>
+      </div>
+    </div>
 
     <!-- 空状态 -->
     <el-card v-else>
@@ -87,32 +126,6 @@
         </span>
       </el-empty>
     </el-card>
-
-    <!-- 查看详情对话框 -->
-    <el-dialog
-      v-model="detailVisible"
-      title="切片详情"
-      width="640px"
-      :close-on-click-modal="false"
-    >
-      <div v-if="detailChunk" class="chunk-detail">
-        <div class="detail-meta">
-          <span>序号: {{ detailChunk.chunk_index }}</span>
-          <span>页码: {{ detailChunk.page_number }}</span>
-          <span>字符数: {{ detailChunk.char_count.toLocaleString() }}</span>
-        </div>
-        <el-input
-          type="textarea"
-          :rows="10"
-          :model-value="detailChunk.text_content"
-          readonly
-          resize="none"
-        />
-      </div>
-      <template #footer>
-        <el-button @click="detailVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
 
     <!-- 编辑对话框 -->
     <el-dialog
@@ -205,9 +218,8 @@ const total = ref(0)
 const currentPage = ref(1)
 const pageSize = 20
 
-// Detail dialog
-const detailVisible = ref(false)
-const detailChunk = ref(null)
+// Detail panel (split-panel right side)
+const selectedChunk = ref(null)
 
 // Edit dialog
 const editVisible = ref(false)
@@ -281,8 +293,7 @@ function onPageChange(page) {
 
 async function handleView(row) {
   try {
-    detailChunk.value = await getChunk(kbId, docId, row.id)
-    detailVisible.value = true
+    selectedChunk.value = await getChunk(kbId, docId, row.id)
   } catch (err) {
     const msg = err?.response?.data?.detail || err?.message || '未知错误'
     ElMessage.error('加载切片详情失败: ' + msg)
@@ -400,6 +411,46 @@ onBeforeUnmount(() => stopPolling())
   color: var(--color-text-regular);
   font-size: 13px;
   line-height: 1.5;
+}
+
+/* 分栏布局 */
+.split-panel {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.panel-left {
+  flex: 1;
+  min-width: 0;
+  transition: flex 0.25s ease;
+}
+
+.panel-left.has-detail {
+  flex: 0 0 55%;
+  max-width: 55%;
+}
+
+.panel-right {
+  flex: 0 0 calc(45% - 16px);
+  max-width: calc(45% - 16px);
+  position: sticky;
+  top: 16px;
+}
+
+.detail-card {
+  height: fit-content;
+}
+
+.detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.detail-header span {
+  font-weight: 600;
+  font-size: 15px;
 }
 
 .chunk-detail .detail-meta {

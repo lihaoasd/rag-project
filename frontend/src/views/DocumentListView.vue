@@ -17,7 +17,7 @@
           上传文档
         </el-button>
       </div>
-      <p class="desc">支持的格式：PDF（.pdf）、Word（.docx / .doc），单文件上限 100MB</p>
+      <p class="desc">支持的格式：PDF（.pdf）、Word（.docx / .doc），单文件上限 500MB</p>
     </div>
 
     <!-- 表格 -->
@@ -134,7 +134,7 @@
         <el-icon :size="48" color="#C0C4CC"><UploadFilled /></el-icon>
         <div class="upload-text">
           <p>将文件拖到此处，或<em>点击选择</em></p>
-          <p class="hint">支持 .pdf / .docx / .doc 格式，单文件不超过 100MB</p>
+          <p class="hint">支持 .pdf / .docx / .doc 格式，单文件不超过 500MB</p>
         </div>
       </el-upload>
       <template #footer>
@@ -203,9 +203,9 @@ function beforeUpload(file) {
     ElMessage.error('仅支持 PDF、DOCX、DOC 格式')
     return false
   }
-  const maxSize = 100 * 1024 * 1024
+  const maxSize = 500 * 1024 * 1024
   if (file.size > maxSize) {
-    ElMessage.error('文件大小不能超过 100MB')
+    ElMessage.error('文件大小不能超过 500MB')
     return false
   }
   return true

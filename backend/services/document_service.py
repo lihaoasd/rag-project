@@ -17,7 +17,8 @@ from fastapi import UploadFile
 from config import settings
 from core.database import async_session
 from core.indexing import build_index, chunk_documents, delete_index
-from core.parser import parse_document as parse_file
+from core.parser import parse_document as parse_file, ParagraphItem
+from core.word_chunker import word_chunk
 from repositories.document_repository import DocumentRepository
 from repositories.kb_repository import KnowledgeBaseRepository
 from utils import minio_client
@@ -162,17 +163,25 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
         logger.info("文档下载完成: %s → %s", object_key, temp_path.name)
 
         # 3. 解析文档
-        llama_docs = await parse_file(temp_path, file_type)
-        if not llama_docs:
+        parsed = await parse_file(temp_path, file_type)
+        if not parsed:
             raise ValueError("文档解析结果为空，可能是不支持的格式或文件损坏")
 
-        # 将 doc_id 和原始文件名写入 metadata（覆盖解析器使用的临时文件名）
-        for d in llama_docs:
-            d.metadata["doc_id"] = doc_id
-            d.metadata["file_name"] = doc.file_name
-
-        # 4. 文本切片
-        chunks, metadatas, _ = chunk_documents(llama_docs)
+        # 4. 文本切片 — Word 走段落聚合，PDF 走 SentenceSplitter
+        if file_type in ("docx", "doc"):
+            # Word: parsed 为 list[ParagraphItem]，走 word_chunker
+            chunks, metadatas, _ = word_chunk(
+                parsed, doc_id, doc.file_name,
+                chunk_size=None, chunk_overlap=None,
+            )
+            page_count = 1  # Word 无页码概念
+        else:
+            # PDF: parsed 为 list[LlamaDocument]，走 chunk_documents
+            for d in parsed:
+                d.metadata["doc_id"] = doc_id
+                d.metadata["file_name"] = doc.file_name
+            chunks, metadatas, _ = chunk_documents(parsed)
+            page_count = len(parsed)
 
         # 5. Embedding + Milvus 索引
         milvus_pks = await build_index(chunks, metadatas, kb_id)
@@ -183,7 +192,6 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
             kb_repo = KnowledgeBaseRepository(session)
 
             await doc_repo.batch_create_chunks(doc_id, kb_id, metadatas, milvus_pks)
-            page_count = len(llama_docs)
             chunk_count = len(chunks)
             await doc_repo.update_status(
                 doc_id,
@@ -448,16 +456,23 @@ async def rechunk_document(
         logger.info("重切片下载完成: %s → %s", object_key, temp_path.name)
 
         # 6. 解析文档
-        llama_docs = await parse_file(temp_path, file_type)
-        if not llama_docs:
+        parsed = await parse_file(temp_path, file_type)
+        if not parsed:
             raise ValueError("文档解析结果为空")
 
-        for d in llama_docs:
-            d.metadata["doc_id"] = doc_id
-            d.metadata["file_name"] = doc.file_name
-
-        # 7. 重切片（用新参数）
-        chunks, metadatas, _ = chunk_documents(llama_docs, chunk_size=cs, chunk_overlap=co)
+        # 7. 重切片（用新参数）— Word 走段落聚合，PDF 走 SentenceSplitter
+        if file_type in ("docx", "doc"):
+            chunks, metadatas, _ = word_chunk(
+                parsed, doc_id, doc.file_name,
+                chunk_size=cs, chunk_overlap=co,
+            )
+            page_count = 1
+        else:
+            for d in parsed:
+                d.metadata["doc_id"] = doc_id
+                d.metadata["file_name"] = doc.file_name
+            chunks, metadatas, _ = chunk_documents(parsed, chunk_size=cs, chunk_overlap=co)
+            page_count = len(parsed)
 
         # 8. 向量化 + 索引
         milvus_pks = await build_index(chunks, metadatas, kb_id)
@@ -466,7 +481,6 @@ async def rechunk_document(
         async with async_session() as session:
             doc_repo = DocumentRepository(session)
             await doc_repo.batch_create_chunks(doc_id, kb_id, metadatas, milvus_pks)
-            page_count = len(llama_docs)
             chunk_count = len(chunks)
             await doc_repo.update_status(
                 doc_id,
