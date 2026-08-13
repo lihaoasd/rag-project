@@ -67,6 +67,23 @@
           />
         </div>
 
+        <div class="param-group">
+          <label class="param-label">排序模型（可选）</label>
+          <el-select
+            v-model="rerankModelId"
+            placeholder="不使用重排"
+            clearable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="m in rerankModels"
+              :key="m.id"
+              :label="`${m.name}（${m.model}）`"
+              :value="m.id"
+            />
+          </el-select>
+        </div>
+
         <el-button
           type="primary"
           :loading="searching"
@@ -145,6 +162,7 @@ import { ref, onMounted } from 'vue'
 import { Search, ArrowDown, ArrowUp } from '@element-plus/icons-vue'
 import { ElMessage, ElNotification } from 'element-plus'
 import { listKnowledgeBases } from '@/api/knowledgeBase'
+import { listModels } from '@/api/model'
 import { search as searchDocuments } from '@/api/search'
 
 // --- State ---
@@ -160,6 +178,8 @@ const currentPage = ref(1)
 const pageSize = 20
 const topK = ref(10)
 const similarityThreshold = ref(0.6)
+const rerankModels = ref([])
+const rerankModelId = ref(null)
 
 // --- Methods ---
 function handleKbChange() {
@@ -189,6 +209,7 @@ async function handleSearch() {
       similarity_threshold: similarityThreshold.value,
       offset: (currentPage.value - 1) * pageSize,
       limit: pageSize,
+      rerank_model_id: rerankModelId.value || null,
     })
     results.value = (data?.results || []).map((r, i) => ({ ...r, rank: i + 1, expanded: false }))
     total.value = data?.total || 0
@@ -226,6 +247,11 @@ onMounted(async () => {
   } catch (err) {
     const msg = err?.response?.data?.detail || err?.message || '未知错误'
     ElNotification.error({ title: '加载知识库列表失败', message: msg })
+  }
+  try {
+    rerankModels.value = (await listModels({ model_type: 'rerank' })) || []
+  } catch {
+    rerankModels.value = []
   }
 })
 </script>

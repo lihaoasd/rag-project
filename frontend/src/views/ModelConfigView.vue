@@ -141,7 +141,7 @@
             v-model="paramsText"
             type="textarea"
             :rows="4"
-            placeholder='如向量模型：{"dimension": 1024}；语言模型：{"temperature": 0.1}'
+            placeholder='如向量模型：{"dimension": 1024}；语言模型：{"temperature": 0.1}；排序模型：{"endpoint": "/reranks"}'
           />
           <div class="form-hint">参数以 JSON 对象保存，留空则使用默认值</div>
         </el-form-item>

@@ -30,6 +30,7 @@ async def search_multi(body: SearchRequest):
             similarity_threshold=body.similarity_threshold,
             offset=body.offset,
             limit=body.limit,
+            rerank_model_id=body.rerank_model_id,
         )
         logger.info("检索完成: total=%d", result.get("total", 0))
         return result
@@ -55,6 +56,7 @@ async def search_single(kb_id: str, body: SearchRequest):
             similarity_threshold=body.similarity_threshold,
             offset=body.offset,
             limit=body.limit,
+            rerank_model_id=body.rerank_model_id,
         )
         logger.info("检索完成: total=%d", result.get("total", 0))
         return result

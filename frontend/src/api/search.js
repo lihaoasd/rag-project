@@ -3,7 +3,7 @@ import apiClient from './request'
 /**
  * 多知识库语义检索
  */
-export function search({ kb_ids, query, top_k, similarity_threshold, offset, limit }) {
+export function search({ kb_ids, query, top_k, similarity_threshold, offset, limit, rerank_model_id }) {
   return apiClient
     .post('/search', {
       kb_ids: kb_ids || [],
@@ -12,6 +12,7 @@ export function search({ kb_ids, query, top_k, similarity_threshold, offset, lim
       similarity_threshold: similarity_threshold || 0.6,
       offset: offset || 0,
       limit: limit || 20,
+      rerank_model_id: rerank_model_id || null,
     })
     .then((res) => res.data)
 }

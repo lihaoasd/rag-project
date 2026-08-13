@@ -7,7 +7,7 @@
         "api_base", "api_key", "params", "is_default",
     }
 
-Rerank / Vision 本期仅建模 + 工厂，运行时接入见下期（见 docs/plan/08）。
+Rerank 已接入检索重排（OpenAI 兼容 /rerank）；Vision 本期仅建模 + 工厂（预留）。
 """
 import os
 import re
@@ -118,9 +118,48 @@ def create_embedding(config: dict):
     )
 
 
+class OpenAICompatibleReranker:
+    """OpenAI 兼容 rerank 端点客户端（Jina / DashScope / SiliconFlow 等约定）。"""
+
+    def __init__(
+        self,
+        model: str,
+        api_base: str,
+        api_key: str | None = None,
+        endpoint: str = "/rerank",
+    ):
+        self.model = model
+        self.api_base = (api_base or "").rstrip("/")
+        self.api_key = api_key
+        self.endpoint = endpoint  # 路径后缀，如 /rerank（Jina）或 /reranks（DashScope）
+
+    async def arerank(
+        self, query: str, documents: list[str], top_n: int | None = None
+    ) -> list[tuple[int, float]]:
+        """调用 rerank 端点，返回 [(原文档下标, relevance_score)] 列表。"""
+        import httpx
+
+        payload: dict = {"model": self.model, "query": query, "documents": documents}
+        if top_n:
+            payload["top_n"] = top_n
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(f"{self.api_base}{self.endpoint}", json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        return [(r["index"], r.get("relevance_score", 0.0)) for r in data.get("results", [])]
+
+
 def create_reranker(config: dict):
-    """创建排序模型 client（预留，本期不接检索管线）。"""
-    raise NotImplementedError("Rerank 模型运行时接入为下期范围")
+    """创建排序模型 client（OpenAI 兼容 rerank 端点，路径后缀可由 params.endpoint 覆盖）。"""
+    params = config.get("params") or {}
+    logger.info("创建 Reranker: model=%s, api_base=%s", config.get("model"), config.get("api_base"))
+    return OpenAICompatibleReranker(
+        model=config["model"],
+        api_base=config.get("api_base") or "",
+        api_key=resolve_api_key(config.get("api_key")),
+        endpoint=params.get("endpoint", "/rerank"),
+    )
 
 
 def create_vision_llm(config: dict):

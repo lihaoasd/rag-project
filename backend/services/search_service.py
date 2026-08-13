@@ -5,8 +5,10 @@ import asyncio
 from typing import Any
 
 from core.database import async_session
+from core.model_factory import create_reranker
 from core.retrieval import retrieve
 from repositories.kb_repository import KnowledgeBaseRepository
+from services import model_service
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -23,6 +25,24 @@ async def _get_kb_name(kb_id: str) -> str:
         return kb_id
 
 
+async def _apply_rerank(query: str, hits: list[dict], rerank_model_id: str) -> list[dict]:
+    """对候选结果做重排，用 rerank relevance_score 覆盖 score 并按降序返回。"""
+    config = await model_service.get_model(rerank_model_id)
+    if config is None:
+        raise ValueError("排序模型配置不存在")
+    if config.get("model_type") != "rerank":
+        raise ValueError("所选模型不是排序模型")
+
+    reranker = create_reranker(config)
+    documents = [h["text"] for h in hits]
+    scored = await reranker.arerank(query, documents, top_n=len(documents))
+    for idx, rel_score in scored:
+        if 0 <= idx < len(hits):
+            hits[idx]["score"] = round(float(rel_score), 4)
+    hits.sort(key=lambda x: x["score"], reverse=True)
+    return hits
+
+
 async def search(
     query: str,
     kb_ids: list[str],
@@ -30,6 +50,7 @@ async def search(
     similarity_threshold: float = 0.6,
     offset: int = 0,
     limit: int = 20,
+    rerank_model_id: str | None = None,
 ) -> dict[str, Any]:
     """在多个知识库中执行语义检索，按分数合并排序。
 
@@ -40,6 +61,7 @@ async def search(
         similarity_threshold: 相似度阈值
         offset: 分页偏移
         limit: 每页条数
+        rerank_model_id: 排序模型配置 ID，为空则跳过重排
 
     Returns:
         {query, total, results: [{rank, score, text, doc_id, file_name, page_number, chunk_index, kb_id, kb_name}]}
@@ -72,6 +94,13 @@ async def search(
     # 2. 合并所有结果，按分数降序排序
     all_hits = [h for hits in results_per_kb for h in hits]
     all_hits.sort(key=lambda x: x["score"], reverse=True)
+
+    # 2.5 可选 rerank（失败回退相似度排序）
+    if rerank_model_id:
+        try:
+            all_hits = await _apply_rerank(query, all_hits, rerank_model_id)
+        except Exception as e:
+            logger.warning("rerank 失败，回退相似度排序: %s", e)
 
     # 3. 分页
     total = len(all_hits)

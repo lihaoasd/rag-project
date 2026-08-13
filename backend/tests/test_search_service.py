@@ -1,7 +1,7 @@
 """
 Search Service 业务逻辑单元测试。
 """
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -92,3 +92,51 @@ class TestSearch:
         mock_retrieve.assert_called_once()
         call_kwargs = mock_retrieve.call_args.kwargs
         assert call_kwargs["top_k"] == 30
+
+
+class TestSearchWithRerank:
+    @pytest.mark.asyncio
+    async def test_search_applies_rerank(self, mock_retrieve):
+        """传入 rerank_model_id 时应按 relevance_score 重排。"""
+        hits = [
+            {"score": 0.9, "text": "文本0", "doc_id": DOC_ID,
+             "file_name": "test.pdf", "page_number": 1, "chunk_index": 0},
+            {"score": 0.8, "text": "文本1", "doc_id": DOC_ID,
+             "file_name": "test.pdf", "page_number": 1, "chunk_index": 1},
+            {"score": 0.7, "text": "文本2", "doc_id": DOC_ID,
+             "file_name": "test.pdf", "page_number": 1, "chunk_index": 2},
+        ]
+        mock_retrieve.return_value = hits
+
+        reranker = MagicMock()
+        reranker.arerank = AsyncMock(return_value=[(2, 0.99), (1, 0.5), (0, 0.1)])
+
+        with patch("services.search_service.create_reranker", return_value=reranker), \
+             patch("services.search_service.model_service.get_model",
+                   new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
+                                              "model": "bge-reranker", "api_base": "http://x",
+                                              "api_key": None, "params": {}})):
+            result = await search_service.search(
+                kb_ids=[KB_ID], query="测试", top_k=10, rerank_model_id="r1",
+            )
+
+        assert result["results"][0]["text"] == "文本2"
+        assert result["results"][0]["score"] == 0.99
+
+    @pytest.mark.asyncio
+    async def test_search_rerank_failure_falls_back(self, mock_retrieve):
+        """rerank 失败时应回退相似度排序，不影响返回。"""
+        hits = [
+            {"score": 0.9, "text": "文本0", "doc_id": DOC_ID,
+             "file_name": "test.pdf", "page_number": 1, "chunk_index": 0},
+        ]
+        mock_retrieve.return_value = hits
+
+        with patch("services.search_service.model_service.get_model",
+                   new=AsyncMock(side_effect=RuntimeError("boom"))):
+            result = await search_service.search(
+                kb_ids=[KB_ID], query="测试", top_k=10, rerank_model_id="r1",
+            )
+
+        assert result["total"] == 1
+        assert result["results"][0]["score"] == 0.9

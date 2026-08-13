@@ -174,7 +174,6 @@ const rules = {
 const MODEL_TYPES = [
   { value: 'llm', label: '语言模型' },
   { value: 'embedding', label: '向量模型' },
-  { value: 'rerank', label: '排序模型' },
   { value: 'vision', label: '视觉模型' },
   { value: 'ocr', label: 'OCR 模型' },
 ]

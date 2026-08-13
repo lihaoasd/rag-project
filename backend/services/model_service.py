@@ -8,7 +8,7 @@ import uuid
 from sqlalchemy import delete, select, update
 
 from core.database import async_session
-from core.model_factory import create_embedding, create_llm
+from core.model_factory import create_embedding, create_llm, create_reranker
 from models.knowledge_base import KnowledgeBase
 from models.model_config import ModelConfig, KBModelBinding
 from utils.logging import get_logger
@@ -16,6 +16,8 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 MODEL_TYPES = ["llm", "embedding", "rerank", "vision", "ocr"]
+# 知识库可绑定类型：rerank 为检索期全局使用，不进知识库绑定
+KB_BINDABLE_TYPES = ["llm", "embedding", "vision", "ocr"]
 
 
 def _to_dict(mc: ModelConfig) -> dict:
@@ -178,7 +180,7 @@ async def get_kb_models(kb_id: str) -> dict:
         default_map = {mc.model_type: mc for mc in defaults_result.scalars().all()}
 
     resolved = []
-    for mt in MODEL_TYPES:
+    for mt in KB_BINDABLE_TYPES:
         binding = binding_map.get(mt)
         if binding is not None:
             config = await get_model(binding.model_config_id)
@@ -211,7 +213,7 @@ async def bind_model(kb_id: str, model_type: str, model_config_id: str | None) -
 
     Embedding 模型在知识库已有文档时锁定，禁止切换。
     """
-    if model_type not in MODEL_TYPES:
+    if model_type not in KB_BINDABLE_TYPES:
         raise ValueError(f"无效的模型类型: {model_type}")
 
     async with async_session() as session:
@@ -224,7 +226,14 @@ async def bind_model(kb_id: str, model_type: str, model_config_id: str | None) -
         # 解绑
         if model_config_id is None:
             if model_type == "embedding" and kb.document_count > 0:
-                raise ValueError("该知识库已有文档，Embedding 模型已锁定，禁止切换")
+                # 仅在确实存在绑定时才视为「切换」；已跟随全局默认时解绑是 no-op
+                existing = await session.execute(
+                    select(KBModelBinding).where(
+                        KBModelBinding.kb_id == kb_id, KBModelBinding.model_type == "embedding"
+                    )
+                )
+                if existing.scalar_one_or_none() is not None:
+                    raise ValueError("该知识库已有文档，Embedding 模型已锁定，禁止切换")
             await session.execute(
                 delete(KBModelBinding).where(
                     KBModelBinding.kb_id == kb_id, KBModelBinding.model_type == model_type
@@ -293,7 +302,7 @@ async def test_model(
 ) -> dict:
     """测试模型连接可用性（不落库）。
 
-    支持 llm / embedding；rerank / vision / ocr 本期仅建模 + 工厂（预留），
+    支持 llm / embedding / rerank；vision / ocr 本期仅建模 + 工厂（预留），
     返回不支持在线测试。
     """
     config = {
@@ -308,7 +317,7 @@ async def test_model(
         "is_default": False,
     }
 
-    if model_type not in ("llm", "embedding"):
+    if model_type not in ("llm", "embedding", "rerank"):
         return {"success": False, "message": "该类型模型本期暂不支持在线测试"}
 
     start = time.perf_counter()
@@ -325,12 +334,21 @@ async def test_model(
             if not content:
                 return {"success": False, "message": "模型返回空响应"}
             detail = content[:100]
-        else:  # embedding
+        elif model_type == "embedding":
             emb = create_embedding(config)
             vec = await asyncio.wait_for(emb.aget_text_embedding("测试"), timeout=20)
             if not vec:
                 return {"success": False, "message": "向量模型返回空向量"}
             detail = f"向量维度: {len(vec)}"
+        elif model_type == "rerank":
+            reranker = create_reranker(config)
+            results = await asyncio.wait_for(
+                reranker.arerank("测试查询", ["投标文件内容示例", "另一段示例文本"], top_n=2),
+                timeout=20,
+            )
+            if not results:
+                return {"success": False, "message": "排序模型返回空结果"}
+            detail = f"返回 {len(results)} 条，最高分 {results[0][1]:.4f}"
 
         latency_ms = round((time.perf_counter() - start) * 1000)
         return {"success": True, "message": "连接成功", "latency_ms": latency_ms, "detail": detail}
