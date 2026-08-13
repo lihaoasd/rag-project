@@ -7,7 +7,7 @@
         "api_base", "api_key", "params", "is_default",
     }
 
-Rerank 已接入检索重排（OpenAI 兼容 /rerank）；Vision 本期仅建模 + 工厂（预留）。
+Rerank 已接入检索重排（OpenAI 兼容 /rerank）；Vision 已支持测试连接（纯文本），运行时调用点仍预留。
 """
 import os
 import re
@@ -163,8 +163,18 @@ def create_reranker(config: dict):
 
 
 def create_vision_llm(config: dict):
-    """创建视觉模型 client（预留，本期不接调用点）。"""
-    raise NotImplementedError("Vision 模型运行时接入为下期范围")
+    """创建视觉模型 client（OpenAI 兼容多模态；测试连接走纯文本连通性）。"""
+    from llama_index.llms.openai_like import OpenAILike
+
+    params = config.get("params") or {}
+    logger.info("创建 Vision LLM: platform=%s, model=%s", config.get("platform"), config.get("model"))
+    return OpenAILike(
+        model=config["model"],
+        api_base=config.get("api_base"),
+        api_key=resolve_api_key(config.get("api_key")),
+        temperature=params.get("temperature", 0.1),
+        is_chat_model=True,
+    )
 
 
 def create_ocr(config: dict):

@@ -83,13 +83,34 @@ class TestModelTest:
         assert "0.95" in result["detail"]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("model_type", ["vision", "ocr"])
-    async def test_vision_ocr_not_supported(self, model_type):
+    async def test_ocr_not_supported(self):
         result = await model_service.test_model(
-            model_type=model_type, platform="x", model="m",
+            model_type="ocr", platform="x", model="m",
         )
         assert result["success"] is False
         assert "暂不支持" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_vision_success(self):
+        with patch("services.model_service.create_vision_llm") as mock_create:
+            mock_create.return_value = _mock_llm("OK")
+            result = await model_service.test_model(
+                model_type="vision", platform="openai", model="qwen-vl",
+                api_base="http://x", api_key="k",
+            )
+        assert result["success"] is True
+        assert "latency_ms" in result
+        assert result["detail"] == "OK"
+
+    @pytest.mark.asyncio
+    async def test_vision_empty_response(self):
+        with patch("services.model_service.create_vision_llm") as mock_create:
+            mock_create.return_value = _mock_llm("")
+            result = await model_service.test_model(
+                model_type="vision", platform="x", model="m",
+            )
+        assert result["success"] is False
+        assert "空响应" in result["message"]
 
     @pytest.mark.asyncio
     async def test_llm_empty_response(self):

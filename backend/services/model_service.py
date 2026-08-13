@@ -8,7 +8,7 @@ import uuid
 from sqlalchemy import delete, select, update
 
 from core.database import async_session
-from core.model_factory import create_embedding, create_llm, create_reranker
+from core.model_factory import create_embedding, create_llm, create_reranker, create_vision_llm
 from models.knowledge_base import KnowledgeBase
 from models.model_config import ModelConfig, KBModelBinding
 from utils.logging import get_logger
@@ -302,8 +302,8 @@ async def test_model(
 ) -> dict:
     """测试模型连接可用性（不落库）。
 
-    支持 llm / embedding / rerank；vision / ocr 本期仅建模 + 工厂（预留），
-    返回不支持在线测试。
+    支持 llm / embedding / rerank / vision；vision 走纯文本连通性（复用 llm 测试），
+    ocr 本期仍仅建模 + 工厂（预留），返回不支持在线测试。
     """
     config = {
         "id": "",
@@ -317,15 +317,15 @@ async def test_model(
         "is_default": False,
     }
 
-    if model_type not in ("llm", "embedding", "rerank"):
+    if model_type not in ("llm", "embedding", "rerank", "vision"):
         return {"success": False, "message": "该类型模型本期暂不支持在线测试"}
 
     start = time.perf_counter()
     try:
-        if model_type == "llm":
+        if model_type in ("llm", "vision"):
             from llama_index.core.base.llms.types import ChatMessage, MessageRole
 
-            llm = create_llm(config)
+            llm = create_llm(config) if model_type == "llm" else create_vision_llm(config)
             response = await asyncio.wait_for(
                 llm.achat(messages=[ChatMessage(role=MessageRole.USER, content="你好，请回复：OK")]),
                 timeout=20,
