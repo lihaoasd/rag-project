@@ -10,19 +10,19 @@ from llama_index.vector_stores.milvus import MilvusVectorStore
 from pymilvus import DataType
 
 from config import settings
-from core.llm_factory import create_embedding
+from core.model_factory import create_embedding, resolve_model_config
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def _get_vector_store(kb_id: str) -> MilvusVectorStore:
-    """为指定知识库创建 MilvusVectorStore 实例（与 indexing.py 参数一致）。"""
+def _get_vector_store(kb_id: str, dim: int) -> MilvusVectorStore:
+    """为指定知识库创建 MilvusVectorStore 实例（维度来自 embedding 配置）。"""
     safe = kb_id.replace("-", "_")
     return MilvusVectorStore(
         uri=settings.milvus_uri,
         collection_name=f"kb_{safe}",
-        dim=settings.embedding_dim,
+        dim=dim,
         similarity_metric="IP",
         index_config={"index_type": "IVF_FLAT", "params": {"nlist": 128}},
         search_config={"nprobe": 16},
@@ -51,16 +51,18 @@ async def retrieve(
         按分数降序排列的结果列表:
         [{score, text, doc_id, file_name, page_number, chunk_index}, ...]
     """
-    # 1. 创建 vector_store + index
-    vector_store = _get_vector_store(kb_id)
+    # 1. resolve Embedding 配置（维度 + client）
+    embed_config = await resolve_model_config(kb_id, "embedding")
+    dim = (embed_config.get("params") or {}).get("dimension") or settings.embedding_dim
+    embed_model = create_embedding(embed_config)
+
+    # 2. 创建 vector_store + index
+    vector_store = _get_vector_store(kb_id, dim)
 
     # 检查 Collection 是否存在
     if vector_store.collection_name not in vector_store.client.list_collections():
         logger.warning("retrieve: Collection 不存在 %s", vector_store.collection_name)
         return []
-
-    # 2. 构建 Embedding 模型
-    embed_model = create_embedding(settings)
 
     # 3. 构建 VectorStoreIndex + Retriever
     index = VectorStoreIndex.from_vector_store(vector_store, embed_model=embed_model)

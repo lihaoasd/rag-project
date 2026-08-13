@@ -105,7 +105,17 @@
               </div>
               <span class="result-rank">#{{ item.rank }}</span>
             </div>
-            <div class="result-text" v-html="highlightText(item.text, query)" />
+            <div
+              class="result-text"
+              :class="{ 'is-expanded': item.expanded }"
+              v-html="highlightText(item.text, query)"
+            />
+            <div class="expand-toggle">
+              <el-button text type="primary" size="small" @click="toggleExpand(item)">
+                <el-icon><ArrowDown v-if="!item.expanded" /><ArrowUp v-else /></el-icon>
+                {{ item.expanded ? '收起' : '展开全文' }}
+              </el-button>
+            </div>
             <div class="result-meta">
               <span><el-icon><Folder /></el-icon> {{ item.kb_name || '未知知识库' }}</span>
               <span><el-icon><Document /></el-icon> {{ item.file_name }}</span>
@@ -132,7 +142,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { Search } from '@element-plus/icons-vue'
+import { Search, ArrowDown, ArrowUp } from '@element-plus/icons-vue'
 import { ElMessage, ElNotification } from 'element-plus'
 import { listKnowledgeBases } from '@/api/knowledgeBase'
 import { search as searchDocuments } from '@/api/search'
@@ -180,7 +190,7 @@ async function handleSearch() {
       offset: (currentPage.value - 1) * pageSize,
       limit: pageSize,
     })
-    results.value = (data?.results || []).map((r, i) => ({ ...r, rank: i + 1 }))
+    results.value = (data?.results || []).map((r, i) => ({ ...r, rank: i + 1, expanded: false }))
     total.value = data?.total || 0
   } catch (err) {
     const msg = err?.response?.data?.detail || err?.message || '检索失败'
@@ -196,6 +206,10 @@ async function handleSearch() {
 function onPageChange(page) {
   currentPage.value = page
   handleSearch()
+}
+
+function toggleExpand(item) {
+  item.expanded = !item.expanded
 }
 
 function highlightText(text, keyword) {
@@ -388,6 +402,19 @@ onMounted(async () => {
   right: 0;
   height: 40px;
   background: linear-gradient(transparent, #fff);
+}
+
+.result-text.is-expanded {
+  max-height: none;
+  overflow: visible;
+}
+
+.result-text.is-expanded::after {
+  display: none;
+}
+
+.expand-toggle {
+  margin-top: 4px;
 }
 
 .result-text :deep(mark) {

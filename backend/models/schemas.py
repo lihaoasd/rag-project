@@ -223,6 +223,71 @@ class PromptPreviewResponse(BaseModel):
 
 
 # ============================================================
+# 模型配置
+# ============================================================
+class ModelConfigCreate(BaseModel):
+    """创建模型配置请求"""
+    name: str = Field(..., min_length=1, max_length=100, description="配置名称")
+    model_type: str = Field(..., description="模型类型: llm/embedding/rerank/vision/ocr")
+    platform: str = Field(..., min_length=1, max_length=50, description="平台标识")
+    model: str = Field(..., min_length=1, max_length=100, description="模型名称")
+    api_base: str | None = Field(None, description="API 地址")
+    api_key: str | None = Field(None, description="API Key（或 ${ENV} 占位符）")
+    params: dict | None = Field(None, description="类型特定参数")
+    is_default: bool = Field(False, description="是否设为该类型全局默认")
+
+
+class ModelConfigUpdate(BaseModel):
+    """更新模型配置请求"""
+    name: str | None = Field(None, min_length=1, max_length=100)
+    model_type: str | None = Field(None)
+    platform: str | None = Field(None, min_length=1, max_length=50)
+    model: str | None = Field(None, min_length=1, max_length=100)
+    api_base: str | None = Field(None)
+    api_key: str | None = Field(None)
+    params: dict | None = Field(None)
+    is_default: bool | None = Field(None)
+
+
+class ModelConfigResponse(BaseModel):
+    """模型配置响应"""
+    id: str
+    name: str
+    model_type: str
+    platform: str
+    model: str
+    api_base: str | None
+    api_key: str | None
+    params: dict | None
+    is_default: bool
+    created_at: str
+    updated_at: str
+
+
+class KBModelBindingSet(BaseModel):
+    """知识库模型绑定请求（null 表示解绑回退默认）"""
+    model_config_id: str | None = Field(None, description="模型配置 ID")
+
+
+class ModelTestRequest(BaseModel):
+    """模型连接测试请求（不落库）"""
+    model_type: str = Field(..., description="模型类型: llm/embedding/rerank/vision/ocr")
+    platform: str = Field(..., min_length=1, max_length=50, description="平台标识")
+    model: str = Field(..., min_length=1, max_length=100, description="模型名称")
+    api_base: str | None = Field(None, description="API 地址")
+    api_key: str | None = Field(None, description="API Key（或 ${ENV} 占位符）")
+    params: dict | None = Field(None, description="类型特定参数")
+
+
+class ModelTestResponse(BaseModel):
+    """模型连接测试响应"""
+    success: bool
+    message: str
+    latency_ms: int | None = Field(None, description="请求耗时（毫秒）")
+    detail: str | None = Field(None, description="额外信息（如向量维度 / 响应预览）")
+
+
+# ============================================================
 # 通用
 # ============================================================
 class ErrorResponse(BaseModel):

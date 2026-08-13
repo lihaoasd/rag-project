@@ -11,6 +11,7 @@ from utils import minio_client
 from repositories.kb_repository import KnowledgeBaseRepository
 from repositories.document_repository import DocumentRepository
 from repositories.conversation_repository import ConversationRepository
+from services import model_service
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -76,6 +77,9 @@ async def delete_knowledge_base(kb_id: str) -> bool:
         deleted_docs = await doc_repo.delete_documents_by_kb_id(kb_id)
         # 1e. 删除知识库
         await kb_repo.delete(kb_id)
+
+    # 1f. 删除模型绑定（手动级联）
+    await model_service.delete_kb_bindings(kb_id)
 
     # 2. 删除 Milvus Collection（同步操作，放到线程池）
     try:

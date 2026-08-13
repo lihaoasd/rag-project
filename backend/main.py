@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from core import parse_queue
-from routers import knowledge_base, document, search, chat, chunk, prompt
+from routers import knowledge_base, document, search, chat, chunk, prompt, model
 from utils.logging import get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -82,6 +82,7 @@ app.include_router(search.router)
 app.include_router(chat.router)
 app.include_router(chunk.router)
 app.include_router(prompt.router)
+app.include_router(model.router)
 
 
 @app.get("/api/health")

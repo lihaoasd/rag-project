@@ -13,7 +13,7 @@ class TestSearch:
     @pytest.mark.asyncio
     async def test_search_returns_results(self, mock_retrieve):
         result = await search_service.search(
-            kb_id=KB_ID,
+            kb_ids=[KB_ID],
             query="测试查询",
             top_k=10,
             similarity_threshold=0.6,
@@ -31,7 +31,7 @@ class TestSearch:
         mock_retrieve.return_value = []
 
         result = await search_service.search(
-            kb_id=KB_ID,
+            kb_ids=[KB_ID],
             query="无结果查询",
         )
         assert result["total"] == 0
@@ -48,7 +48,7 @@ class TestSearch:
         mock_retrieve.return_value = hits
 
         result = await search_service.search(
-            kb_id=KB_ID,
+            kb_ids=[KB_ID],
             query="分页测试",
             top_k=10,
             offset=3,
@@ -68,7 +68,7 @@ class TestSearch:
         mock_retrieve.return_value = hits
 
         result = await search_service.search(
-            kb_id=KB_ID,
+            kb_ids=[KB_ID],
             query="超出偏移",
             offset=10,
             limit=20,
@@ -82,7 +82,7 @@ class TestSearch:
         mock_retrieve.return_value = []
 
         await search_service.search(
-            kb_id=KB_ID,
+            kb_ids=[KB_ID],
             query="test",
             top_k=5,
             offset=20,

@@ -15,7 +15,7 @@ from llama_index.vector_stores.milvus import MilvusVectorStore
 from pymilvus import DataType
 
 from config import settings
-from core.llm_factory import create_embedding
+from core.model_factory import create_embedding, resolve_model_config
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -24,16 +24,17 @@ logger = get_logger(__name__)
 TTL_SECONDS = 7 * 24 * 3600
 
 
-def _get_vector_store(kb_id: str) -> MilvusVectorStore:
+def _get_vector_store(kb_id: str, dim: int | None = None) -> MilvusVectorStore:
     """为指定知识库创建或获取 MilvusVectorStore 实例。
 
     Schema、Collection、Index 均由 MilvusVectorStore 自动管理。
+    dim 为空时回退 settings.embedding_dim（删除/删除集合等只读操作可不传）。
     """
     safe = kb_id.replace("-", "_")
     return MilvusVectorStore(
         uri=settings.milvus_uri,
         collection_name=f"kb_{safe}",
-        dim=settings.embedding_dim,
+        dim=dim or settings.embedding_dim,
         similarity_metric="IP",
         index_config={"index_type": "IVF_FLAT", "params": {"nlist": 128}},
         search_config={"nprobe": 16},
@@ -73,8 +74,10 @@ async def build_index(
         embedding_dim or settings.embedding_dim,
     )
 
-    # 1. 获取 Embedding 模型
-    embed_model = create_embedding(settings)
+    # 1. resolve Embedding 配置（维度 + client）
+    embed_config = await resolve_model_config(kb_id, "embedding")
+    dim = embedding_dim or (embed_config.get("params") or {}).get("dimension") or settings.embedding_dim
+    embed_model = create_embedding(embed_config)
 
     # 2. 创建 TextNode 列表（含 SOURCE 关系，确保 ref_doc_id 正确映射到 doc_id 字段）
     text_nodes: list[TextNode] = []
@@ -112,7 +115,7 @@ async def build_index(
         node.embedding = emb
 
     # 4. 通过 MilvusVectorStore 写入（同步 I/O，放到线程池）
-    vector_store = _get_vector_store(kb_id)
+    vector_store = _get_vector_store(kb_id, dim)
     node_ids = await asyncio.to_thread(vector_store.add, text_nodes)
     logger.info(
         "build_index 完成: kb_id=%s, collection=%s, inserted=%d",
@@ -237,7 +240,9 @@ async def insert_single_vector(kb_id: str, text: str, metadata: dict) -> str:
     if len(text) > 65535:
         raise ValueError(f"文本超过 Milvus VARCHAR 最大长度限制 (65535)，当前 {len(text)} 字符")
 
-    embed_model = create_embedding(settings)
+    embed_config = await resolve_model_config(kb_id, "embedding")
+    dim = (embed_config.get("params") or {}).get("dimension") or settings.embedding_dim
+    embed_model = create_embedding(embed_config)
 
     doc_id = metadata.get("doc_id", "")
 
@@ -262,7 +267,7 @@ async def insert_single_vector(kb_id: str, text: str, metadata: dict) -> str:
     node.embedding = embedding
 
     # 写入 Milvus（同步 I/O，放到线程池）
-    vector_store = _get_vector_store(kb_id)
+    vector_store = _get_vector_store(kb_id, dim)
     node_ids = await asyncio.to_thread(vector_store.add, [node])
     new_node_id = node_ids[0]
 

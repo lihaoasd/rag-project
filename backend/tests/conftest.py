@@ -53,6 +53,9 @@ def mock_async_session(mock_session):
         "services.kb_service.async_session",
         "services.document_service.async_session",
         "services.chat_service.async_session",
+        "services.search_service.async_session",
+        "services.model_service.async_session",
+        "core.model_factory.async_session",
     ]
     active_patches = []
     for target in targets:
@@ -159,7 +162,7 @@ def mock_llm():
     llm.achat.return_value = response
 
     patches_data = []
-    for target in ["core.llm_factory.create_llm",
+    for target in ["core.model_factory.create_llm",
                    "services.chat_service.create_llm"]:
         p = patch(target)
         mock_create = p.start()
@@ -178,7 +181,7 @@ def mock_llm():
 @pytest.fixture(autouse=True)
 def mock_embedding():
     """全局 mock Embedding 创建（避免连接外部 API）。"""
-    with patch("core.llm_factory.create_embedding") as mock_emb:
+    with patch("core.model_factory.create_embedding") as mock_emb:
         emb = MagicMock()
         emb.aget_text_embedding_batch = AsyncMock(return_value=[[0.1] * 1024])
         emb.aget_text_embedding = AsyncMock(return_value=[0.1] * 1024)

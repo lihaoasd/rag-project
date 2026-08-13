@@ -43,6 +43,9 @@
           <el-button text type="primary" size="small" @click="enterKb(kb.id)">
             进入
           </el-button>
+          <el-button text type="primary" size="small" @click="openBindingDialog(kb)">
+            模型
+          </el-button>
           <el-popconfirm
             title="删除后知识库内所有文档和向量数据将被清除，确定删除？"
             confirm-button-text="确认删除"
@@ -97,6 +100,49 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 模型绑定对话框 -->
+    <el-dialog
+      v-model="bindingDialogVisible"
+      :title="`模型绑定 - ${bindingKb?.name || ''}`"
+      width="560px"
+      :close-on-click-modal="false"
+      destroy-on-close
+    >
+      <div v-loading="bindingLoading">
+        <el-form label-position="top">
+          <el-form-item
+            v-for="t in MODEL_TYPES"
+            :key="t.value"
+            :label="t.label + (t.value === 'embedding' && bindingLocked ? '（已锁定）' : '')"
+          >
+            <el-select
+              v-model="bindingForm[t.value]"
+              placeholder="选择模型"
+              style="width: 100%"
+              :disabled="t.value === 'embedding' && bindingLocked"
+            >
+              <el-option label="跟随全局默认" value="" />
+              <el-option
+                v-for="m in modelsByType(t.value)"
+                :key="m.id"
+                :label="`${m.name}（${m.model}）`"
+                :value="m.id"
+              />
+            </el-select>
+          </el-form-item>
+        </el-form>
+        <div v-if="bindingLocked" class="lock-hint">
+          该知识库已有文档，Embedding 模型已锁定，禁止切换。
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="bindingDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="bindingSaving" @click="handleSaveBinding">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -106,6 +152,7 @@ import { useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
 import { ElMessage, ElNotification } from 'element-plus'
 import { listKnowledgeBases, createKnowledgeBase, deleteKnowledgeBase } from '@/api/knowledgeBase'
+import { listModels, getKbModels, bindKbModel } from '@/api/model'
 
 const router = useRouter()
 
@@ -121,6 +168,71 @@ const rules = {
     { required: true, message: '请输入知识库名称', trigger: 'blur' },
     { min: 1, max: 255, message: '长度在 1 到 255 个字符', trigger: 'blur' },
   ],
+}
+
+// --- 模型绑定状态 ---
+const MODEL_TYPES = [
+  { value: 'llm', label: '语言模型' },
+  { value: 'embedding', label: '向量模型' },
+  { value: 'rerank', label: '排序模型' },
+  { value: 'vision', label: '视觉模型' },
+  { value: 'ocr', label: 'OCR 模型' },
+]
+const bindingDialogVisible = ref(false)
+const bindingKb = ref(null)
+const bindingLoading = ref(false)
+const bindingSaving = ref(false)
+const allModels = ref([])
+const bindingForm = ref({})
+
+const bindingLocked = computed(() => (bindingKb.value?.document_count || 0) > 0)
+
+function modelsByType(type) {
+  return allModels.value.filter(m => m.model_type === type)
+}
+
+async function openBindingDialog(kb) {
+  bindingKb.value = kb
+  bindingDialogVisible.value = true
+  bindingLoading.value = true
+  try {
+    const [models, kbModels] = await Promise.all([
+      listModels(),
+      getKbModels(kb.id),
+    ])
+    allModels.value = models || []
+    const form = {}
+    for (const t of MODEL_TYPES) {
+      const resolved = (kbModels?.resolved || []).find(r => r.model_type === t.value)
+      form[t.value] = resolved && !resolved.inherited && resolved.model_config_id
+        ? resolved.model_config_id
+        : ''
+    }
+    bindingForm.value = form
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '加载失败'
+    ElMessage.error('加载模型配置失败: ' + msg)
+  } finally {
+    bindingLoading.value = false
+  }
+}
+
+async function handleSaveBinding() {
+  if (!bindingKb.value) return
+  bindingSaving.value = true
+  try {
+    for (const t of MODEL_TYPES) {
+      const val = bindingForm.value[t.value]
+      await bindKbModel(bindingKb.value.id, t.value, val || null)
+    }
+    ElMessage.success('模型绑定已保存')
+    bindingDialogVisible.value = false
+  } catch (err) {
+    const detail = err?.response?.data?.detail || err?.message || '保存失败'
+    ElMessage.error(detail)
+  } finally {
+    bindingSaving.value = false
+  }
 }
 
 // --- Computed ---

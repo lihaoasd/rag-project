@@ -40,6 +40,12 @@
             <span>提示词管理</span>
           </template>
         </el-menu-item>
+        <el-menu-item index="/models">
+          <template #title>
+            <el-icon><Cpu /></el-icon>
+            <span>模型配置</span>
+          </template>
+        </el-menu-item>
       </el-menu>
     </el-aside>
 

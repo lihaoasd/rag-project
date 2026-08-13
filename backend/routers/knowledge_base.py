@@ -3,8 +3,8 @@
 """
 from fastapi import APIRouter, HTTPException
 
-from models.schemas import KnowledgeBaseCreate, KnowledgeBaseResponse
-from services import kb_service
+from models.schemas import KBModelBindingSet, KnowledgeBaseCreate, KnowledgeBaseResponse
+from services import kb_service, model_service
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -54,3 +54,27 @@ async def delete_knowledge_base(kb_id: str):
         logger.warning("删除失败，知识库不存在: kb_id=%s", kb_id)
         raise HTTPException(status_code=404, detail="知识库不存在")
     logger.info("知识库已删除: kb_id=%s", kb_id)
+
+
+@router.get("/{kb_id}/models")
+async def get_kb_models(kb_id: str):
+    """获取知识库各类型模型的绑定与最终生效配置"""
+    try:
+        return await model_service.get_kb_models(kb_id)
+    except Exception as e:
+        logger.error("获取知识库模型失败: %s", str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{kb_id}/models/{model_type}")
+async def bind_kb_model(kb_id: str, model_type: str, body: KBModelBindingSet):
+    """绑定/解绑知识库模型（Embedding 有文档时锁定）"""
+    try:
+        return await model_service.bind_model(kb_id, model_type, body.model_config_id)
+    except ValueError as e:
+        msg = str(e)
+        if "锁定" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        if "不存在" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)

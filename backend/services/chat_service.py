@@ -19,7 +19,7 @@ from llama_index.core.base.llms.types import ChatMessage, MessageRole
 
 from config import settings
 from core.database import async_session
-from core.llm_factory import create_llm
+from core.model_factory import create_llm, resolve_model_config
 from core.prompt_renderer import render_prompt, extract_variables
 from core.retrieval import retrieve
 from repositories.conversation_repository import ConversationRepository
@@ -177,8 +177,14 @@ async def chat_stream(
             conv_repo = ConversationRepository(session)
             await conv_repo.create_message(conv_id, role="user", content=message)
 
-        # Stage 6: LLM 流式生成
-        llm = create_llm(settings)
+        # Stage 6: LLM 流式生成（按知识库 resolve 模型配置）
+        try:
+            llm_config = await resolve_model_config(kb_id, "llm")
+        except Exception as e:
+            logger.error("解析 LLM 模型配置失败: %s", e, exc_info=True)
+            yield _sse_event("error", message=f"未配置可用的 LLM 模型: {e}")
+            return
+        llm = create_llm(llm_config)
         full_response = ""
 
         try:

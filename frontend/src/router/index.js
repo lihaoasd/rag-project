@@ -35,6 +35,11 @@ const routes = [
     name: 'Prompts',
     component: () => import('@/views/PromptManagementView.vue'),
   },
+  {
+    path: '/models',
+    name: 'Models',
+    component: () => import('@/views/ModelConfigView.vue'),
+  },
 ]
 
 const router = createRouter({

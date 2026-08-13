@@ -47,13 +47,16 @@ async def search(
     if not kb_ids:
         return {"query": query, "total": 0, "results": []}
 
+    # 分页需保证候选数足以覆盖 offset+limit（多库并发各取 fetch_top_k）
+    fetch_top_k = max(top_k, offset + limit)
+
     # 1. 并发检索所有知识库
     async def _retrieve_one(kb_id: str):
         try:
             hits = await retrieve(
                 query=query,
                 kb_id=kb_id,
-                top_k=top_k,
+                top_k=fetch_top_k,
                 similarity_threshold=similarity_threshold,
             )
             # 打上知识库标签

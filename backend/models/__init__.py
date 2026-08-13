@@ -5,7 +5,7 @@ from .base import Base
 from .knowledge_base import KnowledgeBase
 from .document import Document, DocumentChunk
 from .conversation import Conversation, Message
-from .config_model import LLMConfig, EmbeddingConfig
+from .model_config import ModelConfig, KBModelBinding
 from .prompt_template import PromptTemplate
 
 __all__ = [
@@ -15,7 +15,7 @@ __all__ = [
     "DocumentChunk",
     "Conversation",
     "Message",
-    "LLMConfig",
-    "EmbeddingConfig",
+    "ModelConfig",
+    "KBModelBinding",
     "PromptTemplate",
 ]
