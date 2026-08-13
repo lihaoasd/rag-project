@@ -167,21 +167,21 @@ class TestSearchRequest:
         assert req.query == "测试查询"
         assert req.top_k == 10  # 默认值
         assert req.similarity_threshold == 0.6  # 默认值
-        assert req.offset == 0
-        assert req.limit == 20
+        assert req.rerank_top_n == 20  # 默认值
+        assert req.rerank_vector_threshold is None  # 默认值
 
     def test_valid_custom_params(self):
         req = SearchRequest(
             query="测试查询",
             top_k=5,
             similarity_threshold=0.8,
-            offset=10,
-            limit=50,
+            rerank_top_n=30,
+            rerank_vector_threshold=0.7,
         )
         assert req.top_k == 5
         assert req.similarity_threshold == 0.8
-        assert req.offset == 10
-        assert req.limit == 50
+        assert req.rerank_top_n == 30
+        assert req.rerank_vector_threshold == 0.7
 
     def test_missing_query_raises_error(self):
         with pytest.raises(ValidationError):
@@ -201,16 +201,12 @@ class TestSearchRequest:
         with pytest.raises(ValidationError):
             SearchRequest(query="test", similarity_threshold=1.1)
 
-    def test_offset_negative_raises_error(self):
+    def test_rerank_top_n_out_of_range(self):
         with pytest.raises(ValidationError):
-            SearchRequest(query="test", offset=-1)
-
-    def test_limit_out_of_range(self):
-        with pytest.raises(ValidationError):
-            SearchRequest(query="test", limit=0)
+            SearchRequest(query="test", rerank_top_n=0)
 
         with pytest.raises(ValidationError):
-            SearchRequest(query="test", limit=101)
+            SearchRequest(query="test", rerank_top_n=101)
 
 
 # ============================================================

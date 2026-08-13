@@ -84,6 +84,41 @@
           </el-select>
         </div>
 
+        <template v-if="rerankModelId">
+          <div class="param-group">
+            <label class="param-label">
+              进入排序模型候选数
+              <span class="param-hint">{{ rerankTopN }}</span>
+            </label>
+            <el-slider
+              v-model="rerankTopN"
+              :min="1"
+              :max="100"
+              :step="1"
+              show-stops
+            />
+          </div>
+
+          <div class="param-group">
+            <el-checkbox v-model="useVectorThreshold">自定义向量门槛</el-checkbox>
+            <template v-if="useVectorThreshold">
+              <label class="param-label">
+                向量门槛
+                <span class="param-hint">{{ (rerankVectorThreshold * 100).toFixed(0) }}%</span>
+              </label>
+              <el-slider
+                v-model="rerankVectorThreshold"
+                :min="0"
+                :max="1"
+                :step="0.05"
+                :format-tooltip="(v) => (v * 100).toFixed(0) + '%'"
+                show-stops
+              />
+            </template>
+            <span v-else class="param-hint-sub">默认等于相似度阈值</span>
+          </div>
+        </template>
+
         <el-button
           type="primary"
           :loading="searching"
@@ -139,16 +174,6 @@
               <span><el-icon><Location /></el-icon> 第 {{ item.page_number }} 页</span>
             </div>
           </div>
-
-          <el-pagination
-            v-if="total > pageSize"
-            :current-page="currentPage"
-            :page-size="pageSize"
-            :total="total"
-            layout="total, prev, pager, next"
-            small
-            @current-change="onPageChange"
-          />
         </div>
 
         <el-empty v-else description="未找到相关内容，请尝试其他检索词" :image-size="80" />
@@ -174,12 +199,13 @@ const total = ref(0)
 const searched = ref(false)
 const searching = ref(false)
 const elapsed = ref(0)
-const currentPage = ref(1)
-const pageSize = 20
 const topK = ref(10)
 const similarityThreshold = ref(0.6)
 const rerankModels = ref([])
 const rerankModelId = ref(null)
+const rerankTopN = ref(20)
+const useVectorThreshold = ref(false)
+const rerankVectorThreshold = ref(0.6)
 
 // --- Methods ---
 function handleKbChange() {
@@ -207,9 +233,9 @@ async function handleSearch() {
       query: query.value.trim(),
       top_k: topK.value,
       similarity_threshold: similarityThreshold.value,
-      offset: (currentPage.value - 1) * pageSize,
-      limit: pageSize,
       rerank_model_id: rerankModelId.value || null,
+      rerank_top_n: rerankTopN.value,
+      rerank_vector_threshold: useVectorThreshold.value ? rerankVectorThreshold.value : null,
     })
     results.value = (data?.results || []).map((r, i) => ({ ...r, rank: i + 1, expanded: false }))
     total.value = data?.total || 0
@@ -222,11 +248,6 @@ async function handleSearch() {
     searching.value = false
     elapsed.value = (performance.now() - t0).toFixed(0)
   }
-}
-
-function onPageChange(page) {
-  currentPage.value = page
-  handleSearch()
 }
 
 function toggleExpand(item) {
@@ -317,6 +338,11 @@ onMounted(async () => {
   font-size: 12px;
   font-weight: 500;
   color: var(--color-primary);
+}
+
+.param-group .param-hint-sub {
+  font-size: 12px;
+  color: var(--color-text-secondary);
 }
 
 /* ===== 右侧结果面板 ===== */

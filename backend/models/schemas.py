@@ -58,12 +58,14 @@ class ParseResponse(BaseModel):
 # ============================================================
 class SearchRequest(BaseModel):
     query: str = Field(..., description="检索关键词或自然语言描述")
-    top_k: int = Field(10, ge=1, le=50, description="向量检索候选数量")
+    top_k: int = Field(10, ge=1, le=50, description="向量检索候选数量（也是无重排时的返回条数上限）")
     similarity_threshold: float = Field(0.6, ge=0, le=1, description="相似度阈值")
-    offset: int = Field(0, ge=0, description="分页偏移")
-    limit: int = Field(20, ge=1, le=100, description="每页条数")
     kb_ids: list[str] | None = Field(None, description="知识库 ID 列表，支持多知识库检索")
     rerank_model_id: str | None = Field(None, description="排序模型配置 ID，为空则不做重排")
+    rerank_top_n: int = Field(20, ge=1, le=100, description="进入排序模型的向量候选数量")
+    rerank_vector_threshold: float | None = Field(
+        None, ge=0, le=1, description="进入排序模型的最低向量相似度，为空则等于 similarity_threshold"
+    )
 
 
 class SearchResultItem(BaseModel):

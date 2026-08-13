@@ -78,20 +78,6 @@ class TestSearch:
         )
         assert response.status_code == 422
 
-    def test_search_with_pagination(self, client):
-        with patch("routers.search.search_service.search",
-                   new_callable=AsyncMock) as mock_search:
-            mock_search.return_value = {"query": "test", "total": 0, "results": []}
-            response = client.post(
-                f"/api/knowledge-bases/{KB_ID}/search",
-                json={
-                    "query": "test",
-                    "offset": 10,
-                    "limit": 5,
-                },
-            )
-            assert response.status_code == 200
-
     def test_search_service_error(self, client):
         with patch("routers.search.search_service.search",
                    new_callable=AsyncMock) as mock_search:
