@@ -1,6 +1,8 @@
 # 视觉 / OCR 模型测试连接 — 开发方案
 
 > 版本: v1.0 | 日期: 2026-08-13 | 状态: 待评审
+>
+> **状态更新（2026-08-14）**：OCR 运行时远程接入（`create_ocr` 重写 + `parser.py` 改造）已并入 [11-remote-ocr-integration-plan.md](11-remote-ocr-integration-plan.md)。本节仅保留「测试连接 = 连通性探测」结论；下文「不改动 `create_ocr` / 运行时仍走本地 PaddleOCR」已过期。
 
 ---
 

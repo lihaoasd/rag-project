@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from core.model_factory import create_reranker
+from core.model_factory import PaddleOCRHttpClient, create_ocr, create_reranker
 from services import model_service
 from tests.helpers import KB_ID, MockKB
 
@@ -31,6 +31,35 @@ class TestCreateReranker:
             "params": {"endpoint": "/reranks"},
         })
         assert reranker.endpoint == "/reranks"
+
+
+class TestCreateOcr:
+    def test_factory_resolves_config(self):
+        ocr = create_ocr({
+            "model": "ch_pp-ocrv4",
+            "api_base": "http://ocr-host:8866",
+            "api_key": "sk-abc",
+            "params": {},
+        })
+        assert isinstance(ocr, PaddleOCRHttpClient)
+        assert ocr.api_base == "http://ocr-host:8866"
+        assert ocr.api_key == "sk-abc"
+        assert ocr.endpoint == "/ocr"
+
+    def test_factory_custom_endpoint(self):
+        ocr = create_ocr({
+            "model": "ch_pp-ocrv4",
+            "api_base": "http://x",
+            "api_key": None,
+            "params": {"endpoint": "/ocr/v1"},
+        })
+        assert ocr.endpoint == "/ocr/v1"
+
+    def test_extract_text(self):
+        assert PaddleOCRHttpClient._extract_text({"text": "你好"}) == "你好"
+        assert PaddleOCRHttpClient._extract_text({"text": "", "rec_texts": ["a", "b"]}) == "a b"
+        assert PaddleOCRHttpClient._extract_text({"success": False}) == ""
+        assert PaddleOCRHttpClient._extract_text(None) == ""
 
 
 def _mock_llm(content="OK"):
@@ -83,12 +112,44 @@ class TestModelTest:
         assert "0.95" in result["detail"]
 
     @pytest.mark.asyncio
-    async def test_ocr_not_supported(self):
+    async def test_ocr_no_api_base(self):
         result = await model_service.test_model(
             model_type="ocr", platform="x", model="m",
         )
         assert result["success"] is False
-        assert "暂不支持" in result["message"]
+        assert "未配置 API 地址" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_ocr_connectivity_success(self):
+        resp = MagicMock()
+        resp.status_code = 200
+        client = MagicMock()
+        client.get = AsyncMock(return_value=resp)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await model_service.test_model(
+                model_type="ocr", platform="x", model="m",
+                api_base="http://ocr-host:8866",
+            )
+        assert result["success"] is True
+        assert "HTTP 200" in result["detail"]
+
+    @pytest.mark.asyncio
+    async def test_ocr_connectivity_error(self):
+        import httpx
+
+        client = MagicMock()
+        client.get = AsyncMock(side_effect=httpx.ConnectError("boom"))
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await model_service.test_model(
+                model_type="ocr", platform="x", model="m",
+                api_base="http://ocr-host:8866",
+            )
+        assert result["success"] is False
+        assert "连接失败" in result["message"]
 
     @pytest.mark.asyncio
     async def test_vision_success(self):

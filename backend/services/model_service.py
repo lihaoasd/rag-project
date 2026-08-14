@@ -8,7 +8,7 @@ import uuid
 from sqlalchemy import delete, select, update
 
 from core.database import async_session
-from core.model_factory import create_embedding, create_llm, create_reranker, create_vision_llm
+from core.model_factory import create_embedding, create_llm, create_reranker, create_vision_llm, resolve_api_key
 from models.knowledge_base import KnowledgeBase
 from models.model_config import ModelConfig, KBModelBinding
 from utils.logging import get_logger
@@ -292,6 +292,30 @@ async def delete_kb_bindings(kb_id: str) -> None:
         logger.info("知识库模型绑定已删除: kb_id=%s", kb_id)
 
 
+async def _test_ocr_connectivity(config: dict) -> dict:
+    """远程 OCR 连通性探测：GET api_base 根路径，任意 HTTP 响应视为连通。"""
+    import httpx
+
+    api_base = (config.get("api_base") or "").strip().rstrip("/")
+    if not api_base:
+        return {"success": False, "message": "未配置 API 地址，无法测试远程 OCR 连通性"}
+    api_key = resolve_api_key(config.get("api_key"))
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+    start = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(api_base, headers=headers)
+        latency_ms = round((time.perf_counter() - start) * 1000)
+        return {"success": True, "message": "连接成功", "latency_ms": latency_ms, "detail": f"HTTP {resp.status_code}"}
+    except httpx.TimeoutException:
+        return {"success": False, "message": "连接超时（10 秒）"}
+    except httpx.ConnectError as e:
+        return {"success": False, "message": f"连接失败: {e}"}
+    except Exception as e:
+        return {"success": False, "message": f"测试失败: {e}"}
+
+
 async def test_model(
     model_type: str,
     platform: str,
@@ -302,8 +326,8 @@ async def test_model(
 ) -> dict:
     """测试模型连接可用性（不落库）。
 
-    支持 llm / embedding / rerank / vision；vision 走纯文本连通性（复用 llm 测试），
-    ocr 本期仍仅建模 + 工厂（预留），返回不支持在线测试。
+    支持 llm / embedding / rerank / vision / ocr；vision 走纯文本连通性（复用 llm 测试），
+    ocr 走远程连通性探测（GET api_base 根路径，任意 HTTP 响应视为连通）。
     """
     config = {
         "id": "",
@@ -317,7 +341,7 @@ async def test_model(
         "is_default": False,
     }
 
-    if model_type not in ("llm", "embedding", "rerank", "vision"):
+    if model_type not in ("llm", "embedding", "rerank", "vision", "ocr"):
         return {"success": False, "message": "该类型模型本期暂不支持在线测试"}
 
     start = time.perf_counter()
@@ -349,6 +373,8 @@ async def test_model(
             if not results:
                 return {"success": False, "message": "排序模型返回空结果"}
             detail = f"返回 {len(results)} 条，最高分 {results[0][1]:.4f}"
+        elif model_type == "ocr":
+            return await _test_ocr_connectivity(config)
 
         latency_ms = round((time.perf_counter() - start) * 1000)
         return {"success": True, "message": "连接成功", "latency_ms": latency_ms, "detail": detail}

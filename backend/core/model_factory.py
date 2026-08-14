@@ -7,7 +7,8 @@
         "api_base", "api_key", "params", "is_default",
     }
 
-Rerank 已接入检索重排（OpenAI 兼容 /rerank）；Vision 已支持测试连接（纯文本），运行时调用点仍预留。
+Rerank 已接入检索重排（OpenAI 兼容 /rerank）；Vision 已支持测试连接（纯文本），运行时调用点仍预留；
+OCR 已接入远程 PaddleOCR FastAPI（base64 JSON）。
 """
 import os
 import re
@@ -177,14 +178,73 @@ def create_vision_llm(config: dict):
     )
 
 
-def create_ocr(config: dict):
-    """创建 OCR 客户端。本期仅支持本地 paddle，云后端下期接入。"""
-    from paddleocr import PaddleOCR
+class PaddleOCRHttpClient:
+    """远程 PaddleOCR FastAPI 服务客户端（base64 JSON，同步）。
 
+    请求：POST {api_base}{endpoint}，body {"file": "<base64 图片字节>"}
+    响应：{"text": "...", "rec_texts": [...]}，取 text，回退 rec_texts 拼接。
+
+    同步 httpx：parser 在线程池（asyncio.to_thread）中调用，阻塞线程池线程而非事件循环。
+    """
+
+    def __init__(
+        self,
+        api_base: str,
+        api_key: str | None = None,
+        endpoint: str = "/ocr",
+        timeout: float = 30,
+    ):
+        self.api_base = (api_base or "").rstrip("/")
+        self.api_key = api_key
+        self.endpoint = endpoint
+        self.timeout = timeout
+        self._client = None  # httpx.Client 懒加载，文档内复用连接
+
+    def _get_client(self):
+        if self._client is None:
+            import httpx
+
+            self._client = httpx.Client(timeout=self.timeout)
+        return self._client
+
+    def recognize(self, image_bytes: bytes) -> str:
+        """识别图片文字，返回拼接后的文本；失败由调用方捕获（raise_for_status 上抛）。"""
+        import base64
+
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        resp = self._get_client().post(
+            f"{self.api_base}{self.endpoint}", json={"file": b64}, headers=headers
+        )
+        resp.raise_for_status()
+        return self._extract_text(resp.json())
+
+    @staticmethod
+    def _extract_text(data) -> str:
+        """从响应提取文字：text 优先，回退 rec_texts 拼接，否则空串。"""
+        if not isinstance(data, dict):
+            return ""
+        text = data.get("text")
+        if text:
+            return str(text).strip()
+        rec_texts = data.get("rec_texts")
+        if isinstance(rec_texts, list):
+            return " ".join(str(t) for t in rec_texts if t).strip()
+        return ""
+
+    def close(self) -> None:
+        """关闭底层 httpx.Client（文档解析结束后调用，幂等）。"""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+
+def create_ocr(config: dict):
+    """创建远程 OCR client（PaddleOCR FastAPI，base64 JSON）。"""
     params = config.get("params") or {}
-    backend = params.get("backend", "paddle")
-    lang = params.get("lang", "ch")
-    if backend != "paddle":
-        raise NotImplementedError(f"OCR backend 未支持: {backend}（本期仅支持本地 paddle）")
-    logger.info("创建 OCR: backend=paddle, lang=%s", lang)
-    return PaddleOCR(lang=lang, show_log=False)
+    logger.info("创建 OCR: api_base=%s, endpoint=%s", config.get("api_base"), params.get("endpoint", "/ocr"))
+    return PaddleOCRHttpClient(
+        api_base=config.get("api_base") or "",
+        api_key=resolve_api_key(config.get("api_key")),
+        endpoint=params.get("endpoint", "/ocr"),
+    )

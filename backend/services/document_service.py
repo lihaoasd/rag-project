@@ -17,6 +17,7 @@ from fastapi import UploadFile
 from config import settings
 from core.database import async_session
 from core.indexing import build_index, chunk_documents, delete_index
+from core.model_factory import resolve_model_config
 from core.parser import parse_document as parse_file, ParagraphItem
 from core.word_chunker import word_chunk
 from repositories.document_repository import DocumentRepository
@@ -163,7 +164,8 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
         logger.info("文档下载完成: %s → %s", object_key, temp_path.name)
 
         # 3. 解析文档
-        parsed = await parse_file(temp_path, file_type)
+        ocr_config = await resolve_model_config(kb_id, "ocr")
+        parsed = await parse_file(temp_path, file_type, ocr_config=ocr_config)
         if not parsed:
             raise ValueError("文档解析结果为空，可能是不支持的格式或文件损坏")
 
@@ -456,7 +458,8 @@ async def rechunk_document(
         logger.info("重切片下载完成: %s → %s", object_key, temp_path.name)
 
         # 6. 解析文档
-        parsed = await parse_file(temp_path, file_type)
+        ocr_config = await resolve_model_config(kb_id, "ocr")
+        parsed = await parse_file(temp_path, file_type, ocr_config=ocr_config)
         if not parsed:
             raise ValueError("文档解析结果为空")
 
@@ -549,7 +552,8 @@ async def reparse_document(kb_id: str, doc_id: str) -> None:
         logger.info("重新解析下载完成: %s → %s", object_key, temp_path.name)
 
         # 6. 解析文档
-        parsed = await parse_file(temp_path, file_type)
+        ocr_config = await resolve_model_config(kb_id, "ocr")
+        parsed = await parse_file(temp_path, file_type, ocr_config=ocr_config)
         if not parsed:
             raise ValueError("文档解析结果为空")
 

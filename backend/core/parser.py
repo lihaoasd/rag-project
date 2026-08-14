@@ -2,9 +2,10 @@
 文档解析引擎 — Strategy 模式：PDF / DOCX / DOC 各自实现。
 输出 LlamaIndex Document 列表，供索引引擎消费。
 
-重要：所有 CPU 密集型同步操作（PyMuPDF, pdfplumber, PaddleOCR）
+重要：所有 CPU 密集型同步操作（PyMuPDF, pdfplumber, 图片提取）
 必须通过 asyncio.to_thread() 放到线程池执行，避免阻塞 asyncio 事件循环
 导致前端请求无响应（"页面阻塞"）。
+远程 OCR 为网络 I/O，在线程池内以同步 httpx 阻塞线程而非事件循环。
 """
 import asyncio
 import re
@@ -15,6 +16,7 @@ from typing import Any, Optional
 
 from llama_index.core import Document as LlamaDocument
 
+from core.model_factory import create_ocr
 from config import settings
 from utils.file_utils import get_file_extension
 from utils.logging import get_logger
@@ -232,23 +234,20 @@ class BaseParser(ABC):
 # PDF 解析器
 # ============================================================
 class PDFParser(BaseParser):
-    """PDF 解析：PyMuPDF 提取文本 + pdfplumber 提取表格 + PaddleOCR 识别图片文字。
+    """PDF 解析：PyMuPDF 提取文本 + pdfplumber 提取表格 + 远程 OCR 识别图片文字。
 
     所有 CPU 密集型操作均通过 asyncio.to_thread() 放到线程池执行，
     避免阻塞 asyncio 事件循环导致前端页面无响应。
     """
 
-    def __init__(self):
-        self._ocr = None  # PaddleOCR 懒加载，全局只初始化一次
-
-    async def parse(self, file_path: Path) -> list[LlamaDocument]:
+    async def parse(self, file_path: Path, ocr_config: dict | None = None) -> list[LlamaDocument]:
         """异步解析入口：将整个同步解析逻辑交给线程池执行。"""
         logger.info("PDF 解析开始: %s", file_path.name)
-        documents = await asyncio.to_thread(self._parse_sync, file_path)
+        documents = await asyncio.to_thread(self._parse_sync, file_path, ocr_config)
         logger.info("PDF 解析完成: %s, pages=%d", file_path.name, len(documents))
         return documents
 
-    def _parse_sync(self, file_path: Path) -> list[LlamaDocument]:
+    def _parse_sync(self, file_path: Path, ocr_config: dict | None = None) -> list[LlamaDocument]:
         """同步解析核心逻辑（在线程池中执行，不阻塞事件循环）。"""
         import fitz  # PyMuPDF
 
@@ -257,39 +256,46 @@ class PDFParser(BaseParser):
         # 一次性打开 pdfplumber（而非每页重复打开）
         tables_by_page = self._extract_all_tables(file_path)
 
-        with fitz.open(file_path) as doc:
-            for page_num, page in enumerate(doc, start=1):
-                text_parts: list[str] = []
+        # 远程 OCR client（未配置则跳过图片识别）
+        ocr_client = create_ocr(ocr_config) if ocr_config else None
 
-                # 1. 提取文本
-                page_text = page.get_text("text")
-                if page_text:
-                    text_parts.append(page_text.strip())
+        try:
+            with fitz.open(file_path) as doc:
+                for page_num, page in enumerate(doc, start=1):
+                    text_parts: list[str] = []
 
-                # 2. 获取预提取的表格
-                table_text = tables_by_page.get(page_num, "")
-                if table_text:
-                    text_parts.append(table_text)
+                    # 1. 提取文本
+                    page_text = page.get_text("text")
+                    if page_text:
+                        text_parts.append(page_text.strip())
 
-                # 3. OCR 识别嵌入图片中的文字
-                ocr_text = self._ocr_images_sync(page, page_num)
-                if ocr_text:
-                    text_parts.append(ocr_text)
+                    # 2. 获取预提取的表格
+                    table_text = tables_by_page.get(page_num, "")
+                    if table_text:
+                        text_parts.append(table_text)
 
-                full_text = "\n\n".join(text_parts)
-                if not full_text.strip():
-                    continue
+                    # 3. OCR 识别嵌入图片中的文字
+                    ocr_text = self._ocr_images_sync(page, page_num, ocr_client)
+                    if ocr_text:
+                        text_parts.append(ocr_text)
 
-                documents.append(
-                    LlamaDocument(
-                        text=full_text,
-                        metadata={
-                            "file_name": file_path.name,
-                            "page_number": page_num,
-                            "file_type": "pdf",
-                        },
+                    full_text = "\n\n".join(text_parts)
+                    if not full_text.strip():
+                        continue
+
+                    documents.append(
+                        LlamaDocument(
+                            text=full_text,
+                            metadata={
+                                "file_name": file_path.name,
+                                "page_number": page_num,
+                                "file_type": "pdf",
+                            },
+                        )
                     )
-                )
+        finally:
+            if ocr_client is not None:
+                ocr_client.close()
 
         return documents
 
@@ -318,28 +324,11 @@ class PDFParser(BaseParser):
             logger.debug("pdfplumber 表格提取异常: %s", e)
             return {}
 
-    def _get_ocr(self):
-        """懒加载 PaddleOCR 实例（全局只初始化一次，避免每页重复加载模型）。"""
-        if self._ocr is None:
-            try:
-                from paddleocr import PaddleOCR
-                self._ocr = PaddleOCR(lang="ch", show_log=False)
-                logger.info("PaddleOCR 初始化完成")
-            except ImportError:
-                logger.debug("PaddleOCR 未安装，跳过图片 OCR")
-                self._ocr = False  # 标记为不可用
-            except Exception as e:
-                logger.warning("PaddleOCR 初始化失败: %s", e)
-                self._ocr = False
-        return self._ocr if self._ocr is not False else None
-
-    def _ocr_images_sync(self, page: Any, page_num: int) -> str:
-        """OCR 识别页面中的嵌入图片（同步方法，在线程池中执行）。"""
+    def _ocr_images_sync(self, page: Any, page_num: int, ocr_client) -> str:
+        """OCR 识别页面中的嵌入图片（同步方法，在线程池中执行）。ocr_client 为 None 时跳过。"""
+        if ocr_client is None:
+            return ""
         try:
-            ocr = self._get_ocr()
-            if ocr is None:
-                return ""
-
             images = page.get_images(full=True)
             if not images:
                 return ""
@@ -351,11 +340,8 @@ class PDFParser(BaseParser):
                 if base_image is None:
                     continue
                 image_bytes = base_image["image"]
-                result = ocr.ocr(image_bytes, cls=True)
-                if result and result[0]:
-                    img_text = " ".join(
-                        line[1][0] for line in result[0] if line
-                    )
+                img_text = ocr_client.recognize(image_bytes)
+                if img_text:
                     texts.append(f"[图片 {img_idx + 1}] {img_text}")
             return "\n".join(texts)
         except Exception as e:
@@ -597,12 +583,14 @@ PARSER_REGISTRY: dict[str, BaseParser] = {
 async def parse_document(
     file_path: Path,
     file_type: str,
+    ocr_config: dict | None = None,
 ) -> list[LlamaDocument] | list[ParagraphItem]:
     """解析文档，按文件类型分派到对应 Parser。
 
     Args:
         file_path: 上传文件路径
         file_type: 文件类型（不含点，如 'pdf', 'docx', 'doc'）
+        ocr_config: 远程 OCR 模型配置（仅 PDF 使用；None 则跳过图片识别）
 
     Returns:
         - PDF: list[LlamaDocument]（每页一个）
@@ -621,4 +609,6 @@ async def parse_document(
         file_type,
         type(parser).__name__,
     )
+    if isinstance(parser, PDFParser):
+        return await parser.parse(file_path, ocr_config=ocr_config)
     return await parser.parse(file_path)
