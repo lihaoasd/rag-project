@@ -136,7 +136,7 @@ def mock_retrieve():
     patches_data = []
     for target in ["core.retrieval.retrieve",
                    "services.search_service.retrieve",
-                   "services.chat_service.retrieve"]:
+                   "services.chat_service.retrieve_and_rank"]:
         p = patch(target, new=_MOCK_RETRIEVE_INSTANCE)
         p.start()
         patches_data.append(p)

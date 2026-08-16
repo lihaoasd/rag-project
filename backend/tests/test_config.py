@@ -74,6 +74,14 @@ class TestSettingsDefaults:
         assert s.log_level == "INFO"
         assert s.log_dir == "./logs"
 
+    def test_default_langfuse_settings(self):
+        s = Settings(langfuse_enabled=False, langfuse_sample_rate=1.0)
+        assert s.langfuse_enabled is False
+        assert s.langfuse_public_key == ""
+        assert s.langfuse_secret_key == ""
+        assert s.langfuse_host == ""
+        assert s.langfuse_sample_rate == 1.0
+
 
 class TestSettingsComputedProperties:
     """测试 Settings 的计算属性。"""
@@ -144,6 +152,21 @@ class TestSettingsEnvOverride:
         with patch.dict(os.environ, {"MAX_UPLOAD_SIZE": "209715200"}, clear=True):
             s = Settings()
             assert s.max_upload_size == 209715200
+
+    def test_env_override_langfuse(self):
+        with patch.dict(os.environ, {
+            "LANGFUSE_ENABLED": "true",
+            "LANGFUSE_PUBLIC_KEY": "pk-lf-test",
+            "LANGFUSE_SECRET_KEY": "sk-lf-test",
+            "LANGFUSE_HOST": "http://lf.local",
+            "LANGFUSE_SAMPLE_RATE": "0.5",
+        }, clear=True):
+            s = Settings()
+            assert s.langfuse_enabled is True
+            assert s.langfuse_public_key == "pk-lf-test"
+            assert s.langfuse_secret_key == "sk-lf-test"
+            assert s.langfuse_host == "http://lf.local"
+            assert s.langfuse_sample_rate == 0.5
 
 
 class TestSettingsExtraIgnore:

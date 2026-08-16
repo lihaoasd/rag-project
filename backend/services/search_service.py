@@ -4,9 +4,10 @@
 import asyncio
 from typing import Any
 
+from langfuse import get_client, observe
+
 from core.database import async_session
-from core.model_factory import create_reranker
-from core.retrieval import retrieve
+from core.retrieval import retrieve, rerank
 from repositories.kb_repository import KnowledgeBaseRepository
 from services import model_service
 from utils.logging import get_logger
@@ -26,23 +27,17 @@ async def _get_kb_name(kb_id: str) -> str:
 
 
 async def _apply_rerank(query: str, hits: list[dict], rerank_model_id: str) -> list[dict]:
-    """对候选结果做重排，用 rerank relevance_score 覆盖 score 并按降序返回。"""
+    """对候选结果做重排（委托公用 rerank），用 relevance_score 覆盖 score 并降序返回。"""
     config = await model_service.get_model(rerank_model_id)
     if config is None:
         raise ValueError("排序模型配置不存在")
     if config.get("model_type") != "rerank":
         raise ValueError("所选模型不是排序模型")
 
-    reranker = create_reranker(config)
-    documents = [h["text"] for h in hits]
-    scored = await reranker.arerank(query, documents, top_n=len(documents))
-    for idx, rel_score in scored:
-        if 0 <= idx < len(hits):
-            hits[idx]["score"] = round(float(rel_score), 4)
-    hits.sort(key=lambda x: x["score"], reverse=True)
-    return hits
+    return await rerank(query, hits, config)
 
 
+@observe(name="search", capture_input=False, capture_output=False)
 async def search(
     query: str,
     kb_ids: list[str],
@@ -66,7 +61,18 @@ async def search(
     Returns:
         {query, total, results: [{rank, score, text, doc_id, file_name, page_number, chunk_index, kb_id, kb_name}]}
     """
+    get_client().update_current_span(
+        input=query,
+        metadata={
+            "kb_ids": kb_ids,
+            "top_k": top_k,
+            "similarity_threshold": similarity_threshold,
+            "rerank_model_id": rerank_model_id,
+        },
+    )
+
     if not kb_ids:
+        get_client().update_current_span(output={"total": 0})
         return {"query": query, "total": 0, "results": []}
 
     # 向量门槛：有排序模型 → rerank_vector_threshold（缺省=similarity_threshold）；否则 similarity_threshold
@@ -131,6 +137,7 @@ async def search(
             "kb_name": kb_names.get(kid, kid),
         })
 
+    get_client().update_current_span(output={"total": len(results)})
     return {
         "query": query,
         "total": len(results),

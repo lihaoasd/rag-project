@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from core import parse_queue
+from core.observability import setup_langfuse
 from routers import knowledge_base, document, search, chat, chunk, prompt, model
 from utils.logging import get_logger, setup_logging
 
@@ -19,8 +20,9 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    # 启动时：初始化日志系统、启动解析队列 worker
+    # 启动时：初始化日志系统、Langfuse 观测、启动解析队列 worker
     setup_logging(level=settings.log_level, log_dir=settings.log_dir)
+    setup_langfuse()
     logger.info("Bid Document RAG System v0.1.0 启动中...")
     logger.info("LLM: %s / %s", settings.llm_provider, settings.llm_model)
     logger.info("Embedding: %s (dim=%d)", settings.embedding_model, settings.embedding_dim)

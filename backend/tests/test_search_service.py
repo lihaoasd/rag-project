@@ -66,7 +66,7 @@ class TestSearchWithRerank:
         reranker = MagicMock()
         reranker.arerank = AsyncMock(return_value=[(2, 0.99), (1, 0.5), (0, 0.1)])
 
-        with patch("services.search_service.create_reranker", return_value=reranker), \
+        with patch("core.retrieval.create_reranker", return_value=reranker), \
              patch("services.search_service.model_service.get_model",
                    new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
                                               "model": "bge-reranker", "api_base": "http://x",
@@ -112,7 +112,7 @@ class TestSearchWithRerank:
         reranker = MagicMock()
         reranker.arerank = AsyncMock(return_value=[(0, 0.9), (1, 0.4), (2, 0.8)])
 
-        with patch("services.search_service.create_reranker", return_value=reranker), \
+        with patch("core.retrieval.create_reranker", return_value=reranker), \
              patch("services.search_service.model_service.get_model",
                    new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
                                               "model": "bge-reranker", "api_base": "http://x",
@@ -140,7 +140,7 @@ class TestSearchWithRerank:
         reranker = MagicMock()
         reranker.arerank = AsyncMock(return_value=[(0, 0.9), (1, 0.8)])
 
-        with patch("services.search_service.create_reranker", return_value=reranker), \
+        with patch("core.retrieval.create_reranker", return_value=reranker), \
              patch("services.search_service.model_service.get_model",
                    new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
                                               "model": "bge-reranker", "api_base": "http://x",
@@ -161,7 +161,7 @@ class TestSearchWithRerank:
         reranker = MagicMock()
         reranker.arerank = AsyncMock(return_value=[])
 
-        with patch("services.search_service.create_reranker", return_value=reranker), \
+        with patch("core.retrieval.create_reranker", return_value=reranker), \
              patch("services.search_service.model_service.get_model",
                    new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
                                               "model": "bge-reranker", "api_base": "http://x",
@@ -180,7 +180,7 @@ class TestSearchWithRerank:
         reranker = MagicMock()
         reranker.arerank = AsyncMock(return_value=[])
 
-        with patch("services.search_service.create_reranker", return_value=reranker), \
+        with patch("core.retrieval.create_reranker", return_value=reranker), \
              patch("services.search_service.model_service.get_model",
                    new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
                                               "model": "bge-reranker", "api_base": "http://x",
@@ -199,7 +199,7 @@ class TestSearchWithRerank:
         reranker = MagicMock()
         reranker.arerank = AsyncMock(return_value=[])
 
-        with patch("services.search_service.create_reranker", return_value=reranker), \
+        with patch("core.retrieval.create_reranker", return_value=reranker), \
              patch("services.search_service.model_service.get_model",
                    new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
                                               "model": "bge-reranker", "api_base": "http://x",

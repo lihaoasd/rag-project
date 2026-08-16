@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_dir: str = "./logs"
 
+    # === Langfuse 观测配置 ===
+    langfuse_enabled: bool = False
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = ""
+    langfuse_sample_rate: float = 1.0
+
     @property
     def database_url(self) -> str:
         """构建异步 PostgreSQL 连接字符串"""

@@ -7,10 +7,12 @@ from llama_index.core import VectorStoreIndex
 from llama_index.core.postprocessor import SimilarityPostprocessor
 from llama_index.core.schema import QueryBundle
 from llama_index.vector_stores.milvus import MilvusVectorStore
+from langfuse import get_client, observe
 from pymilvus import DataType
 
 from config import settings
-from core.model_factory import create_embedding, resolve_model_config
+from core.model_factory import create_embedding, create_reranker, resolve_model_config
+from core.observability import format_retrieval_observation
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -33,6 +35,7 @@ def _get_vector_store(kb_id: str, dim: int) -> MilvusVectorStore:
     )
 
 
+@observe(as_type="retriever", capture_input=False, capture_output=False)
 async def retrieve(
     query: str,
     kb_id: str,
@@ -51,6 +54,13 @@ async def retrieve(
         按分数降序排列的结果列表:
         [{score, text, doc_id, file_name, page_number, chunk_index}, ...]
     """
+    retrieval_metadata = {
+        "method": "vector",
+        "kb_id": kb_id,
+        "top_k": top_k,
+        "similarity_threshold": similarity_threshold,
+    }
+
     # 1. resolve Embedding 配置（维度 + client）
     embed_config = await resolve_model_config(kb_id, "embedding")
     dim = (embed_config.get("params") or {}).get("dimension") or settings.embedding_dim
@@ -62,6 +72,11 @@ async def retrieve(
     # 检查 Collection 是否存在
     if vector_store.collection_name not in vector_store.client.list_collections():
         logger.warning("retrieve: Collection 不存在 %s", vector_store.collection_name)
+        get_client().update_current_span(
+            input=query,
+            metadata=retrieval_metadata,
+            output=format_retrieval_observation([]),
+        )
         return []
 
     # 3. 构建 VectorStoreIndex + Retriever
@@ -92,6 +107,12 @@ async def retrieve(
             "chunk_index": node.metadata.get("chunk_index", 0),
         })
 
+    get_client().update_current_span(
+        input=query,
+        metadata=retrieval_metadata,
+        output=format_retrieval_observation(hits),
+    )
+
     logger.info(
         "retrieve 完成: kb_id=%s, query=%s, top_k=%d, found=%d",
         kb_id,
@@ -99,4 +120,55 @@ async def retrieve(
         top_k,
         len(hits),
     )
+    return hits
+
+
+@observe(as_type="retriever", capture_input=False, capture_output=False)
+async def rerank(
+    query: str,
+    hits: list[dict[str, Any]],
+    config: dict,
+    top_n: int | None = None,
+) -> list[dict[str, Any]]:
+    """对候选命中做重排，用 rerank relevance_score 覆盖 score 并按降序返回。
+
+    检索链路的一步（召回 → 可选重排），问答与搜索共用。
+    """
+    pre_rank = [dict(h) for h in hits]  # 排序前候选快照（供 span 记录）
+    reranker = create_reranker(config)
+    documents = [h["text"] for h in hits]
+    n = top_n or len(documents)
+    scored = await reranker.arerank(query, documents, top_n=n)
+    for idx, rel_score in scored:
+        if 0 <= idx < len(hits):
+            hits[idx]["score"] = round(float(rel_score), 4)
+    hits.sort(key=lambda x: x["score"], reverse=True)
+
+    get_client().update_current_span(
+        metadata={"rerank_model": config.get("model"), "top_n": n},
+        input=format_retrieval_observation(pre_rank),
+        output=format_retrieval_observation(hits),
+    )
+    return hits
+
+
+async def retrieve_and_rank(
+    query: str,
+    kb_id: str,
+    top_k: int = 5,
+    similarity_threshold: float = 0.6,
+    rerank_config: dict | None = None,
+) -> list[dict[str, Any]]:
+    """单知识库检索统一入口：向量召回 + 可选重排。
+
+    rerank_config 为 None 时退化为纯向量召回；问答与搜索共用同一检索链路。
+    """
+    hits = await retrieve(
+        query=query,
+        kb_id=kb_id,
+        top_k=top_k,
+        similarity_threshold=similarity_threshold,
+    )
+    if rerank_config and hits:
+        hits = await rerank(query, hits, rerank_config)
     return hits

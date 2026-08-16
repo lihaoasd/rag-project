@@ -3,25 +3,25 @@
 
 Pipeline 阶段:
     1. 获取或创建会话
-    2. 检索相关文档片段
-    3. 加载对话历史
-    4. 构建 RAG Prompt（从 DB 读取或使用 fallback）
-    5. 保存用户消息
-    6. LLM 流式生成
-    7. 保存 AI 回复
-    8. 发送来源引用
-    9. 发送完成信号
+    2. 加载对话历史
+    3. 保存用户消息
+    4. RAG 核心（检索 → Prompt 构建 → LLM 生成，见 _run_rag）
+    5. 非流式响应按字符切块伪流式输出
+    6. 保存 AI 回复
+    7. 发送来源引用
+    8. 发送完成信号
 """
 import json
 from typing import AsyncGenerator
 
+from langfuse import get_client, observe, propagate_attributes
 from llama_index.core.base.llms.types import ChatMessage, MessageRole
 
 from config import settings
 from core.database import async_session
 from core.model_factory import create_llm, resolve_model_config
 from core.prompt_renderer import render_prompt, extract_variables
-from core.retrieval import retrieve
+from core.retrieval import retrieve_and_rank
 from repositories.conversation_repository import ConversationRepository
 from services import prompt_service
 from utils.logging import get_logger
@@ -118,6 +118,66 @@ async def _get_system_prompt(
     )
 
 
+@observe(as_type="generation", capture_input=False, capture_output=False)
+async def _call_llm(llm, messages: list, model: str) -> str:
+    """调用 LLM 并产出 generation span（记录 model + input/output）。"""
+    response = await llm.achat(messages=messages)
+    content = response.message.content if hasattr(response, "message") else str(response)
+    get_client().update_current_generation(model=model, input=messages, output=content)
+    return content
+
+
+@observe(name="rag_qa", capture_input=False, capture_output=False)
+async def _run_rag(
+    kb_id: str,
+    message: str,
+    conv_id: str,
+    history: list,
+) -> tuple[list[dict], str]:
+    """RAG 核心：检索 → Prompt 构建 → LLM 生成（非流式）。
+
+    由 @observe 标注，产出 trace "rag_qa"；retrieve/rerank/LLM 各自产出 span。
+    session_id 与 trace metadata 经 propagate_attributes 下发到所有子 span。
+    返回 (retrieved, full_response)。
+    """
+    with propagate_attributes(session_id=conv_id, metadata={"kb_id": kb_id}):
+        get_client().update_current_span(input=message)
+
+        # 检索（统一链路：召回 + 可选 rerank；span 由 retrieve/rerank 自身产出）
+        rerank_config = await resolve_model_config(kb_id, "rerank")  # None = 纯向量
+        retrieved = await retrieve_and_rank(
+            query=message,
+            kb_id=kb_id,
+            top_k=settings.retrieval_top_k,
+            similarity_threshold=settings.retrieval_similarity_threshold,
+            rerank_config=rerank_config,
+        )
+        if not retrieved:
+            logger.info("未检索到相关文档: kb_id=%s, query=%s", kb_id, message[:80])
+
+        # Prompt 构建（从 DB 动态获取）
+        context_str = _build_context(retrieved) if retrieved else "（未找到相关文档内容）"
+        history_str = _build_history(history)
+        system_prompt = await _get_system_prompt(
+            context_str=context_str,
+            query=message,
+            history_str=history_str,
+            kb_name=kb_id,  # 后续可替换为真实知识库名
+        )
+        llm_messages = [ChatMessage(role=MessageRole.SYSTEM, content=system_prompt)]
+        for h in history[-10:]:
+            llm_messages.append(ChatMessage(role=h.role, content=h.content))
+        llm_messages.append(ChatMessage(role=MessageRole.USER, content=message))
+
+        # LLM 生成（非流式；generation span 记录 input/output/model）
+        llm_config = await resolve_model_config(kb_id, "llm")
+        llm = create_llm(llm_config)
+        full_response = await _call_llm(llm, llm_messages, llm_config["model"])
+
+        get_client().update_current_span(output=full_response)
+        return retrieved, full_response
+
+
 async def chat_stream(
     kb_id: str,
     message: str,
@@ -143,68 +203,37 @@ async def chat_stream(
             conv_id = str(conv.id)
             logger.info("会话就绪: conv_id=%s, kb_id=%s", conv_id, kb_id)
 
-        # Stage 2: 检索相关文档
-        retrieved = await retrieve(query=message, kb_id=kb_id, top_k=settings.retrieval_top_k)
-        if not retrieved:
-            logger.info("未检索到相关文档: kb_id=%s, query=%s", kb_id, message[:80])
-
-        # Stage 3: 加载对话历史
+        # Stage 2: 加载对话历史
         async with async_session() as session:
             conv_repo = ConversationRepository(session)
             history = await conv_repo.get_history(conv_id, limit=10)
 
-        # Stage 4: 构建 Prompt（从 DB 动态获取）
-        context_str = _build_context(retrieved) if retrieved else "（未找到相关文档内容）"
-        history_str = _build_history(history)
-        system_prompt = await _get_system_prompt(
-            context_str=context_str,
-            query=message,
-            history_str=history_str,
-            kb_name=kb_id,  # 后续可替换为真实知识库名
-        )
-
-        llm_messages = [
-            ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
-        ]
-        # 添加历史消息作为上下文
-        for h in history[-10:]:
-            llm_messages.append(ChatMessage(role=h.role, content=h.content))
-        # 添加当前用户问题
-        llm_messages.append(ChatMessage(role=MessageRole.USER, content=message))
-
-        # Stage 5: 保存用户消息
+        # Stage 3: 保存用户消息
         async with async_session() as session:
             conv_repo = ConversationRepository(session)
             await conv_repo.create_message(conv_id, role="user", content=message)
 
-        # Stage 6: LLM 流式生成（按知识库 resolve 模型配置）
+        # Stage 4: RAG 核心（检索 + Prompt 构建 + LLM 生成）
         try:
-            llm_config = await resolve_model_config(kb_id, "llm")
-        except Exception as e:
-            logger.error("解析 LLM 模型配置失败: %s", e, exc_info=True)
-            yield _sse_event("error", message=f"未配置可用的 LLM 模型: {e}")
+            retrieved, full_response = await _run_rag(kb_id, message, conv_id, history)
+        except RuntimeError as e:
+            # resolve_model_config 失败（llm/embedding/rerank 未配置）
+            logger.error("模型配置解析失败: %s", e, exc_info=True)
+            yield _sse_event("error", message=f"模型配置错误: {e}")
             return
-        llm = create_llm(llm_config)
-        full_response = ""
-
-        try:
-            response = await llm.achat(messages=llm_messages)
-            full_response = response.message.content if hasattr(response, "message") else str(response)
-
-            # 对于非流式响应，直接返回完整内容
-            # 按句子拆分模拟流式输出（实际应使用 astream_chat）
-            chunk_size = 10
-            for i in range(0, len(full_response), chunk_size):
-                chunk = full_response[i : i + chunk_size]
-                yield _sse_event("token", content=chunk)
-
         except Exception as llm_err:
             error_msg = f"LLM 调用失败: {llm_err}"
             logger.error(error_msg, exc_info=True)
             yield _sse_event("error", message=error_msg)
             return
 
-        # Stage 7: 保存 AI 回复
+        # Stage 5: 非流式响应按 10 字符切块模拟流式输出
+        chunk_size = 10
+        for i in range(0, len(full_response), chunk_size):
+            chunk = full_response[i : i + chunk_size]
+            yield _sse_event("token", content=chunk)
+
+        # Stage 6: 保存 AI 回复
         try:
             sources_data = _extract_sources(retrieved) if retrieved else None
             async with async_session() as session:
@@ -218,11 +247,11 @@ async def chat_stream(
         except Exception as db_err:
             logger.error("保存 AI 回复失败: %s", db_err, exc_info=True)
 
-        # Stage 8: 发送来源引用
+        # Stage 7: 发送来源引用
         if retrieved:
             yield _sse_event("sources", sources=_extract_sources(retrieved))
 
-        # Stage 9: 完成
+        # Stage 8: 完成
         yield _sse_event("done", session_id=conv_id)
 
     except Exception as e:
