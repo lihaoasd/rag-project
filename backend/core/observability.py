@@ -29,7 +29,7 @@ def setup_langfuse() -> None:
         client = Langfuse(
             public_key=settings.langfuse_public_key,
             secret_key=settings.langfuse_secret_key,
-            host=settings.langfuse_host or None,
+            base_url=settings.langfuse_base_url or None,
             sample_rate=settings.langfuse_sample_rate,
         )
     except Exception as e:
@@ -37,9 +37,9 @@ def setup_langfuse() -> None:
         return
 
     if client.auth_check():
-        logger.info("Langfuse 已连接: host=%s", settings.langfuse_host)
+        logger.info("Langfuse 已连接: base_url=%s", settings.langfuse_base_url)
     else:
-        logger.warning("Langfuse 连接校验失败，观测可能不可用: host=%s", settings.langfuse_host)
+        logger.warning("Langfuse 连接校验失败，观测可能不可用: base_url=%s", settings.langfuse_base_url)
 
 
 def format_retrieval_observation(hits: list[dict], text_limit: int = 200) -> dict[str, Any]:

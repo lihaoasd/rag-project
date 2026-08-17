@@ -202,11 +202,15 @@ class TestSearchRequest:
             SearchRequest(query="test", similarity_threshold=1.1)
 
     def test_rerank_top_n_out_of_range(self):
-        with pytest.raises(ValidationError):
-            SearchRequest(query="test", rerank_top_n=0)
+        # 边界 0 与 30 合法
+        assert SearchRequest(query="test", rerank_top_n=0).rerank_top_n == 0
+        assert SearchRequest(query="test", rerank_top_n=30).rerank_top_n == 30
 
         with pytest.raises(ValidationError):
-            SearchRequest(query="test", rerank_top_n=101)
+            SearchRequest(query="test", rerank_top_n=-1)
+
+        with pytest.raises(ValidationError):
+            SearchRequest(query="test", rerank_top_n=31)
 
 
 # ============================================================

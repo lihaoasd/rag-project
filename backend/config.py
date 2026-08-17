@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     chunk_overlap: int = 64
     retrieval_top_k: int = 5
     retrieval_similarity_threshold: float = 0.6
+    retrieval_rerank_threshold: float = 0.8
 
     # === 服务配置 ===
     backend_host: str = "0.0.0.0"
@@ -63,7 +64,7 @@ class Settings(BaseSettings):
     langfuse_enabled: bool = False
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
-    langfuse_host: str = ""
+    langfuse_base_url: str = ""
     langfuse_sample_rate: float = 1.0
 
     @property

@@ -75,8 +75,13 @@ async def search(
         get_client().update_current_span(output={"total": 0})
         return {"query": query, "total": 0, "results": []}
 
-    # 向量门槛：有排序模型 → rerank_vector_threshold（缺省=similarity_threshold）；否则 similarity_threshold
-    vector_gate = rerank_vector_threshold if rerank_vector_threshold is not None else similarity_threshold
+    # 向量门槛：显式 rerank_vector_threshold 优先；有排序模型时默认 0.0（全召回交给 rerank）；否则 similarity_threshold
+    if rerank_vector_threshold is not None:
+        vector_gate = rerank_vector_threshold
+    elif rerank_model_id:
+        vector_gate = 0.0
+    else:
+        vector_gate = similarity_threshold
 
     # 召回数：rerank 时需覆盖 rerank_top_n（全局前 N 个进排序）；无 rerank 时即 top_k
     fetch_top_k = max(top_k, rerank_top_n) if rerank_model_id else top_k

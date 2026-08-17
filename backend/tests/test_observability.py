@@ -55,7 +55,7 @@ class TestSetupLangfuse:
         with patch("core.observability.settings.langfuse_enabled", True), \
              patch("core.observability.settings.langfuse_public_key", "pk"), \
              patch("core.observability.settings.langfuse_secret_key", "sk"), \
-             patch("core.observability.settings.langfuse_host", "http://lf"), \
+             patch("core.observability.settings.langfuse_base_url", "http://lf"), \
              patch("core.observability.settings.langfuse_sample_rate", 1.0), \
              patch("langfuse.Langfuse", return_value=mock_client) as mock_langfuse:
             setup_langfuse()
@@ -66,7 +66,7 @@ class TestSetupLangfuse:
         with patch("core.observability.settings.langfuse_enabled", True), \
              patch("core.observability.settings.langfuse_public_key", "pk"), \
              patch("core.observability.settings.langfuse_secret_key", "sk"), \
-             patch("core.observability.settings.langfuse_host", "http://lf"), \
+             patch("core.observability.settings.langfuse_base_url", "http://lf"), \
              patch("core.observability.settings.langfuse_sample_rate", 1.0), \
              patch("langfuse.Langfuse", side_effect=RuntimeError("boom")):
             assert setup_langfuse() is None

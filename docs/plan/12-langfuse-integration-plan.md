@@ -47,7 +47,7 @@
 langfuse_enabled: bool = False
 langfuse_public_key: str = ""
 langfuse_secret_key: str = ""
-langfuse_host: str = ""          # 自建实例地址，如 http://langfuse.local:3000
+langfuse_base_url: str = ""      # 自建实例地址，如 http://langfuse.local:3000
 langfuse_sample_rate: float = 1.0
 ```
 
@@ -57,7 +57,7 @@ langfuse_sample_rate: float = 1.0
 LANGFUSE_ENABLED=false
 LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
-LANGFUSE_HOST=http://your-langfuse-host
+LANGFUSE_BASE_URL=http://your-langfuse-host
 LANGFUSE_SAMPLE_RATE=1.0
 ```
 
@@ -179,14 +179,14 @@ setup_langfuse():
     try:
         client = Langfuse(public_key=settings.langfuse_public_key,
                           secret_key=settings.langfuse_secret_key,
-                          host=settings.langfuse_host or None,
+                          base_url=settings.langfuse_base_url or None,
                           sample_rate=settings.langfuse_sample_rate)
     except Exception as e:
         logger.warning("Langfuse 初始化失败，观测已降级关闭: %s", e); return
     if client.auth_check():
-        logger.info("Langfuse 已连接: host=%s", settings.langfuse_host)
+        logger.info("Langfuse 已连接: base_url=%s", settings.langfuse_base_url)
     else:
-        logger.warning("Langfuse 连接校验失败，观测可能不可用: host=%s", settings.langfuse_host)
+        logger.warning("Langfuse 连接校验失败，观测可能不可用: base_url=%s", settings.langfuse_base_url)
 ```
 
 ### 4.2 `_run_rag` + `_call_llm`（`chat_service.py`）

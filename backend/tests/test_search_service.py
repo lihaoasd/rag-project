@@ -48,6 +48,17 @@ class TestSearch:
         mock_retrieve.assert_called_once()
         assert mock_retrieve.call_args.kwargs["top_k"] == 5
 
+    @pytest.mark.asyncio
+    async def test_search_no_rerank_uses_similarity_threshold(self, mock_retrieve):
+        """无 rerank 时，向量门槛应等于 similarity_threshold。"""
+        mock_retrieve.return_value = []
+
+        await search_service.search(
+            kb_ids=[KB_ID], query="test", top_k=10, similarity_threshold=0.6,
+        )
+
+        assert mock_retrieve.call_args.kwargs["similarity_threshold"] == 0.6
+
 
 class TestSearchWithRerank:
     @pytest.mark.asyncio
@@ -174,8 +185,8 @@ class TestSearchWithRerank:
         assert mock_retrieve.call_args.kwargs["similarity_threshold"] == 0.8
 
     @pytest.mark.asyncio
-    async def test_search_rerank_default_vector_gate_follows_threshold(self, mock_retrieve):
-        """不传 rerank_vector_threshold 时，向量门槛应等于 similarity_threshold。"""
+    async def test_search_rerank_default_vector_gate_is_zero(self, mock_retrieve):
+        """有 rerank 且不传 rerank_vector_threshold 时，向量门槛应为 0（全召回交给 rerank）。"""
         mock_retrieve.return_value = []
         reranker = MagicMock()
         reranker.arerank = AsyncMock(return_value=[])
@@ -190,7 +201,7 @@ class TestSearchWithRerank:
                 similarity_threshold=0.75,
             )
 
-        assert mock_retrieve.call_args.kwargs["similarity_threshold"] == 0.75
+        assert mock_retrieve.call_args.kwargs["similarity_threshold"] == 0.0
 
     @pytest.mark.asyncio
     async def test_search_rerank_fetch_top_k_covers_rerank_top_n(self, mock_retrieve):

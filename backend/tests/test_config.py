@@ -59,9 +59,10 @@ class TestSettingsDefaults:
         assert s.chunk_overlap == 64
 
     def test_default_retrieval_settings(self):
-        s = Settings(retrieval_top_k=5, retrieval_similarity_threshold=0.6)
+        s = Settings(retrieval_top_k=5, retrieval_similarity_threshold=0.6, retrieval_rerank_threshold=0.8)
         assert s.retrieval_top_k == 5
         assert s.retrieval_similarity_threshold == 0.6
+        assert s.retrieval_rerank_threshold == 0.8
 
     def test_default_server_settings(self):
         s = Settings(backend_host="0.0.0.0", backend_port=8000, max_upload_size=104857600)
@@ -75,11 +76,17 @@ class TestSettingsDefaults:
         assert s.log_dir == "./logs"
 
     def test_default_langfuse_settings(self):
-        s = Settings(langfuse_enabled=False, langfuse_sample_rate=1.0)
+        s = Settings(
+            langfuse_enabled=False,
+            langfuse_public_key="",
+            langfuse_secret_key="",
+            langfuse_base_url="",
+            langfuse_sample_rate=1.0,
+        )
         assert s.langfuse_enabled is False
         assert s.langfuse_public_key == ""
         assert s.langfuse_secret_key == ""
-        assert s.langfuse_host == ""
+        assert s.langfuse_base_url == ""
         assert s.langfuse_sample_rate == 1.0
 
 
@@ -158,14 +165,14 @@ class TestSettingsEnvOverride:
             "LANGFUSE_ENABLED": "true",
             "LANGFUSE_PUBLIC_KEY": "pk-lf-test",
             "LANGFUSE_SECRET_KEY": "sk-lf-test",
-            "LANGFUSE_HOST": "http://lf.local",
+            "LANGFUSE_BASE_URL": "http://lf.local",
             "LANGFUSE_SAMPLE_RATE": "0.5",
         }, clear=True):
             s = Settings()
             assert s.langfuse_enabled is True
             assert s.langfuse_public_key == "pk-lf-test"
             assert s.langfuse_secret_key == "sk-lf-test"
-            assert s.langfuse_host == "http://lf.local"
+            assert s.langfuse_base_url == "http://lf.local"
             assert s.langfuse_sample_rate == 0.5
 
 

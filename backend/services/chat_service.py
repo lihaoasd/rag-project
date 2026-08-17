@@ -120,11 +120,21 @@ async def _get_system_prompt(
 
 @observe(as_type="generation", capture_input=False, capture_output=False)
 async def _call_llm(llm, messages: list, model: str) -> str:
-    """调用 LLM 并产出 generation span（记录 model + input/output）。"""
-    response = await llm.achat(messages=messages)
-    content = response.message.content if hasattr(response, "message") else str(response)
-    get_client().update_current_generation(model=model, input=messages, output=content)
-    return content
+    """调用 LLM 并产出 generation span（记录 model + input/output；失败也记录 error 后向上抛）。"""
+    try:
+        response = await llm.achat(messages=messages)
+        content = response.message.content if hasattr(response, "message") else str(response)
+        get_client().update_current_generation(model=model, input=messages, output=content)
+        return content
+    except Exception as e:
+        # 失败也写入 model/input 与错误信息，保证失败的一次生成在 Langfuse 中可追溯
+        get_client().update_current_generation(
+            model=model,
+            input=messages,
+            level="ERROR",
+            status_message=str(e) or type(e).__name__,
+        )
+        raise
 
 
 @observe(name="rag_qa", capture_input=False, capture_output=False)
@@ -151,6 +161,7 @@ async def _run_rag(
             top_k=settings.retrieval_top_k,
             similarity_threshold=settings.retrieval_similarity_threshold,
             rerank_config=rerank_config,
+            rerank_threshold=settings.retrieval_rerank_threshold,
         )
         if not retrieved:
             logger.info("未检索到相关文档: kb_id=%s, query=%s", kb_id, message[:80])
@@ -219,11 +230,13 @@ async def chat_stream(
         except RuntimeError as e:
             # resolve_model_config 失败（llm/embedding/rerank 未配置）
             logger.error("模型配置解析失败: %s", e, exc_info=True)
+            get_client().flush()
             yield _sse_event("error", message=f"模型配置错误: {e}")
             return
         except Exception as llm_err:
             error_msg = f"LLM 调用失败: {llm_err}"
             logger.error(error_msg, exc_info=True)
+            get_client().flush()
             yield _sse_event("error", message=error_msg)
             return
 

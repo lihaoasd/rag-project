@@ -64,7 +64,7 @@ class TestRetrieveAndRank:
     @pytest.mark.asyncio
     async def test_with_rerank_config_applies_rerank(self):
         retrieved = [_hit(0.9, "文本0"), _hit(0.8, "文本1")]
-        reranked = [_hit(0.99, "文本1"), _hit(0.1, "文本0")]
+        reranked = [_hit(0.99, "文本1"), _hit(0.85, "文本0")]
         config = {"model": "r"}
 
         with patch("core.retrieval.retrieve", new=AsyncMock(return_value=retrieved)), \
@@ -76,3 +76,18 @@ class TestRetrieveAndRank:
 
         assert result == reranked
         mock_rerank.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_with_rerank_config_filters_below_threshold(self):
+        retrieved = [_hit(0.9, "文本0"), _hit(0.8, "文本1")]
+        reranked = [_hit(0.99, "文本1"), _hit(0.5, "文本0")]
+        config = {"model": "r"}
+
+        with patch("core.retrieval.retrieve", new=AsyncMock(return_value=retrieved)), \
+             patch("core.retrieval.rerank", new=AsyncMock(return_value=reranked)):
+            result = await retrieval.retrieve_and_rank(
+                query="查询", kb_id=KB_ID, top_k=5, similarity_threshold=0.6,
+                rerank_config=config, rerank_threshold=0.8,
+            )
+
+        assert result == [_hit(0.99, "文本1")]

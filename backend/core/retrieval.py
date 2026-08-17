@@ -156,19 +156,22 @@ async def retrieve_and_rank(
     query: str,
     kb_id: str,
     top_k: int = 5,
-    similarity_threshold: float = 0.6,
+    similarity_threshold: float = 0.2,
     rerank_config: dict | None = None,
+    rerank_threshold: float = 0.8,
 ) -> list[dict[str, Any]]:
-    """单知识库检索统一入口：向量召回 + 可选重排。
+    """单知识库检索统一入口：向量召回 + 可选重排 + rerank 后阈值过滤。
 
     rerank_config 为 None 时退化为纯向量召回；问答与搜索共用同一检索链路。
+    rerank_threshold 仅在有 rerank 时生效，过滤掉 rerank 分数低于该阈值的命中。
     """
     hits = await retrieve(
         query=query,
         kb_id=kb_id,
         top_k=top_k,
-        similarity_threshold=similarity_threshold,
+        similarity_threshold=rerank_config and 0.2 or similarity_threshold,
     )
     if rerank_config and hits:
         hits = await rerank(query, hits, rerank_config)
+        hits = [h for h in hits if h["score"] >= rerank_threshold]
     return hits
