@@ -29,7 +29,12 @@
               </div>
               <div class="message-body">
                 <div class="message-role">{{ msg.role === 'user' ? '你' : 'AI 助手' }}</div>
-                <div class="message-content">{{ msg.content }}</div>
+                <div
+                  v-if="msg.role === 'assistant'"
+                  class="message-content markdown-body"
+                  v-html="renderMarkdown(msg.content)"
+                ></div>
+                <div v-else class="message-content">{{ msg.content }}</div>
                 <span v-if="msg.role === 'assistant' && idx === messages.length - 1 && streaming" class="cursor-blink">|</span>
                 <!-- 来源引用 -->
                 <div v-if="msg.sources && msg.sources.length > 0" class="message-sources">
@@ -132,8 +137,16 @@
 <script setup>
 import { ref, computed, nextTick, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import MarkdownIt from 'markdown-it'
 import { listKnowledgeBases } from '@/api/knowledgeBase'
 import { chatStream } from '@/api/chat'
+
+// Markdown 渲染器（html:false 转义原始 HTML，防 XSS；breaks 保留换行）
+const md = new MarkdownIt({ html: false, breaks: true })
+
+function renderMarkdown(text) {
+  return md.render(text || '')
+}
 
 // --- State ---
 const kbList = ref([])
@@ -335,6 +348,56 @@ onMounted(async () => {
   color: var(--color-text-primary);
   border-bottom-left-radius: 4px;
 }
+
+/* Markdown 渲染样式（v-html 内容需 :deep 穿透 scoped） */
+.markdown-body {
+  white-space: normal;
+}
+.markdown-body :deep(p) { margin: 0 0 8px; }
+.markdown-body :deep(p:last-child) { margin-bottom: 0; }
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4) {
+  margin: 12px 0 6px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.markdown-body :deep(h1) { font-size: 18px; }
+.markdown-body :deep(h2) { font-size: 16px; }
+.markdown-body :deep(h3) { font-size: 15px; }
+.markdown-body :deep(h4) { font-size: 14px; }
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) { margin: 0 0 8px; padding-left: 20px; }
+.markdown-body :deep(li) { margin: 2px 0; }
+.markdown-body :deep(code) {
+  background: #E2E8F0;
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 13px;
+}
+.markdown-body :deep(pre) {
+  background: #1E293B;
+  color: #E2E8F0;
+  padding: 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 0 0 8px;
+}
+.markdown-body :deep(pre code) { background: none; padding: 0; color: inherit; }
+.markdown-body :deep(blockquote) {
+  margin: 0 0 8px;
+  padding: 4px 12px;
+  border-left: 3px solid var(--color-primary);
+  background: #E2E8F0;
+  color: var(--color-text-secondary);
+}
+.markdown-body :deep(table) { border-collapse: collapse; margin: 0 0 8px; }
+.markdown-body :deep(th),
+.markdown-body :deep(td) { border: 1px solid #CBD5E1; padding: 6px 10px; }
+.markdown-body :deep(th) { background: #E2E8F0; }
+.markdown-body :deep(a) { color: var(--color-primary); }
 
 .cursor-blink {
   color: var(--color-primary);
