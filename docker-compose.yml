@@ -39,7 +39,7 @@ services:
     command: minio server /minio_data --console-address ":9001"
 
   standalone:
-    image: milvusdb/milvus:v2.4.0
+    image: milvusdb/milvus:v3.0.0
     container_name: bid_milvus
     ports:
       - "19530:19530"
