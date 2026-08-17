@@ -62,7 +62,7 @@ class SearchRequest(BaseModel):
     similarity_threshold: float = Field(0.6, ge=0, le=1, description="相似度阈值")
     kb_ids: list[str] | None = Field(None, description="知识库 ID 列表，支持多知识库检索")
     rerank_model_id: str | None = Field(None, description="排序模型配置 ID，为空则不做重排")
-    rerank_top_n: int = Field(20, ge=0, le=30, description="进入排序模型的向量候选数量")
+    rerank_top_n: int = Field(5, ge=0, le=30, description="进入排序模型的向量候选数量")
     rerank_vector_threshold: float | None = Field(
         None, ge=0, le=1, description="进入排序模型的最低向量相似度，为空则等于 similarity_threshold"
     )

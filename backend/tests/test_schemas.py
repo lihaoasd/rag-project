@@ -167,7 +167,7 @@ class TestSearchRequest:
         assert req.query == "测试查询"
         assert req.top_k == 10  # 默认值
         assert req.similarity_threshold == 0.6  # 默认值
-        assert req.rerank_top_n == 20  # 默认值
+        assert req.rerank_top_n == 5  # 默认值
         assert req.rerank_vector_threshold is None  # 默认值
 
     def test_valid_custom_params(self):

@@ -5,8 +5,8 @@ Pipeline 阶段:
     1. 获取或创建会话
     2. 加载对话历史
     3. 保存用户消息
-    4. RAG 核心（检索 → Prompt 构建 → LLM 生成，见 _run_rag）
-    5. 非流式响应按字符切块伪流式输出
+    4. RAG 核心（检索 → Prompt 构建 → LLM 流式生成，见 _run_rag）
+    5. 流式逐 token 输出
     6. 保存 AI 回复
     7. 发送来源引用
     8. 发送完成信号
@@ -119,13 +119,33 @@ async def _get_system_prompt(
 
 
 @observe(as_type="generation", capture_input=False, capture_output=False)
-async def _call_llm(llm, messages: list, model: str) -> str:
-    """调用 LLM 并产出 generation span（记录 model + input/output；失败也记录 error 后向上抛）。"""
+async def _call_llm_stream(llm, messages: list, model: str) -> AsyncGenerator[str, None]:
+    """流式调用 LLM 并产出 generation span（逐 token yield，结束记录 model/output/usage；失败也记录 error 后向上抛）。"""
     try:
-        response = await llm.achat(messages=messages)
-        content = response.message.content if hasattr(response, "message") else str(response)
-        get_client().update_current_generation(model=model, input=messages, output=content)
-        return content
+        full: list[str] = []
+        usage: dict = {}
+        stream = await llm.astream_chat(
+            messages=messages, stream_options={"include_usage": True}
+        )
+        async for resp in stream:
+            delta = resp.delta or ""
+            if delta:
+                full.append(delta)
+                yield delta
+            # 最后一个 chunk 携带 token 用量（additional_kwargs 内含 prompt/completion/total_tokens）
+            ak = resp.additional_kwargs or {}
+            if "prompt_tokens" in ak:
+                usage = {
+                    "prompt_tokens": ak["prompt_tokens"],
+                    "completion_tokens": ak["completion_tokens"],
+                    "total_tokens": ak["total_tokens"],
+                }
+        get_client().update_current_generation(
+            model=model,
+            input=messages,
+            output="".join(full),
+            usage_details=usage or None,
+        )
     except Exception as e:
         # 失败也写入 model/input 与错误信息，保证失败的一次生成在 Langfuse 中可追溯
         get_client().update_current_generation(
@@ -143,12 +163,13 @@ async def _run_rag(
     message: str,
     conv_id: str,
     history: list,
-) -> tuple[list[dict], str]:
-    """RAG 核心：检索 → Prompt 构建 → LLM 生成（非流式）。
+    result: dict | None = None,
+) -> AsyncGenerator[str, None]:
+    """RAG 核心：检索 → Prompt 构建 → LLM 流式生成（逐 token yield）。
 
     由 @observe 标注，产出 trace "rag_qa"；retrieve/rerank/LLM 各自产出 span。
     session_id 与 trace metadata 经 propagate_attributes 下发到所有子 span。
-    返回 (retrieved, full_response)。
+    retrieved 经 result dict 传回（async generator 无法用 return 传值）。
     """
     with propagate_attributes(session_id=conv_id, metadata={"kb_id": kb_id}):
         get_client().update_current_span(input=message)
@@ -180,13 +201,18 @@ async def _run_rag(
             llm_messages.append(ChatMessage(role=h.role, content=h.content))
         llm_messages.append(ChatMessage(role=MessageRole.USER, content=message))
 
-        # LLM 生成（非流式；generation span 记录 input/output/model）
+        # LLM 流式生成（generation span 记录 input/output/model）
         llm_config = await resolve_model_config(kb_id, "llm")
         llm = create_llm(llm_config)
-        full_response = await _call_llm(llm, llm_messages, llm_config["model"])
+        full: list[str] = []
+        async for delta in _call_llm_stream(llm, llm_messages, llm_config["model"]):
+            full.append(delta)
+            yield delta
 
-        get_client().update_current_span(output=full_response)
-        return retrieved, full_response
+        content = "".join(full)
+        get_client().update_current_span(output=content)
+        if result is not None:
+            result["retrieved"] = retrieved
 
 
 async def chat_stream(
@@ -224,9 +250,13 @@ async def chat_stream(
             conv_repo = ConversationRepository(session)
             await conv_repo.create_message(conv_id, role="user", content=message)
 
-        # Stage 4: RAG 核心（检索 + Prompt 构建 + LLM 生成）
+        # Stage 4: RAG 核心（检索 + Prompt 构建 + LLM 流式生成）
+        result: dict = {}
+        full_parts: list[str] = []
         try:
-            retrieved, full_response = await _run_rag(kb_id, message, conv_id, history)
+            async for delta in _run_rag(kb_id, message, conv_id, history, result):
+                full_parts.append(delta)
+                yield _sse_event("token", content=delta)
         except RuntimeError as e:
             # resolve_model_config 失败（llm/embedding/rerank 未配置）
             logger.error("模型配置解析失败: %s", e, exc_info=True)
@@ -240,11 +270,9 @@ async def chat_stream(
             yield _sse_event("error", message=error_msg)
             return
 
-        # Stage 5: 非流式响应按 10 字符切块模拟流式输出
-        chunk_size = 10
-        for i in range(0, len(full_response), chunk_size):
-            chunk = full_response[i : i + chunk_size]
-            yield _sse_event("token", content=chunk)
+        # Stage 5: 流式已完成，组装完整回答
+        retrieved = result.get("retrieved")
+        full_response = "".join(full_parts)
 
         # Stage 6: 保存 AI 回复
         try:

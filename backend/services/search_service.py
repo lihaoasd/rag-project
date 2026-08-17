@@ -44,7 +44,7 @@ async def search(
     top_k: int = 10,
     similarity_threshold: float = 0.6,
     rerank_model_id: str | None = None,
-    rerank_top_n: int = 20,
+    rerank_top_n: int = 5,
     rerank_vector_threshold: float | None = None,
 ) -> dict[str, Any]:
     """在多个知识库中执行语义检索，按分数合并排序。

@@ -92,8 +92,8 @@
             </label>
             <el-slider
               v-model="rerankTopN"
-              :min="1"
-              :max="100"
+              :min="0"
+              :max="30"
               :step="1"
               show-stops
             />
@@ -203,7 +203,7 @@ const topK = ref(10)
 const similarityThreshold = ref(0.6)
 const rerankModels = ref([])
 const rerankModelId = ref(null)
-const rerankTopN = ref(20)
+const rerankTopN = ref(5)
 const useVectorThreshold = ref(false)
 const rerankVectorThreshold = ref(0.6)
 

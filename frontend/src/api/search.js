@@ -19,7 +19,7 @@ export function search({
       top_k: top_k || 10,
       similarity_threshold: similarity_threshold || 0.6,
       rerank_model_id: rerank_model_id || null,
-      rerank_top_n: rerank_top_n || 20,
+      rerank_top_n: rerank_top_n ?? 5,
       rerank_vector_threshold: rerank_vector_threshold ?? null,
     })
     .then((res) => res.data)
