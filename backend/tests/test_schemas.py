@@ -167,19 +167,57 @@ class TestSearchRequest:
         assert req.query == "测试查询"
         assert req.top_k == 10  # 默认值
         assert req.similarity_threshold == 0.6  # 默认值
+        assert req.retrieval_method is None  # 默认值
+        assert req.hybrid_ranker is None  # 默认值
+        assert req.hybrid_weights is None  # 默认值
         assert req.rerank_top_n == 5  # 默认值
         assert req.rerank_vector_threshold is None  # 默认值
+
+    def test_valid_retrieval_methods(self):
+        req = SearchRequest(query="测试查询", retrieval_method="vector")
+        assert req.retrieval_method == "vector"
+
+        req = SearchRequest(query="测试查询", retrieval_method="hybrid")
+        assert req.retrieval_method == "hybrid"
+
+    def test_valid_hybrid_ranker_params(self):
+        req = SearchRequest(
+            query="测试查询",
+            retrieval_method="hybrid",
+            hybrid_ranker="weighted",
+            hybrid_weights=[0.7, 0.3],
+        )
+        assert req.hybrid_ranker == "weighted"
+        assert req.hybrid_weights == [0.7, 0.3]
+
+    def test_invalid_retrieval_method_raises_error(self):
+        with pytest.raises(ValidationError):
+            SearchRequest(query="测试查询", retrieval_method="graph")
+
+    def test_invalid_hybrid_ranker_raises_error(self):
+        with pytest.raises(ValidationError):
+            SearchRequest(query="测试查询", hybrid_ranker="score")
+
+    def test_invalid_hybrid_weights_length_raises_error(self):
+        with pytest.raises(ValidationError):
+            SearchRequest(query="测试查询", hybrid_weights=[0.5])
 
     def test_valid_custom_params(self):
         req = SearchRequest(
             query="测试查询",
             top_k=5,
             similarity_threshold=0.8,
+            retrieval_method="vector",
+            hybrid_ranker="rrf",
+            hybrid_weights=[1.0, 1.0],
             rerank_top_n=30,
             rerank_vector_threshold=0.7,
         )
         assert req.top_k == 5
         assert req.similarity_threshold == 0.8
+        assert req.retrieval_method == "vector"
+        assert req.hybrid_ranker == "rrf"
+        assert req.hybrid_weights == [1.0, 1.0]
         assert req.rerank_top_n == 30
         assert req.rerank_vector_threshold == 0.7
 

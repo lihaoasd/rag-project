@@ -43,6 +43,9 @@ async def search(
     kb_ids: list[str],
     top_k: int = 10,
     similarity_threshold: float = 0.6,
+    retrieval_method: str | None = None,
+    hybrid_ranker: str | None = None,
+    hybrid_weights: list[float] | None = None,
     rerank_model_id: str | None = None,
     rerank_top_n: int = 5,
     rerank_vector_threshold: float | None = None,
@@ -54,6 +57,9 @@ async def search(
         kb_ids: 知识库 ID 列表
         top_k: 每个知识库的向量检索候选数量（也是无重排时的返回条数上限）
         similarity_threshold: 最终相似度阈值（rerank 时按 rerank 分数过滤，否则按向量分数）
+        retrieval_method: 检索方式：vector/hybrid，为空则沿用服务端配置
+        hybrid_ranker: 混合检索融合策略：rrf/weighted，仅 hybrid 生效
+        hybrid_weights: WeightedRanker 的 [向量权重, 关键词权重]
         rerank_model_id: 排序模型配置 ID，为空则跳过重排
         rerank_top_n: 进入排序模型的向量候选数量
         rerank_vector_threshold: 进入排序模型的最低向量相似度，为空则等于 similarity_threshold
@@ -67,6 +73,9 @@ async def search(
             "kb_ids": kb_ids,
             "top_k": top_k,
             "similarity_threshold": similarity_threshold,
+            "retrieval_method": retrieval_method,
+            "hybrid_ranker": hybrid_ranker,
+            "hybrid_weights": hybrid_weights,
             "rerank_model_id": rerank_model_id,
         },
     )
@@ -94,6 +103,9 @@ async def search(
                 kb_id=kb_id,
                 top_k=fetch_top_k,
                 similarity_threshold=vector_gate,
+                retrieval_method=retrieval_method,
+                hybrid_ranker=hybrid_ranker,
+                hybrid_weights=hybrid_weights,
             )
             # 打上知识库标签
             for h in hits:

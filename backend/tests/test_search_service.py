@@ -49,6 +49,35 @@ class TestSearch:
         assert mock_retrieve.call_args.kwargs["top_k"] == 5
 
     @pytest.mark.asyncio
+    async def test_search_passes_retrieval_method(self, mock_retrieve):
+        """检索方式参数应透传到 retrieve。"""
+        mock_retrieve.return_value = []
+
+        await search_service.search(
+            kb_ids=[KB_ID],
+            query="test",
+            retrieval_method="vector",
+        )
+
+        assert mock_retrieve.call_args.kwargs["retrieval_method"] == "vector"
+
+    @pytest.mark.asyncio
+    async def test_search_passes_hybrid_ranker_params(self, mock_retrieve):
+        """混合检索融合策略与权重应透传到 retrieve。"""
+        mock_retrieve.return_value = []
+
+        await search_service.search(
+            kb_ids=[KB_ID],
+            query="test",
+            retrieval_method="hybrid",
+            hybrid_ranker="weighted",
+            hybrid_weights=[0.7, 0.3],
+        )
+
+        assert mock_retrieve.call_args.kwargs["hybrid_ranker"] == "weighted"
+        assert mock_retrieve.call_args.kwargs["hybrid_weights"] == [0.7, 0.3]
+
+    @pytest.mark.asyncio
     async def test_search_no_rerank_uses_similarity_threshold(self, mock_retrieve):
         """无 rerank 时，向量门槛应等于 similarity_threshold。"""
         mock_retrieve.return_value = []

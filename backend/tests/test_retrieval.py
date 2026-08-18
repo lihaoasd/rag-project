@@ -21,6 +21,41 @@ def _hit(score: float, text: str) -> dict:
 
 
 class TestRerank:
+    def test_resolve_retrieval_method_vector_disables_hybrid(self):
+        assert retrieval._resolve_retrieval_method("vector") is False
+
+    def test_resolve_retrieval_method_hybrid_enables_hybrid(self):
+        assert retrieval._resolve_retrieval_method("hybrid") is True
+
+    def test_resolve_retrieval_method_default_uses_settings(self, monkeypatch):
+        monkeypatch.setattr(retrieval.settings, "retrieval_hybrid_enabled", True)
+        assert retrieval._resolve_retrieval_method(None) is True
+
+        monkeypatch.setattr(retrieval.settings, "retrieval_hybrid_enabled", False)
+        assert retrieval._resolve_retrieval_method(None) is False
+
+    def test_resolve_retrieval_method_rejects_unknown(self):
+        with pytest.raises(ValueError):
+            retrieval._resolve_retrieval_method("graph")
+
+    def test_resolve_hybrid_ranker_defaults_to_rrf(self):
+        assert retrieval._resolve_hybrid_ranker(None) == ("RRFRanker", {})
+        assert retrieval._resolve_hybrid_ranker("rrf") == ("RRFRanker", {})
+
+    def test_resolve_hybrid_ranker_weighted(self):
+        assert retrieval._resolve_hybrid_ranker("weighted") == (
+            "WeightedRanker",
+            {"weights": [1.0, 1.0]},
+        )
+        assert retrieval._resolve_hybrid_ranker("weighted", [0.7, 0.3]) == (
+            "WeightedRanker",
+            {"weights": [0.7, 0.3]},
+        )
+
+    def test_resolve_hybrid_ranker_rejects_invalid(self):
+        with pytest.raises(ValueError):
+            retrieval._resolve_hybrid_ranker("score")
+
     @pytest.mark.asyncio
     async def test_rerank_overrides_score_and_reorders(self):
         hits = [_hit(0.9, "文本0"), _hit(0.8, "文本1"), _hit(0.7, "文本2")]

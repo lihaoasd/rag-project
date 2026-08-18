@@ -39,6 +39,41 @@
         </div>
 
         <div class="param-group">
+          <label class="param-label">检索方式</label>
+          <el-select v-model="retrievalMethod" style="width: 100%">
+            <el-option label="vector" value="vector" />
+            <el-option label="hybrid" value="hybrid" />
+          </el-select>
+        </div>
+
+        <template v-if="retrievalMethod === 'hybrid'">
+          <div class="param-group">
+            <label class="param-label">融合策略</label>
+            <el-select v-model="hybridRanker" style="width: 100%">
+              <el-option label="RRFRanker" value="rrf" />
+              <el-option label="WeightedRanker" value="weighted" />
+            </el-select>
+          </div>
+
+          <template v-if="hybridRanker === 'weighted'">
+            <div class="param-group">
+              <label class="param-label">
+                稠密稀疏项目权重
+                <span class="param-hint">{{ denseWeight.toFixed(1) }}</span>
+              </label>
+              <el-slider
+                v-model="denseWeight"
+                :min="0"
+                :max="1"
+                :step="0.05"
+                :format-tooltip="(v) => (v * 100).toFixed(0) + '%'"
+                show-stops
+              />
+            </div>
+          </template>
+        </template>
+
+        <div class="param-group">
           <label class="param-label">
             Top K
             <span class="param-hint">{{ topK }}</span>
@@ -201,6 +236,9 @@ const searching = ref(false)
 const elapsed = ref(0)
 const topK = ref(10)
 const similarityThreshold = ref(0.6)
+const retrievalMethod = ref('vector')
+const hybridRanker = ref('rrf')
+const denseWeight = ref(0.5)
 const rerankModels = ref([])
 const rerankModelId = ref(null)
 const rerankTopN = ref(5)
@@ -233,6 +271,11 @@ async function handleSearch() {
       query: query.value.trim(),
       top_k: topK.value,
       similarity_threshold: similarityThreshold.value,
+      retrieval_method: retrievalMethod.value,
+      hybrid_ranker: retrievalMethod.value === 'hybrid' ? hybridRanker.value : null,
+      hybrid_weights: retrievalMethod.value === 'hybrid' && hybridRanker.value === 'weighted'
+        ? [denseWeight.value, Number((1 - denseWeight.value).toFixed(2))]
+        : null,
       rerank_model_id: rerankModelId.value || null,
       rerank_top_n: rerankTopN.value,
       rerank_vector_threshold: useVectorThreshold.value ? rerankVectorThreshold.value : null,

@@ -19,7 +19,12 @@ SCALAR_FIELD_NAMES = ["file_name", "page_number", "chunk_index", "heading", "hea
 SCALAR_FIELD_TYPES = [DataType.VARCHAR, DataType.INT64, DataType.INT64, DataType.VARCHAR, DataType.VARCHAR]
 
 
-def get_vector_store(kb_id: str, dim: int | None = None) -> MilvusVectorStore:
+def get_vector_store(
+    kb_id: str,
+    dim: int | None = None,
+    hybrid_ranker: str = "RRFRanker",
+    hybrid_ranker_params: dict | None = None,
+) -> MilvusVectorStore:
     """为指定知识库创建或获取 MilvusVectorStore 实例。
 
     dim 为空时回退 settings.embedding_dim（删除/删除集合等只读操作可不传）。
@@ -44,4 +49,7 @@ def get_vector_store(kb_id: str, dim: int | None = None) -> MilvusVectorStore:
             output_field_names="sparse_embedding",
             analyzer_params={"tokenizer": "jieba"},
         )
+        kwargs["hybrid_ranker"] = hybrid_ranker
+        if hybrid_ranker_params:
+            kwargs["hybrid_ranker_params"] = hybrid_ranker_params
     return MilvusVectorStore(**kwargs)
