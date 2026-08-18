@@ -1,0 +1,5 @@
+version: "1.0.0"
+interface:
+  display_name: "项目开发标准"
+  short_description: "开发前设计确认、精准修改、完整修改记录与单元测试流程"
+  default_prompt: "Use $project-development-standard to plan and implement this development task."
