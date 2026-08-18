@@ -11,39 +11,13 @@ from typing import Any
 from llama_index.core import Document as LlamaDocument
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import NodeRelationship, RelatedNodeInfo, TextNode
-from llama_index.vector_stores.milvus import MilvusVectorStore
-from pymilvus import DataType
 
 from config import settings
 from core.model_factory import create_embedding, resolve_model_config
+from core.vector_store import get_vector_store
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-# 集合过期时间（秒），默认 7 天清理
-TTL_SECONDS = 7 * 24 * 3600
-
-
-def _get_vector_store(kb_id: str, dim: int | None = None) -> MilvusVectorStore:
-    """为指定知识库创建或获取 MilvusVectorStore 实例。
-
-    Schema、Collection、Index 均由 MilvusVectorStore 自动管理。
-    dim 为空时回退 settings.embedding_dim（删除/删除集合等只读操作可不传）。
-    """
-    safe = kb_id.replace("-", "_")
-    return MilvusVectorStore(
-        uri=settings.milvus_uri,
-        collection_name=f"kb_{safe}",
-        dim=dim or settings.embedding_dim,
-        similarity_metric="IP",
-        index_config={"index_type": "IVF_FLAT", "params": {"nlist": 128}},
-        search_config={"nprobe": 16},
-        scalar_field_names=["file_name", "page_number", "chunk_index", "heading", "heading_path"],
-        scalar_field_types=[DataType.VARCHAR, DataType.INT64, DataType.INT64, DataType.VARCHAR, DataType.VARCHAR],
-        text_key="text",
-        overwrite=False,
-        collection_properties={"collection.ttl.seconds": TTL_SECONDS},
-    )
 
 
 async def build_index(
@@ -115,7 +89,7 @@ async def build_index(
         node.embedding = emb
 
     # 4. 通过 MilvusVectorStore 写入（同步 I/O，放到线程池）
-    vector_store = _get_vector_store(kb_id, dim)
+    vector_store = get_vector_store(kb_id, dim)
     node_ids = await asyncio.to_thread(vector_store.add, text_nodes)
     logger.info(
         "build_index 完成: kb_id=%s, collection=%s, inserted=%d",
@@ -133,7 +107,7 @@ async def delete_index(kb_id: str, doc_id: str) -> None:
         kb_id: 知识库 ID
         doc_id: 文档 ID（UUID 字符串）— 对应 TextNode 的 ref_doc_id
     """
-    vector_store = _get_vector_store(kb_id)
+    vector_store = get_vector_store(kb_id)
     await asyncio.to_thread(vector_store.delete, ref_doc_id=doc_id)
     logger.info("delete_index 完成: kb_id=%s, doc_id=%s", kb_id, doc_id)
 
@@ -144,7 +118,7 @@ def drop_kb_collection(kb_id: str) -> None:
     Args:
         kb_id: 知识库 ID
     """
-    vector_store = _get_vector_store(kb_id)
+    vector_store = get_vector_store(kb_id)
     col_name = vector_store.collection_name
     if col_name in vector_store.client.list_collections():
         vector_store.client.drop_collection(col_name)
@@ -217,7 +191,7 @@ async def delete_single_vector(kb_id: str, node_id: str) -> None:
         kb_id: 知识库 ID
         node_id: llama_index TextNode ID（VARCHAR）
     """
-    vector_store = _get_vector_store(kb_id)
+    vector_store = get_vector_store(kb_id)
     await asyncio.to_thread(
         vector_store.client.delete,
         collection_name=vector_store.collection_name,
@@ -267,7 +241,7 @@ async def insert_single_vector(kb_id: str, text: str, metadata: dict) -> str:
     node.embedding = embedding
 
     # 写入 Milvus（同步 I/O，放到线程池）
-    vector_store = _get_vector_store(kb_id, dim)
+    vector_store = get_vector_store(kb_id, dim)
     node_ids = await asyncio.to_thread(vector_store.add, [node])
     new_node_id = node_ids[0]
 

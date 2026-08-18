@@ -6,33 +6,15 @@ from typing import Any
 from llama_index.core import VectorStoreIndex
 from llama_index.core.postprocessor import SimilarityPostprocessor
 from llama_index.core.schema import QueryBundle
-from llama_index.vector_stores.milvus import MilvusVectorStore
 from langfuse import get_client, observe
-from pymilvus import DataType
 
 from config import settings
 from core.model_factory import create_embedding, create_reranker, resolve_model_config
 from core.observability import format_retrieval_observation
+from core.vector_store import get_vector_store
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-
-def _get_vector_store(kb_id: str, dim: int) -> MilvusVectorStore:
-    """为指定知识库创建 MilvusVectorStore 实例（维度来自 embedding 配置）。"""
-    safe = kb_id.replace("-", "_")
-    return MilvusVectorStore(
-        uri=settings.milvus_uri,
-        collection_name=f"kb_{safe}",
-        dim=dim,
-        similarity_metric="IP",
-        index_config={"index_type": "IVF_FLAT", "params": {"nlist": 128}},
-        search_config={"nprobe": 16},
-        scalar_field_names=["file_name", "page_number", "chunk_index"],
-        scalar_field_types=[DataType.VARCHAR, DataType.INT64, DataType.INT64],
-        text_key="text",
-        overwrite=False,
-    )
 
 
 @observe(as_type="retriever", capture_input=False, capture_output=False)
@@ -67,7 +49,7 @@ async def retrieve(
     embed_model = create_embedding(embed_config)
 
     # 2. 创建 vector_store + index
-    vector_store = _get_vector_store(kb_id, dim)
+    vector_store = get_vector_store(kb_id, dim)
 
     # 检查 Collection 是否存在
     if vector_store.collection_name not in vector_store.client.list_collections():
