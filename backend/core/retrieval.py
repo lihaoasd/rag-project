@@ -6,6 +6,7 @@ from typing import Any
 from llama_index.core import VectorStoreIndex
 from llama_index.core.postprocessor import SimilarityPostprocessor
 from llama_index.core.schema import QueryBundle
+from llama_index.core.vector_stores.types import VectorStoreQueryMode
 from langfuse import get_client, observe
 
 from config import settings
@@ -36,8 +37,9 @@ async def retrieve(
         按分数降序排列的结果列表:
         [{score, text, doc_id, file_name, page_number, chunk_index}, ...]
     """
+    hybrid = settings.retrieval_hybrid_enabled
     retrieval_metadata = {
-        "method": "vector",
+        "method": "hybrid" if hybrid else "vector",
         "kb_id": kb_id,
         "top_k": top_k,
         "similarity_threshold": similarity_threshold,
@@ -63,7 +65,10 @@ async def retrieve(
 
     # 3. 构建 VectorStoreIndex + Retriever
     index = VectorStoreIndex.from_vector_store(vector_store, embed_model=embed_model)
-    retriever = index.as_retriever(similarity_top_k=top_k)
+    query_mode = VectorStoreQueryMode.HYBRID if hybrid else VectorStoreQueryMode.DEFAULT
+    retriever = index.as_retriever(
+        similarity_top_k=top_k, vector_store_query_mode=query_mode
+    )
 
     # 4. 查询向量化
     query_embedding = await embed_model.aget_query_embedding(query)
@@ -72,9 +77,12 @@ async def retrieve(
     # 5. 检索
     nodes = await retriever.aretrieve(query_bundle)
 
-    # 6. 后处理：相似度阈值过滤
-    processor = SimilarityPostprocessor(similarity_cutoff=similarity_threshold)
-    filtered_nodes = processor.postprocess_nodes(nodes)
+    # 6. 后处理：相似度阈值过滤（混合模式融合分数非 [0,1]，仅稠密模式适用）
+    if hybrid:
+        filtered_nodes = nodes
+    else:
+        processor = SimilarityPostprocessor(similarity_cutoff=similarity_threshold)
+        filtered_nodes = processor.postprocess_nodes(nodes)
 
     # 7. 组装为 service 层兼容的 dict 格式
     hits = []

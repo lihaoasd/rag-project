@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 5
     retrieval_similarity_threshold: float = 0.6
     retrieval_rerank_threshold: float = 0.8
+    retrieval_hybrid_enabled: bool = True  # 混合检索开关（稠密 + BM25 稀疏融合，RRF）
 
     # === 服务配置 ===
     backend_host: str = "0.0.0.0"

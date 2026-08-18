@@ -3,8 +3,12 @@ MilvusVectorStore 工厂 — 统一创建/获取知识库 Collection 实例。
 
 每个知识库一个 Collection（kb_{kb_id}），使用 IVF_FLAT 索引。
 Schema、Collection、Index 均由 MilvusVectorStore 自动管理（overwrite=False）。
+
+开启 retrieval_hybrid_enabled 时，额外启用 Milvus 内置 BM25 稀疏检索
+（SPARSE_FLOAT_VECTOR 字段 + BM25 函数 + jieba 中文分词），检索时走稠密+稀疏融合。
 """
 from llama_index.vector_stores.milvus import MilvusVectorStore
+from llama_index.vector_stores.milvus.utils import BM25BuiltInFunction
 from pymilvus import DataType
 
 from config import settings
@@ -21,7 +25,7 @@ def get_vector_store(kb_id: str, dim: int | None = None) -> MilvusVectorStore:
     dim 为空时回退 settings.embedding_dim（删除/删除集合等只读操作可不传）。
     """
     safe = kb_id.replace("-", "_")
-    return MilvusVectorStore(
+    kwargs = dict(
         uri=settings.milvus_uri,
         collection_name=f"kb_{safe}",
         dim=dim or settings.embedding_dim,
@@ -31,5 +35,13 @@ def get_vector_store(kb_id: str, dim: int | None = None) -> MilvusVectorStore:
         scalar_field_names=SCALAR_FIELD_NAMES,
         scalar_field_types=SCALAR_FIELD_TYPES,
         text_key="text",
-        overwrite=False
+        overwrite=False,
     )
+    if settings.retrieval_hybrid_enabled:
+        kwargs["enable_sparse"] = True
+        kwargs["sparse_embedding_function"] = BM25BuiltInFunction(
+            input_field_names="text",
+            output_field_names="sparse_embedding",
+            analyzer_params={"tokenizer": "jieba"},
+        )
+    return MilvusVectorStore(**kwargs)
