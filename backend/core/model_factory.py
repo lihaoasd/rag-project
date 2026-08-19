@@ -57,12 +57,12 @@ def _config_to_dict(mc: ModelConfig) -> dict:
 async def resolve_model_config(kb_id: str, model_type: str) -> dict | None:
     """解析知识库最终生效的模型配置。
 
-    优先级：kb_model_bindings 绑定 > 全局默认（is_default）。
-    - llm / embedding 无默认时抛 RuntimeError（必需）。
+    优先级：kb_model_bindings 绑定（已启用的配置）> 全局默认（is_active 且 is_default）。
+    - llm / embedding 无可用配置时抛 RuntimeError（必需）。
     - rerank / vision / ocr 无配置时返回 None（调用方降级/跳过）。
     """
     async with async_session() as session:
-        # 1. 绑定优先
+        # 1. 绑定优先（绑定指向停用模型时视为未命中，继续走默认）
         binding_result = await session.execute(
             select(KBModelBinding).where(
                 KBModelBinding.kb_id == kb_id,
@@ -75,24 +75,25 @@ async def resolve_model_config(kb_id: str, model_type: str) -> dict | None:
                 select(ModelConfig).where(ModelConfig.id == binding.model_config_id)
             )
             mc = mc_result.scalar_one_or_none()
-            if mc is not None:
+            if mc is not None and mc.is_active:
                 logger.debug("resolve 命中绑定: kb_id=%s, type=%s, config=%s", kb_id, model_type, mc.name)
                 return _config_to_dict(mc)
 
-        # 2. 全局默认兜底
+        # 2. 全局默认兜底（仅启用模型）
         default_result = await session.execute(
             select(ModelConfig).where(
                 ModelConfig.model_type == model_type,
                 ModelConfig.is_default == True,  # noqa: E712
+                ModelConfig.is_active == True,  # noqa: E712
             )
         )
         mc = default_result.scalar_one_or_none()
-        if mc is not None:
+        if mc is not None and mc.is_active:
             logger.debug("resolve 命中默认: type=%s, config=%s", model_type, mc.name)
             return _config_to_dict(mc)
 
     if model_type in REQUIRED_MODEL_TYPES:
-        raise RuntimeError(f"未配置 {model_type} 类型模型（知识库 {kb_id} 无绑定且无全局默认）")
+        raise RuntimeError(f"未配置 {model_type} 类型模型（知识库 {kb_id} 无绑定且无启用默认）")
     return None
 
 
@@ -285,9 +286,12 @@ def create_vision_llm(config: dict):
 
 
 class PaddleOCRHttpClient:
-    """远程 PaddleOCR FastAPI 服务客户端（base64 JSON，同步）。
+    """远程 PaddleOCR FastAPI 服务客户端（同步）。
 
-    请求：POST {api_base}{endpoint}，body {"file": "<base64 图片字节>"}
+    支持两种请求协议（由 params.upload_mode 控制，默认 json）：
+    - "json"：POST {api_base}{endpoint}，body {"file": "<base64 图片字节>"}
+    - "multipart"：POST {api_base}{endpoint}，multipart/form-data 上传字段 file（PP-OCRv6 服务）
+
     响应：{"text": "...", "rec_texts": [...]}，取 text，回退 rec_texts 拼接。
 
     同步 httpx：parser 在线程池（asyncio.to_thread）中调用，阻塞线程池线程而非事件循环。
@@ -299,11 +303,13 @@ class PaddleOCRHttpClient:
         api_key: str | None = None,
         endpoint: str = "/ocr",
         timeout: float = 30,
+        upload_mode: str = "json",
     ):
         self.api_base = (api_base or "").rstrip("/")
         self.api_key = api_key
         self.endpoint = endpoint
         self.timeout = timeout
+        self.upload_mode = upload_mode
         self._client = None  # httpx.Client 懒加载，文档内复用连接
 
     def _get_client(self):
@@ -317,11 +323,19 @@ class PaddleOCRHttpClient:
         """识别图片文字，返回拼接后的文本；失败由调用方捕获（raise_for_status 上抛）。"""
         import base64
 
-        b64 = base64.b64encode(image_bytes).decode("ascii")
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        resp = self._get_client().post(
-            f"{self.api_base}{self.endpoint}", json={"file": b64}, headers=headers
-        )
+        url = f"{self.api_base}{self.endpoint}"
+        if self.upload_mode == "multipart":
+            resp = self._get_client().post(
+                url,
+                files={"file": ("image.png", image_bytes, "image/png")},
+                headers=headers,
+            )
+        else:
+            b64 = base64.b64encode(image_bytes).decode("ascii")
+            resp = self._get_client().post(
+                url, json={"file": b64}, headers=headers
+            )
         resp.raise_for_status()
         return self._extract_text(resp.json())
 
@@ -346,11 +360,23 @@ class PaddleOCRHttpClient:
 
 
 def create_ocr(config: dict):
-    """创建远程 OCR client（PaddleOCR FastAPI，base64 JSON）。"""
+    """创建远程 OCR client（PaddleOCR FastAPI）。
+
+    params 支持：
+    - endpoint: 路径后缀，默认 "/ocr"（如 PP-OCRv6 服务为 "/ocr/gpu/json"）
+    - upload_mode: "json"（默认，base64 JSON）| "multipart"（文件上传，PP-OCRv6）
+    """
     params = config.get("params") or {}
-    logger.info("创建 OCR: api_base=%s, endpoint=%s", config.get("api_base"), params.get("endpoint", "/ocr"))
+    logger.info(
+        "创建 OCR: api_base=%s, endpoint=%s, upload_mode=%s",
+        config.get("api_base"),
+        params.get("endpoint", "/ocr"),
+        params.get("upload_mode", "json"),
+    )
     return PaddleOCRHttpClient(
         api_base=config.get("api_base") or "",
         api_key=resolve_api_key(config.get("api_key")),
         endpoint=params.get("endpoint", "/ocr"),
+        timeout=params.get("timeout", 30),
+        upload_mode=params.get("upload_mode", "json"),
     )

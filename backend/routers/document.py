@@ -29,7 +29,7 @@ async def upload_document(kb_id: str, file: UploadFile = File(...)):
         logger.warning("上传失败：不支持的文件格式 %s", file.filename)
         raise HTTPException(
             status_code=400,
-            detail="不支持的文件格式。支持: pdf, docx, doc",
+            detail="不支持的文件格式。支持: docx, doc（PDF 解析暂不支持）",
         )
 
     try:

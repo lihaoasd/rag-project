@@ -170,6 +170,7 @@ class DocumentRepository:
                     "object_key": meta.get("object_key", ""),
                     "mime_type": meta.get("mime_type", ""),
                     "image_refs": meta.get("image_refs", []),
+                    "image_keys": meta.get("image_keys", []),
                     "heading": meta.get("heading", ""),
                     "heading_path": meta.get("heading_path", ""),
                 },

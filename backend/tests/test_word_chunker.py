@@ -213,7 +213,8 @@ class TestWordChunk:
 
 
 class TestWordChunkImages:
-    def test_image_chunk_generated_and_linked_to_source_text_chunk(self):
+    def test_ocr_text_merged_into_body(self):
+        """图片 OCR 文字直接并入正文分块，不生成图片 chunk。"""
         image = WordImage(
             image_bytes=b"fake-png",
             content_type="image/png",
@@ -226,48 +227,103 @@ class TestWordChunkImages:
             ParagraphItem(text="", images=[image]),
         ]
 
-        chunks, metadatas, nodes = word_chunk(
+        chunks, metadatas, _ = word_chunk(
             items,
             doc_id="doc-1",
             file_name="test.docx",
         )
 
-        assert len(chunks) == 2
+        # 只有文本 chunk，无图片 chunk / 占位符
+        assert len(chunks) == 1
+        assert "[图片" not in chunks[0]
+        assert "OCR识别" not in chunks[0]
+        assert "视觉描述" not in chunks[0]
+        assert "投标报价：100万元" in chunks[0]
+        assert "报价章节正文" in chunks[0]
         assert metadatas[0]["chunk_type"] == "text"
-        assert metadatas[0]["image_refs"][0]["image_index"] == 1
-        assert metadatas[0]["image_refs"][0]["image_chunk_index"] == 1
-        assert "[图片 1]" in chunks[0]
 
-        assert metadatas[1]["chunk_type"] == "image"
-        assert metadatas[1]["source_chunk_index"] == 0
-        assert metadatas[1]["object_key"] == "kb/doc/images/a.png"
-        assert "OCR识别：投标报价：100万元" in chunks[1]
-        assert "视觉描述：这是一张报价表" in chunks[1]
-
-    def test_image_only_paragraph_keeps_image_chunk(self):
-        image = WordImage(image_bytes=b"fake-png", content_type="image/png")
+    def test_image_only_paragraph_text_becomes_chunk(self):
+        """只有图片的段落：OCR 文字成为文本 chunk。"""
+        image = WordImage(
+            image_bytes=b"fake-png",
+            content_type="image/png",
+            object_key="kb/doc/images/a.png",
+            ocr_text="附件图：组织机构图",
+        )
         items = [ParagraphItem(text="", images=[image])]
 
         chunks, metadatas, _ = word_chunk(items, "doc-1", "test.docx")
 
         assert len(chunks) == 1
-        assert metadatas[0]["chunk_type"] == "image"
-        assert metadatas[0]["source_chunk_index"] == -1
+        assert "附件图：组织机构图" in chunks[0]
+        assert metadatas[0]["chunk_type"] == "text"
 
-    def test_word_chunk_blocks_global_offsets(self):
+    def test_vision_text_fallback_when_ocr_empty(self):
+        """OCR 无结果时，vision 文字并入正文。"""
         image = WordImage(
             image_bytes=b"fake-png",
             content_type="image/png",
-            object_key="kb/doc/images/a.png",
-            ocr_text="OCR",
-            vision_text="Vision",
+            ocr_text="",
+            vision_text="这是一张流程图",
         )
+        items = [ParagraphItem(text="", images=[image])]
+
+        chunks, _, _ = word_chunk(items, "doc-1", "test.docx")
+
+        assert len(chunks) == 1
+        assert "这是一张流程图" in chunks[0]
+
+    def test_image_without_text_not_in_body(self):
+        """图片无识别文字时不产生内容。"""
+        image = WordImage(image_bytes=b"fake-png", content_type="image/png")
+        items = [ParagraphItem(text="", images=[image])]
+
+        chunks, metadatas, _ = word_chunk(items, "doc-1", "test.docx")
+
+        assert chunks == []
+
+    def test_image_keys_recorded_in_metadata(self):
+        """文本 chunk metadata 记录关联图片的 object_key。"""
+        image_a = WordImage(
+            image_bytes=b"a", content_type="image/png",
+            object_key="kb/doc/images/a.png", ocr_text="图片A文字",
+        )
+        image_b = WordImage(
+            image_bytes=b"b", content_type="image/png",
+            object_key="kb/doc/images/b.png", ocr_text="图片B文字",
+        )
+        image_no_key = WordImage(
+            image_bytes=b"c", content_type="image/png", ocr_text="未上传图片",
+        )
+        items = [ParagraphItem(text="章节正文", images=[image_a, image_b, image_no_key])]
+
+        chunks, metadatas, _ = word_chunk(items, "doc-1", "test.docx")
+
+        assert len(chunks) == 1
+        # 只有已上传的图片进入 image_keys
+        assert metadatas[0]["image_keys"] == [
+            "kb/doc/images/a.png",
+            "kb/doc/images/b.png",
+        ]
+        # 识别文字均并入正文
+        assert "图片A文字" in chunks[0]
+        assert "图片B文字" in chunks[0]
+        assert "未上传图片" in chunks[0]
+
+    def test_image_keys_empty_for_plain_text_block(self):
+        """无图片的块 image_keys 为空列表。"""
+        items = [ParagraphItem(text="纯文本段落")]
+
+        chunks, metadatas, _ = word_chunk(items, "doc-1", "test.docx")
+
+        assert metadatas[0]["image_keys"] == []
+
+    def test_word_chunk_blocks_global_offset(self):
         block = LogicalBlock(
             heading="章节",
             heading_level=1,
             heading_path=["章节"],
             paragraphs=["正文"],
-            images=[image],
         )
 
         chunks, metadatas, _ = word_chunk_blocks(
@@ -275,12 +331,7 @@ class TestWordChunkImages:
             doc_id="doc-1",
             file_name="test.docx",
             start_chunk_index=5,
-            start_image_index=3,
-            text_chunk_offset=2,
         )
 
         assert metadatas[0]["chunk_index"] == 5
-        assert metadatas[1]["chunk_index"] == 6
-        assert metadatas[1]["source_chunk_index"] == 2
-        assert metadatas[0]["image_refs"][0]["image_index"] == 3
-        assert metadatas[0]["image_refs"][0]["image_chunk_index"] == 6
+        assert "正文" in chunks[0]

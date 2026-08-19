@@ -53,7 +53,17 @@
             </el-table-column>
             <el-table-column label="文本预览" min-width="200">
               <template #default="{ row }">
-                <span class="text-preview">{{ row.text_preview }}</span>
+                <div v-if="row.image_urls?.length" class="image-preview-cell">
+                  <el-image
+                    :src="row.image_urls[0]"
+                    :preview-src-list="row.image_urls"
+                    preview-teleported
+                    fit="contain"
+                    class="chunk-thumb"
+                  />
+                  <span class="text-preview">{{ row.text_preview }}</span>
+                </div>
+                <span v-else class="text-preview">{{ row.text_preview }}</span>
               </template>
             </el-table-column>
             <el-table-column label="操作" width="200" align="center" fixed="right">
@@ -105,6 +115,29 @@
               <span>序号: {{ selectedChunk.chunk_index }}</span>
               <span>页码: {{ selectedChunk.page_number }}</span>
               <span>字符数: {{ selectedChunk.char_count.toLocaleString() }}</span>
+              <el-tag v-if="selectedChunk.metadata?.chunk_type === 'image'" type="warning" size="small">
+                图片
+              </el-tag>
+            </div>
+            <div
+              v-if="selectedChunk.image_urls?.length"
+              class="detail-images"
+            >
+              <div class="detail-images-header">
+                <span class="detail-images-title">关联图片</span>
+                <el-tag size="small" type="info">{{ selectedChunk.image_urls.length }} 张</el-tag>
+              </div>
+              <div class="detail-images-grid">
+                <el-image
+                  v-for="(url, i) in selectedChunk.image_urls"
+                  :key="i"
+                  :src="url"
+                  :preview-src-list="selectedChunk.image_urls"
+                  preview-teleported
+                  fit="contain"
+                  class="chunk-thumb"
+                />
+              </div>
             </div>
             <el-input
               type="textarea"
@@ -411,6 +444,51 @@ onBeforeUnmount(() => stopPolling())
   color: var(--color-text-regular);
   font-size: 13px;
   line-height: 1.5;
+}
+
+/* 图片 chunk 缩略图 */
+.image-preview-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.chunk-thumb {
+  width: 72px;
+  height: 54px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  background: #f8fafc;
+  cursor: zoom-in;
+}
+
+/* 详情关联图片（缩略图 + 个数标注） */
+.detail-images {
+  margin-bottom: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 10px;
+}
+
+.detail-images-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.detail-images-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.detail-images-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 /* 分栏布局 */

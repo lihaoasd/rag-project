@@ -69,9 +69,6 @@ async def _parse_and_store_in_batches(
     """按批次执行图片识别、分块、向量化与落库，返回 (chunk_count, page_count)。"""
     batch_size = settings.parse_batch_size
     current_chunk_index = 0
-    current_text_offset = 0
-    current_image_index = 1
-    last_text_chunk_index = -1
 
     if file_type in ("docx", "doc"):
         blocks = aggregate_paragraphs(parsed)
@@ -89,9 +86,6 @@ async def _parse_and_store_in_batches(
                 doc_id,
                 file_name,
                 start_chunk_index=current_chunk_index,
-                start_image_index=current_image_index,
-                text_chunk_offset=current_text_offset,
-                last_text_chunk_index=last_text_chunk_index,
             )
             if not chunks:
                 continue
@@ -105,14 +99,6 @@ async def _parse_and_store_in_batches(
                 milvus_pks,
                 current_chunk_index,
             )
-
-            text_count = sum(
-                1 for meta in metadatas if meta.get("chunk_type") == "text"
-            )
-            if text_count:
-                current_text_offset += text_count
-                last_text_chunk_index = current_text_offset - 1
-            current_image_index += sum(len(b.images) for b in batch_blocks)
 
         return current_chunk_index, 1
 
@@ -275,7 +261,11 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
         # 3. 解析文档
         ocr_config = await resolve_model_config(kb_id, "ocr")
         vision_config = await resolve_model_config(kb_id, "vision")
-        parsed = await parse_file(temp_path, file_type, ocr_config=ocr_config)
+        # OCR 或 vision 任一配置即处理图片；两者都未配置/停用时完全跳过
+        extract_images = (ocr_config is not None) or (vision_config is not None)
+        parsed = await parse_file(
+            temp_path, file_type, ocr_config=ocr_config, extract_images=extract_images
+        )
         if not parsed:
             raise ValueError("文档解析结果为空，可能是不支持的格式或文件损坏")
 
@@ -391,6 +381,36 @@ async def delete_document(kb_id: str, doc_id: str) -> bool:
 # 切片管理
 # ============================================================
 
+def _chunk_image_url(chunk) -> str | None:
+    """图片 chunk 生成预览 URL；非图片或 object_key 为空返回 None。"""
+    meta = chunk.chunk_metadata or {}
+    if meta.get("chunk_type") != "image" or not meta.get("object_key"):
+        return None
+    return (
+        f"/api/knowledge-bases/{chunk.kb_id}/documents/{chunk.doc_id}"
+        f"/chunks/{chunk.id}/image"
+    )
+
+
+def _chunk_image_urls(chunk) -> list[str]:
+    """生成 chunk 关联图片的预览 URL 列表。
+
+    - 旧 image chunk：自身 object_key 对应单图。
+    - 文本 chunk：metadata.image_keys 逐项生成（index 用于读取接口定位）。
+    """
+    meta = chunk.chunk_metadata or {}
+    base = (
+        f"/api/knowledge-bases/{chunk.kb_id}/documents/{chunk.doc_id}"
+        f"/chunks/{chunk.id}/image"
+    )
+    if meta.get("chunk_type") == "image":
+        if meta.get("object_key"):
+            return [base]
+        return []
+    image_keys = meta.get("image_keys") or []
+    return [f"{base}/{i}" for i in range(len(image_keys))]
+
+
 def _chunk_to_dict(chunk) -> dict:
     """将 DocumentChunk ORM 对象转为列表项字典（text 截断）。"""
     return {
@@ -401,6 +421,8 @@ def _chunk_to_dict(chunk) -> dict:
         "text_preview": (chunk.text_content or "")[:200],
         "chunk_type": (chunk.chunk_metadata or {}).get("chunk_type", "text"),
         "source_chunk_index": (chunk.chunk_metadata or {}).get("source_chunk_index", -1),
+        "image_url": _chunk_image_url(chunk),
+        "image_urls": _chunk_image_urls(chunk),
         "created_at": chunk.created_at.isoformat() if chunk.created_at else "",
     }
 
@@ -416,6 +438,8 @@ def _chunk_to_detail_dict(chunk) -> dict:
         "text_content": chunk.text_content or "",
         "milvus_pk": chunk.milvus_pk,
         "metadata": chunk.chunk_metadata or {},
+        "image_url": _chunk_image_url(chunk),
+        "image_urls": _chunk_image_urls(chunk),
         "created_at": chunk.created_at.isoformat() if chunk.created_at else "",
     }
 
@@ -442,6 +466,44 @@ async def get_chunk(kb_id: str, chunk_id: str) -> dict | None:
         if chunk is None:
             return None
         return _chunk_to_detail_dict(chunk)
+
+
+async def get_chunk_image(kb_id: str, chunk_id: str, image_index: int = 0) -> tuple[bytes, str] | None:
+    """读取 chunk 关联的 MinIO 图片，返回 (字节, MIME 类型)。
+
+    - 旧 image chunk：取自身 object_key。
+    - 文本 chunk：取 metadata.image_keys[image_index]。
+
+    Returns:
+        (image_bytes, mime_type)；chunk 不存在、无关联图片或对象不存在返回 None
+    """
+    async with async_session() as session:
+        doc_repo = DocumentRepository(session)
+        chunk = await doc_repo.get_chunk_by_id(chunk_id)
+
+    if chunk is None:
+        return None
+
+    meta = chunk.chunk_metadata or {}
+    if meta.get("chunk_type") == "image":
+        object_key = meta.get("object_key") or ""
+    else:
+        image_keys = meta.get("image_keys") or []
+        if not (0 <= image_index < len(image_keys)):
+            logger.warning("切片关联图片下标越界: chunk_id=%s, index=%d", chunk_id, image_index)
+            return None
+        object_key = image_keys[image_index]
+
+    if not object_key:
+        logger.warning("切片无关联图片: chunk_id=%s, index=%d", chunk_id, image_index)
+        return None
+
+    image_bytes = await asyncio.to_thread(minio_client.get_bytes, object_key)
+    if image_bytes is None:
+        logger.warning("MinIO 图片不存在: chunk_id=%s, object_key=%s", chunk_id, object_key)
+        return None
+
+    return image_bytes, meta.get("mime_type") or "application/octet-stream"
 
 
 async def delete_chunk(kb_id: str, chunk_id: str) -> bool:
@@ -582,7 +644,11 @@ async def rechunk_document(
         # 6. 解析文档
         ocr_config = await resolve_model_config(kb_id, "ocr")
         vision_config = await resolve_model_config(kb_id, "vision")
-        parsed = await parse_file(temp_path, file_type, ocr_config=ocr_config)
+        # OCR 或 vision 任一配置即处理图片；两者都未配置/停用时完全跳过
+        extract_images = (ocr_config is not None) or (vision_config is not None)
+        parsed = await parse_file(
+            temp_path, file_type, ocr_config=ocr_config, extract_images=extract_images
+        )
         if not parsed:
             raise ValueError("文档解析结果为空")
 
@@ -680,7 +746,11 @@ async def reparse_document(kb_id: str, doc_id: str) -> None:
         # 6. 解析文档
         ocr_config = await resolve_model_config(kb_id, "ocr")
         vision_config = await resolve_model_config(kb_id, "vision")
-        parsed = await parse_file(temp_path, file_type, ocr_config=ocr_config)
+        # OCR 或 vision 任一配置即处理图片；两者都未配置/停用时完全跳过
+        extract_images = (ocr_config is not None) or (vision_config is not None)
+        parsed = await parse_file(
+            temp_path, file_type, ocr_config=ocr_config, extract_images=extract_images
+        )
         if not parsed:
             raise ValueError("文档解析结果为空")
 

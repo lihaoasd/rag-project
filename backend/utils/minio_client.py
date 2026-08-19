@@ -83,6 +83,28 @@ def download(object_key: str, file_path: Path) -> None:
     logger.debug("MinIO 下载成功: %s → %s", object_key, file_path.name)
 
 
+def get_bytes(object_key: str) -> bytes | None:
+    """从 MinIO 读取对象为字节（用于图片预览等场景）。
+
+    Args:
+        object_key: 对象键，如 kb_{id}/doc_{id}/images/xxx.png
+
+    Returns:
+        对象字节；对象不存在返回 None
+    """
+    client = _get_client()
+    try:
+        response = client.get_object(settings.minio_bucket, object_key)
+    except Exception:
+        logger.debug("MinIO 对象不存在: %s", object_key)
+        return None
+    try:
+        return response.read()
+    finally:
+        response.close()
+        response.release_conn()
+
+
 def delete(object_key: str) -> None:
     """删除单个对象。"""
     client = _get_client()

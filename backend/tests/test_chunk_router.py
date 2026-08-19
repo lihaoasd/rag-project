@@ -119,6 +119,53 @@ class TestGetChunk:
 
 
 # ============================================================
+# GET /chunks/{chunk_id}/image — 图片 chunk 预览
+# ============================================================
+class TestGetChunkImage:
+    def test_image_chunk_returns_image(self, client):
+        with patch("routers.chunk.document_service.get_chunk_image",
+                   new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = (b"\x89PNG fake image", "image/png")
+            response = client.get(
+                f"/api/knowledge-bases/{KB_ID}/documents/{DOC_ID}/chunks/{CHUNK_ID}/image"
+            )
+            assert response.status_code == 200
+            assert response.content == b"\x89PNG fake image"
+            assert response.headers["content-type"] == "image/png"
+            assert response.headers["cache-control"] == "max-age=3600"
+
+    def test_image_chunk_not_found(self, client):
+        with patch("routers.chunk.document_service.get_chunk_image",
+                   new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = None
+            response = client.get(
+                f"/api/knowledge-bases/{KB_ID}/documents/{DOC_ID}/chunks/{uuid.uuid4()}/image"
+            )
+            assert response.status_code == 404
+
+    def test_image_by_index_returns_image(self, client):
+        with patch("routers.chunk.document_service.get_chunk_image",
+                   new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = (b"\x89PNG second image", "image/png")
+            response = client.get(
+                f"/api/knowledge-bases/{KB_ID}/documents/{DOC_ID}/chunks/{CHUNK_ID}/image/1"
+            )
+            assert response.status_code == 200
+            assert response.content == b"\x89PNG second image"
+            assert response.headers["content-type"] == "image/png"
+            mock_get.assert_called_once_with(KB_ID, CHUNK_ID, image_index=1)
+
+    def test_image_by_index_not_found(self, client):
+        with patch("routers.chunk.document_service.get_chunk_image",
+                   new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = None
+            response = client.get(
+                f"/api/knowledge-bases/{KB_ID}/documents/{DOC_ID}/chunks/{CHUNK_ID}/image/5"
+            )
+            assert response.status_code == 404
+
+
+# ============================================================
 # PUT /chunks/{chunk_id} — 编辑切片
 # ============================================================
 class TestUpdateChunk:

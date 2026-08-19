@@ -32,6 +32,7 @@ def _to_dict(mc: ModelConfig) -> dict:
         "api_key": mc.api_key,
         "params": mc.params,
         "is_default": mc.is_default,
+        "is_active": mc.is_active,
         "created_at": mc.created_at.isoformat() if mc.created_at else "",
         "updated_at": mc.updated_at.isoformat() if mc.updated_at else "",
     }
@@ -75,6 +76,7 @@ async def create_model(
     api_key: str | None = None,
     params: dict | None = None,
     is_default: bool = False,
+    is_active: bool = True,
 ) -> dict:
     """创建模型配置。若设默认，先取消同类型其他默认。"""
     async with async_session() as session:
@@ -90,6 +92,7 @@ async def create_model(
             api_key=api_key,
             params=params,
             is_default=is_default,
+            is_active=is_active,
         )
         session.add(mc)
         await session.commit()
@@ -99,7 +102,7 @@ async def create_model(
 
 
 async def update_model(model_id: str, **kwargs) -> dict | None:
-    """更新模型配置字段。is_default 由 False→True 时触发互斥。"""
+    """更新模型配置字段。is_default 由 False→True 时触发互斥；默认模型停用时同步取消默认。"""
     async with async_session() as session:
         result = await session.execute(select(ModelConfig).where(ModelConfig.id == model_id))
         mc = result.scalar_one_or_none()
@@ -111,11 +114,15 @@ async def update_model(model_id: str, **kwargs) -> dict | None:
 
         allowed = [
             "name", "model_type", "platform", "model",
-            "api_base", "api_key", "params", "is_default",
+            "api_base", "api_key", "params", "is_default", "is_active",
         ]
         for field in allowed:
             if field in kwargs and kwargs[field] is not None:
                 setattr(mc, field, kwargs[field])
+
+        # 默认模型被停用时取消默认，避免出现不可用的默认
+        if kwargs.get("is_active") is False and mc.is_default:
+            mc.is_default = False
 
         await session.commit()
         await session.refresh(mc)
@@ -147,12 +154,14 @@ async def delete_model(model_id: str) -> tuple[bool, str | None]:
 
 
 async def set_default(model_id: str) -> dict | None:
-    """设为该类型全局默认（同类型互斥）。"""
+    """设为该类型全局默认（同类型互斥，仅限启用模型）。"""
     async with async_session() as session:
         result = await session.execute(select(ModelConfig).where(ModelConfig.id == model_id))
         mc = result.scalar_one_or_none()
         if mc is None:
             return None
+        if not mc.is_active:
+            raise ValueError("停用的模型不能设为默认，请先启用")
         await _clear_defaults(session, mc.model_type)
         mc.is_default = True
         await session.commit()
@@ -243,13 +252,15 @@ async def bind_model(kb_id: str, model_type: str, model_config_id: str | None) -
             logger.info("模型解绑: kb_id=%s, type=%s", kb_id, model_type)
             return {"kb_id": kb_id, "model_type": model_type, "model_config_id": None}
 
-        # 校验模型配置存在且类型匹配
+        # 校验模型配置存在、类型匹配且已启用
         mc_result = await session.execute(select(ModelConfig).where(ModelConfig.id == model_config_id))
         mc = mc_result.scalar_one_or_none()
         if mc is None:
             raise ValueError("模型配置不存在")
         if mc.model_type != model_type:
             raise ValueError(f"模型类型不匹配：期望 {model_type}，实际 {mc.model_type}")
+        if not mc.is_active:
+            raise ValueError("停用的模型不能绑定，请先启用")
 
         # Embedding 锁定：KB 有文档时禁止切换
         if model_type == "embedding" and kb.document_count > 0:
@@ -383,3 +394,74 @@ async def test_model(
     except Exception as e:
         logger.warning("模型连接测试失败: type=%s, model=%s, error=%s", model_type, model, e)
         return {"success": False, "message": f"测试失败: {e}"}
+
+
+async def startup_model_check(timeout: float = 15.0) -> list[dict]:
+    """启动时对启用状态的模型做连接自检（并发，总超时；失败仅记日志不阻断启动）。
+
+    Returns:
+        [{model_id, name, model_type, model, success, message, latency_ms}]
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(ModelConfig).where(ModelConfig.is_active == True)  # noqa: E712
+        )
+        configs = result.scalars().all()
+
+    if not configs:
+        logger.info("启动自检: 无启用状态的模型")
+        return []
+
+    async def _check_one(mc: ModelConfig) -> dict:
+        start = time.perf_counter()
+        try:
+            res = await test_model(
+                model_type=mc.model_type,
+                platform=mc.platform,
+                model=mc.model,
+                api_base=mc.api_base,
+                api_key=mc.api_key,
+                params=mc.params,
+            )
+            latency_ms = round((time.perf_counter() - start) * 1000)
+            return {
+                "model_id": str(mc.id),
+                "name": mc.name,
+                "model_type": mc.model_type,
+                "model": mc.model,
+                "success": bool(res.get("success")),
+                "message": res.get("message", ""),
+                "latency_ms": latency_ms,
+            }
+        except Exception as e:
+            logger.warning("模型自检异常: name=%s, error=%s", mc.name, e)
+            return {
+                "model_id": str(mc.id),
+                "name": mc.name,
+                "model_type": mc.model_type,
+                "model": mc.model,
+                "success": False,
+                "message": f"自检异常: {e}",
+                "latency_ms": None,
+            }
+
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(*[_check_one(mc) for mc in configs]), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        logger.warning("启动自检超时（%.0fs），部分模型未完成检查", timeout)
+        results = []
+
+    ok = [r for r in results if r["success"]]
+    failed = [r for r in results if not r["success"]]
+    logger.info(
+        "启动自检完成: 共 %d 个启用模型，成功 %d，失败 %d",
+        len(configs), len(ok), len(failed),
+    )
+    for r in failed:
+        logger.warning(
+            "模型自检失败: name=%s, type=%s, model=%s, msg=%s",
+            r["name"], r["model_type"], r["model"], r["message"],
+        )
+    return results

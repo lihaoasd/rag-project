@@ -45,6 +45,17 @@
             <span v-else class="text-muted">—</span>
           </template>
         </el-table-column>
+        <el-table-column label="状态" width="80" align="center">
+          <template #default="{ row }">
+            <el-switch
+              :model-value="row.is_active"
+              inline-prompt
+              active-text="启"
+              inactive-text="停"
+              @change="(val) => handleToggleActive(row, val)"
+            />
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="220" align="center" fixed="right">
           <template #default="{ row }">
             <el-button text type="primary" size="small" @click="showEditDialog(row)">
@@ -149,6 +160,10 @@
         <el-form-item>
           <el-switch v-model="form.is_default" active-text="设为该类型全局默认" />
         </el-form-item>
+
+        <el-form-item>
+          <el-switch v-model="form.is_active" active-text="启用该模型（停用后不参与解析与启动自检）" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <div class="dialog-footer">
@@ -207,6 +222,7 @@ const form = ref({
   api_base: '',
   api_key: '',
   is_default: false,
+  is_active: true,
 })
 
 const rules = {
@@ -264,6 +280,7 @@ function resetForm() {
     api_base: '',
     api_key: '',
     is_default: false,
+    is_active: true,
   }
   paramsText.value = '{}'
   copySourceId.value = null
@@ -289,6 +306,7 @@ function handleCopyFrom(id) {
     api_base: src.api_base || '',
     api_key: src.api_key || '',
     is_default: false,
+    is_active: true,
   }
   paramsText.value = src.params ? JSON.stringify(src.params, null, 2) : '{}'
   ElMessage.success(`已复制「${src.name}」的配置，请填写名称后保存`)
@@ -305,6 +323,7 @@ function showEditDialog(row) {
     api_base: row.api_base || '',
     api_key: row.api_key || '',
     is_default: row.is_default,
+    is_active: row.is_active,
   }
   paramsText.value = row.params ? JSON.stringify(row.params, null, 2) : '{}'
   dialogVisible.value = true
@@ -328,6 +347,7 @@ async function handleSubmit() {
       api_key: form.value.api_key || null,
       params,
       is_default: form.value.is_default,
+      is_active: form.value.is_active,
     }
 
     if (isEditing.value) {
@@ -384,6 +404,17 @@ async function handleSetDefault(row) {
   try {
     await setDefaultModel(row.id)
     ElMessage.success('已设为默认')
+    await loadList()
+  } catch (err) {
+    const detail = err?.response?.data?.detail || '操作失败'
+    ElMessage.error(detail)
+  }
+}
+
+async function handleToggleActive(row, val) {
+  try {
+    await updateModel(row.id, { is_active: val })
+    ElMessage.success(val ? '模型已启用' : '模型已停用')
     await loadList()
   } catch (err) {
     const detail = err?.response?.data?.detail || '操作失败'

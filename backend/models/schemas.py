@@ -144,6 +144,8 @@ class ChunkResponse(BaseModel):
     text_preview: str
     chunk_type: str = "text"
     source_chunk_index: int = -1
+    image_url: str | None = Field(None, description="图片 chunk 的预览地址（非图片 chunk 为 null）")
+    image_urls: list[str] = Field(default_factory=list, description="chunk 关联图片的预览地址列表")
     created_at: str
 
 
@@ -157,6 +159,8 @@ class ChunkDetailResponse(BaseModel):
     text_content: str
     milvus_pk: str | None
     metadata: dict = Field(default_factory=dict)
+    image_url: str | None = Field(None, description="图片 chunk 的预览地址（非图片 chunk 为 null）")
+    image_urls: list[str] = Field(default_factory=list, description="chunk 关联图片的预览地址列表")
     created_at: str
 
 
@@ -263,6 +267,7 @@ class ModelConfigCreate(BaseModel):
     api_key: str | None = Field(None, description="API Key（或 ${ENV} 占位符）")
     params: dict | None = Field(None, description="类型特定参数")
     is_default: bool = Field(False, description="是否设为该类型全局默认")
+    is_active: bool = Field(True, description="是否启用（停用后不参与解析与启动自检）")
 
 
 class ModelConfigUpdate(BaseModel):
@@ -275,6 +280,7 @@ class ModelConfigUpdate(BaseModel):
     api_key: str | None = Field(None)
     params: dict | None = Field(None)
     is_default: bool | None = Field(None)
+    is_active: bool | None = Field(None, description="是否启用")
 
 
 class ModelConfigResponse(BaseModel):
@@ -288,6 +294,7 @@ class ModelConfigResponse(BaseModel):
     api_key: str | None
     params: dict | None
     is_default: bool
+    is_active: bool = True
     created_at: str
     updated_at: str
 

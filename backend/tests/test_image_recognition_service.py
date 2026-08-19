@@ -38,10 +38,42 @@ class TestProcessWordImages:
         assert image.object_key.startswith("kb-1/doc-1/images/")
         assert image.object_key.endswith(".png")
         assert image.ocr_text == "OCR 识别结果"
-        assert image.vision_text == "视觉描述结果"
-        assert vision.recognize.call_args.kwargs["prompt"] == "来自提示词管理的视觉提示词"
+        # OCR 已有结果时 vision 不再兜底调用
+        assert image.vision_text == ""
+        vision.recognize.assert_not_called()
         ocr.close.assert_called_once()
         vision.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_vision_fallback_when_ocr_empty(self, monkeypatch):
+        """OCR 未识别到文字时，vision 兜底识别。"""
+        image = WordImage(image_bytes=b"fake-png", content_type="image/png")
+        item = ParagraphItem(text="", images=[image])
+
+        ocr = MagicMock()
+        ocr.recognize.return_value = ""  # OCR 无结果
+        vision = MagicMock()
+        vision.recognize.return_value = "视觉描述结果"
+
+        monkeypatch.setattr(svc, "create_ocr", lambda config: ocr)
+        monkeypatch.setattr(svc, "create_vision_client", lambda config: vision)
+        monkeypatch.setattr(
+            svc.minio_client,
+            "upload_bytes",
+            MagicMock(),
+        )
+
+        await svc.process_word_images(
+            [item],
+            kb_id="kb-1",
+            doc_id="doc-1",
+            ocr_config={"api_base": "http://ocr"},
+            vision_config={"api_base": "http://vision"},
+        )
+
+        assert image.ocr_text == ""
+        assert image.vision_text == "视觉描述结果"
+        vision.recognize.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_errors_are_logged_and_do_not_raise(self, monkeypatch):

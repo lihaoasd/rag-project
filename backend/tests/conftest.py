@@ -81,12 +81,14 @@ def mock_minio():
     with patch("utils.minio_client.upload") as mock_upload, \
          patch("utils.minio_client.upload_bytes") as mock_upload_bytes, \
          patch("utils.minio_client.download") as mock_download, \
+         patch("utils.minio_client.get_bytes", return_value=b"\x89PNG fake") as mock_get_bytes, \
          patch("utils.minio_client.delete") as mock_delete, \
          patch("utils.minio_client.delete_prefix") as mock_delete_prefix:
         yield {
             "upload": mock_upload,
             "upload_bytes": mock_upload_bytes,
             "download": mock_download,
+            "get_bytes": mock_get_bytes,
             "delete": mock_delete,
             "delete_prefix": mock_delete_prefix,
         }

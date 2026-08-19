@@ -2,6 +2,7 @@
 切片管理 API — 查看、编辑、删除、重新切片。
 """
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 
 from core import parse_queue
 from core.database import async_session
@@ -44,6 +45,32 @@ async def get_chunk(kb_id: str, doc_id: str, chunk_id: str):
     if chunk is None:
         raise HTTPException(status_code=404, detail="切片不存在")
     return chunk
+
+
+@router.get("/chunks/{chunk_id}/image")
+async def get_chunk_image(kb_id: str, doc_id: str, chunk_id: str):
+    """获取 chunk 关联的第一张图片（兼容旧接口，等价 index=0）。"""
+    return await _serve_chunk_image(kb_id, chunk_id, image_index=0)
+
+
+@router.get("/chunks/{chunk_id}/image/{image_index}")
+async def get_chunk_image_by_index(kb_id: str, doc_id: str, chunk_id: str, image_index: int):
+    """按下标获取 chunk 关联的图片（文本 chunk 的 metadata.image_keys）。"""
+    return await _serve_chunk_image(kb_id, chunk_id, image_index=image_index)
+
+
+async def _serve_chunk_image(kb_id: str, chunk_id: str, image_index: int):
+    """读取并返回 chunk 关联图片（代理 MinIO，带缓存头）。"""
+    logger.debug("获取切片图片: chunk_id=%s, index=%d", chunk_id, image_index)
+    image = await document_service.get_chunk_image(kb_id, chunk_id, image_index=image_index)
+    if image is None:
+        raise HTTPException(status_code=404, detail="图片不存在")
+    image_bytes, mime_type = image
+    return Response(
+        content=image_bytes,
+        media_type=mime_type,
+        headers={"Cache-Control": "max-age=3600"},
+    )
 
 
 @router.put("/chunks/{chunk_id}", response_model=ChunkDetailResponse)

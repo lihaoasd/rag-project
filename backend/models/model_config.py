@@ -18,6 +18,7 @@ class ModelConfig(Base, UUIDMixin, TimestampMixin):
     api_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     params: Mapped[dict | None] = mapped_column(UTF8JSONB, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
 
 
 class KBModelBinding(Base, UUIDMixin, TimestampMixin):

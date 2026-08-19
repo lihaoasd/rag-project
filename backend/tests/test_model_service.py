@@ -55,6 +55,45 @@ class TestCreateOcr:
         })
         assert ocr.endpoint == "/ocr/v1"
 
+    def test_factory_multipart_mode(self):
+        """PP-OCRv6 服务：multipart 上传模式。"""
+        ocr = create_ocr({
+            "model": "pp_ocr",
+            "api_base": "http://192.168.60.121:8866",
+            "api_key": None,
+            "params": {"endpoint": "/ocr/gpu/json", "upload_mode": "multipart"},
+        })
+        assert isinstance(ocr, PaddleOCRHttpClient)
+        assert ocr.api_base == "http://192.168.60.121:8866"
+        assert ocr.endpoint == "/ocr/gpu/json"
+        assert ocr.upload_mode == "multipart"
+
+    def test_recognize_multipart_sends_files(self):
+        """multipart 模式发送 files 字段而非 JSON base64。"""
+        from unittest.mock import MagicMock
+
+        client = MagicMock()
+        resp = MagicMock()
+        resp.json.return_value = {"text": "投标保证金 500 万元"}
+        client.post.return_value = resp
+
+        ocr = PaddleOCRHttpClient(
+            api_base="http://192.168.60.121:8866",
+            endpoint="/ocr/gpu/json",
+            upload_mode="multipart",
+        )
+        ocr._client = client
+
+        result = ocr.recognize(b"fake-png-bytes")
+
+        assert result == "投标保证金 500 万元"
+        call_kwargs = client.post.call_args
+        assert call_kwargs.args[0] == "http://192.168.60.121:8866/ocr/gpu/json"
+        files = call_kwargs.kwargs["files"]
+        assert files["file"][0] == "image.png"
+        assert files["file"][1] == b"fake-png-bytes"
+        assert "json" not in call_kwargs.kwargs
+
     def test_extract_text(self):
         assert PaddleOCRHttpClient._extract_text({"text": "你好"}) == "你好"
         assert PaddleOCRHttpClient._extract_text({"text": "", "rec_texts": ["a", "b"]}) == "a b"
@@ -230,3 +269,126 @@ class TestBindModelEmbeddingLock:
         """排序模型为检索期全局使用，禁止绑定到知识库。"""
         with pytest.raises(ValueError, match="无效的模型类型"):
             await model_service.bind_model(KB_ID, "rerank", None)
+
+
+# ============================================================
+# 启用/停用（is_active）
+# ============================================================
+def _mc(**kwargs):
+    """构造最小 ModelConfig 模拟对象。"""
+    from types import SimpleNamespace
+
+    data = {
+        "id": "mc_1",
+        "name": "M1",
+        "model_type": "llm",
+        "platform": "openai",
+        "model": "gpt-4o",
+        "api_base": None,
+        "api_key": None,
+        "params": None,
+        "is_default": False,
+        "is_active": True,
+        "created_at": None,
+        "updated_at": None,
+    }
+    data.update(kwargs)
+    return SimpleNamespace(**data)
+
+
+class TestModelActive:
+    @pytest.mark.asyncio
+    async def test_create_model_with_is_active_false(self, mock_session):
+        mock_session.refresh = AsyncMock()
+        result = await model_service.create_model(
+            name="X", model_type="llm", platform="p", model="m",
+            is_active=False,
+        )
+        assert result["is_active"] is False
+
+    @pytest.mark.asyncio
+    async def test_update_model_deactivate_default_clears_default(self, mock_session):
+        """停用默认模型时同步取消默认标记。"""
+        mc = _mc(is_default=True)
+        result_mock = MagicMock()
+        result_mock.scalar_one_or_none.return_value = mc
+        mock_session.execute = AsyncMock(return_value=result_mock)
+
+        result = await model_service.update_model("mc_1", is_active=False)
+        assert result["is_active"] is False
+        assert result["is_default"] is False
+
+    @pytest.mark.asyncio
+    async def test_set_default_rejects_inactive_model(self, mock_session):
+        mc = _mc(is_active=False)
+        result_mock = MagicMock()
+        result_mock.scalar_one_or_none.return_value = mc
+        mock_session.execute = AsyncMock(return_value=result_mock)
+
+        with pytest.raises(ValueError, match="停用"):
+            await model_service.set_default("mc_1")
+
+    @pytest.mark.asyncio
+    async def test_bind_inactive_model_rejected(self, mock_session):
+        kb = MockKB(document_count=0)
+        kb_result = MagicMock()
+        kb_result.scalar_one_or_none.return_value = kb
+        mc = _mc(is_active=False)
+        mc_result = MagicMock()
+        mc_result.scalar_one_or_none.return_value = mc
+        mock_session.execute = AsyncMock(side_effect=[kb_result, mc_result])
+
+        with pytest.raises(ValueError, match="停用"):
+            await model_service.bind_model(KB_ID, "llm", "mc_1")
+
+
+# ============================================================
+# 启动自检
+# ============================================================
+class TestStartupModelCheck:
+    @pytest.mark.asyncio
+    async def test_checks_active_models_and_summarizes(self, mock_session):
+        m1 = _mc(id="mc_1", name="LLM 模型", model_type="llm")
+        m2 = _mc(id="mc_2", name="向量模型", model_type="embedding")
+        result_mock = MagicMock()
+        result_mock.scalars.return_value.all.return_value = [m1, m2]
+        mock_session.execute = AsyncMock(return_value=result_mock)
+
+        async def fake_test(**kwargs):
+            return {"success": kwargs["model_type"] == "llm", "message": "x"}
+
+        with patch("services.model_service.test_model", side_effect=fake_test) as mock_test:
+            results = await model_service.startup_model_check()
+
+        assert mock_test.call_count == 2
+        assert len(results) == 2
+        ok = [r for r in results if r["success"]]
+        assert len(ok) == 1
+        assert ok[0]["name"] == "LLM 模型"
+        failed = [r for r in results if not r["success"]]
+        assert failed[0]["name"] == "向量模型"
+
+    @pytest.mark.asyncio
+    async def test_no_active_models_returns_empty(self, mock_session):
+        result_mock = MagicMock()
+        result_mock.scalars.return_value.all.return_value = []
+        mock_session.execute = AsyncMock(return_value=result_mock)
+        results = await model_service.startup_model_check()
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_check_exception_recorded_as_failure(self, mock_session):
+        m1 = _mc(id="mc_1", name="LLM 模型", model_type="llm")
+        result_mock = MagicMock()
+        result_mock.scalars.return_value.all.return_value = [m1]
+        mock_session.execute = AsyncMock(return_value=result_mock)
+
+        async def boom(**kwargs):
+            raise RuntimeError("boom")
+
+        with patch("services.model_service.test_model", side_effect=boom):
+            results = await model_service.startup_model_check()
+
+        assert len(results) == 1
+        assert results[0]["success"] is False
+        assert "boom" in results[0]["message"]

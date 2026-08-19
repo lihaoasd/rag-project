@@ -374,10 +374,15 @@ class DocxParser(BaseParser):
     CPU 密集型操作通过 asyncio.to_thread() 放到线程池执行。
     """
 
-    async def parse(self, file_path: Path) -> list[ParagraphItem]:
-        """异步解析入口：将同步解析逻辑交给线程池执行。"""
-        logger.info("DOCX 解析开始: %s", file_path.name)
-        result = await asyncio.to_thread(self._parse_sync, file_path)
+    async def parse(self, file_path: Path, extract_images: bool = True) -> list[ParagraphItem]:
+        """异步解析入口：将同步解析逻辑交给线程池执行。
+
+        Args:
+            file_path: .docx 文件路径
+            extract_images: 是否提取文档内嵌图片（视觉模型未配置时传 False，完全跳过图片处理）
+        """
+        logger.info("DOCX 解析开始: %s (extract_images=%s)", file_path.name, extract_images)
+        result = await asyncio.to_thread(self._parse_sync, file_path, extract_images)
         logger.info(
             "DOCX 解析完成: %s, paragraphs=%d",
             file_path.name,
@@ -385,7 +390,7 @@ class DocxParser(BaseParser):
         )
         return result
 
-    def _parse_sync(self, file_path: Path) -> list[ParagraphItem]:
+    def _parse_sync(self, file_path: Path, extract_images: bool = True) -> list[ParagraphItem]:
         """同步解析核心逻辑（在线程池中执行，不阻塞事件循环）。
 
         按文档 body 的 XML 元素顺序遍历，段落和表格保持原始交错顺序。
@@ -402,7 +407,9 @@ class DocxParser(BaseParser):
             if tag == qn("w:p"):
                 # 段落
                 text = self._extract_paragraph_text(child)
-                images = self._extract_images_from_element(child, doc)
+                images = (
+                    self._extract_images_from_element(child, doc) if extract_images else []
+                )
                 if not text and not images:
                     continue
                 style_name = self._get_style_name(child, doc)
@@ -417,7 +424,9 @@ class DocxParser(BaseParser):
             elif tag == qn("w:tbl"):
                 # 表格
                 table_text = self._extract_table_text(child)
-                images = self._extract_images_from_element(child, doc)
+                images = (
+                    self._extract_images_from_element(child, doc) if extract_images else []
+                )
                 if not table_text and not images:
                     continue
                 items.append(ParagraphItem(
@@ -509,9 +518,14 @@ class DocParser(BaseParser):
     如果环境没有 LibreOffice，回退到 textract / antiword。
     """
 
-    async def parse(self, file_path: Path) -> list[ParagraphItem]:
-        """异步解析入口：.doc → .docx 转换后走 DocxParser。"""
-        logger.info("DOC 解析开始: %s", file_path.name)
+    async def parse(self, file_path: Path, extract_images: bool = True) -> list[ParagraphItem]:
+        """异步解析入口：.doc → .docx 转换后走 DocxParser。
+
+        Args:
+            file_path: .doc 文件路径
+            extract_images: 是否提取文档内嵌图片（透传给 DocxParser）
+        """
+        logger.info("DOC 解析开始: %s (extract_images=%s)", file_path.name, extract_images)
         docx_path = await asyncio.to_thread(self._convert_to_docx, file_path)
         if docx_path is None:
             raise ValueError(
@@ -521,7 +535,7 @@ class DocParser(BaseParser):
 
         try:
             parser = DocxParser()
-            result = await parser.parse(docx_path)
+            result = await parser.parse(docx_path, extract_images=extract_images)
             logger.info("DOC 解析完成: %s, paragraphs=%d", file_path.name, len(result))
             return result
         finally:
@@ -633,6 +647,7 @@ async def parse_document(
     file_path: Path,
     file_type: str,
     ocr_config: dict | None = None,
+    extract_images: bool = True,
 ) -> list[LlamaDocument] | list[ParagraphItem]:
     """解析文档，按文件类型分派到对应 Parser。
 
@@ -640,6 +655,8 @@ async def parse_document(
         file_path: 上传文件路径
         file_type: 文件类型（不含点，如 'pdf', 'docx', 'doc'）
         ocr_config: 远程 OCR 模型配置（仅 PDF 使用；None 则跳过图片识别）
+        extract_images: 是否提取 Word 文档内嵌图片（仅 docx/doc 使用；
+            视觉模型未配置时传 False，完全跳过图片处理）
 
     Returns:
         - PDF: list[LlamaDocument]（每页一个）
@@ -653,11 +670,12 @@ async def parse_document(
         raise ValueError(f"Unsupported file type: {file_type}")
 
     logger.info(
-        "parse_document: file=%s, type=%s → parser=%s",
+        "parse_document: file=%s, type=%s → parser=%s (extract_images=%s)",
         file_path.name,
         file_type,
         type(parser).__name__,
+        extract_images,
     )
     if isinstance(parser, PDFParser):
         return await parser.parse(file_path, ocr_config=ocr_config)
-    return await parser.parse(file_path)
+    return await parser.parse(file_path, extract_images=extract_images)

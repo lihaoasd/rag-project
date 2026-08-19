@@ -93,7 +93,8 @@ async def _process_image(
         except Exception as e:
             logger.warning("PaddleOCR 识别失败: image=%s, error=%s", object_key, e)
 
-    if vision_client is not None:
+    # vision 仅在 OCR 未识别到文字时兜底
+    if vision_client is not None and not (image.ocr_text or "").strip():
         try:
             image.vision_text = await asyncio.to_thread(
                 vision_client.recognize,

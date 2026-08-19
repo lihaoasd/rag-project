@@ -86,7 +86,7 @@ def aggregate_paragraphs(paragraphs: list[ParagraphItem]) -> list[LogicalBlock]:
 # ============================================================
 
 def chunk_blocks(blocks: list[LogicalBlock]) -> list[TextNode]:
-    """将每个逻辑块转换为文本 TextNode，图片位置保留 [图片 N] 占位符。"""
+    """将每个逻辑块转换为文本 TextNode，图片识别文字并入正文。"""
     all_nodes: list[TextNode] = []
 
     for block_idx, block in enumerate(blocks):
@@ -95,14 +95,11 @@ def chunk_blocks(blocks: list[LogicalBlock]) -> list[TextNode]:
             body_parts.append(block.heading)
         body_parts.extend(block.paragraphs)
 
-        image_refs: list[dict[str, Any]] = []
-        for idx, image in enumerate(block.images, start=1):
-            image_index = image.image_index if image.image_index is not None else idx
-            image_refs.append({
-                "image_index": image_index,
-                "image_chunk_index": None,
-            })
-            body_parts.append(f"[图片 {image_index}]")
+        # 图片识别文字并入正文（OCR 优先，vision 兜底；无识别文字则跳过）
+        for image in block.images:
+            text = (image.ocr_text or "").strip() or (image.vision_text or "").strip()
+            if text:
+                body_parts.append(text)
 
         if block.tables:
             body_parts.extend(block.tables)
@@ -110,7 +107,12 @@ def chunk_blocks(blocks: list[LogicalBlock]) -> list[TextNode]:
         has_text_content = bool(block.heading) or any(
             p.strip() for p in block.paragraphs
         ) or any(t.strip() for t in block.tables)
-        if not has_text_content:
+        # 图片识别文字也算作内容（仅图片的块也能产出文本 chunk）
+        image_texts = [
+            (image.ocr_text or "").strip() or (image.vision_text or "").strip()
+            for image in block.images
+        ]
+        if not has_text_content and not any(image_texts):
             continue
 
         body = "\n\n".join(body_parts)
@@ -118,12 +120,16 @@ def chunk_blocks(blocks: list[LogicalBlock]) -> list[TextNode]:
             continue
 
         heading_path_str = " > ".join(block.heading_path) if block.heading_path else ""
+        # 关联图片（仅记录已上传的 object_key，供前端查看原图）
+        image_keys = [
+            image.object_key for image in block.images if image.object_key
+        ]
         node = TextNode(
             text=body,
             metadata={
                 "heading": block.heading or "",
                 "heading_path": heading_path_str,
-                "image_refs": image_refs,
+                "image_keys": image_keys,
                 "source_block_index": block_idx,
             },
         )
@@ -164,87 +170,27 @@ def word_chunk_blocks(
     doc_id: str,
     file_name: str,
     start_chunk_index: int = 0,
-    start_image_index: int = 1,
-    text_chunk_offset: int = 0,
-    last_text_chunk_index: int = -1,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
 ) -> tuple[list[str], list[dict[str, Any]], list[TextNode]]:
-    """按逻辑块批次生成文本 chunk 和图片 chunk，支持全局索引偏移。"""
-    next_image_index = start_image_index
-    for block in blocks:
-        for image in block.images:
-            image.image_index = next_image_index
-            next_image_index += 1
+    """按逻辑块批次生成文本 chunk，支持全局索引偏移。
 
+    图片识别文字已在 chunk_blocks 中并入正文，不再生成独立图片 chunk。
+    """
     text_nodes = chunk_blocks(blocks)
 
-    image_nodes: list[TextNode] = []
-    image_index_to_chunk_index: dict[int, int] = {}
-
-    for block_idx, block in enumerate(blocks):
-        source_node_idx = None
-        for node_idx, node in enumerate(text_nodes):
-            if node.metadata.get("source_block_index") == block_idx:
-                source_node_idx = node_idx
-                break
-        if source_node_idx is not None:
-            last_text_chunk_index = text_chunk_offset + source_node_idx
-        source_chunk_index = (
-            text_chunk_offset + source_node_idx
-            if source_node_idx is not None
-            else last_text_chunk_index
-        )
-
-        heading_path_str = " > ".join(block.heading_path) if block.heading_path else ""
-        for image in block.images:
-            parts = [f"[图片 {image.image_index}]"]
-            if image.ocr_text:
-                parts.append(f"OCR识别：{image.ocr_text}")
-            if image.vision_text:
-                parts.append(f"视觉描述：{image.vision_text}")
-
-            node = TextNode(
-                text="\n".join(parts),
-                metadata={
-                    "doc_id": doc_id,
-                    "file_name": file_name,
-                    "page_number": 1,
-                    "heading": block.heading or "",
-                    "heading_path": heading_path_str,
-                    "chunk_type": "image",
-                    "source_chunk_index": source_chunk_index,
-                    "image_index": image.image_index or 0,
-                    "object_key": image.object_key or "",
-                    "mime_type": image.content_type,
-                    "image_refs": [],
-                },
-            )
-            image_index_to_chunk_index[image.image_index or 0] = (
-                start_chunk_index + len(text_nodes) + len(image_nodes)
-            )
-            image_nodes.append(node)
-
-    for node in text_nodes:
-        node.metadata.pop("source_block_index", None)
-        for ref in node.metadata.get("image_refs", []):
-            ref["image_chunk_index"] = image_index_to_chunk_index.get(ref.get("image_index"))
-
-    all_nodes = text_nodes + image_nodes
+    all_nodes = text_nodes
     chunks: list[str] = []
     metadatas: list[dict[str, Any]] = []
     final_nodes: list[TextNode] = []
 
     for i, node in enumerate(all_nodes):
+        node.metadata.pop("source_block_index", None)
         node.metadata.setdefault("doc_id", doc_id)
         node.metadata.setdefault("file_name", file_name)
         node.metadata.setdefault("page_number", 1)
         node.metadata.setdefault("chunk_type", "text")
-        node.metadata.setdefault("source_chunk_index", -1)
-        node.metadata.setdefault("image_index", 0)
-        node.metadata.setdefault("object_key", "")
-        node.metadata.setdefault("mime_type", "")
-        node.metadata.setdefault("image_refs", [])
+        node.metadata.setdefault("image_keys", [])
         node.metadata["chunk_index"] = start_chunk_index + i
         node.metadata["text"] = node.text
 

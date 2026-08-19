@@ -40,15 +40,24 @@ class TestUploadDocument:
     def test_upload_success(self, client):
         with patch("routers.document.document_service.upload_document",
                    new_callable=AsyncMock) as mock_upload:
-            mock_upload.return_value = make_doc_dict()
+            mock_upload.return_value = make_doc_dict(file_name="test.docx", file_type="docx")
 
             response = client.post(
                 f"/api/knowledge-bases/{KB_ID}/documents",
-                files={"file": ("test.pdf", b"%PDF-1.4 test content", "application/pdf")},
+                files={"file": ("test.docx", b"PK\x03\x04 test content", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
             )
             assert response.status_code == 201
             data = response.json()
             assert data["status"] == "uploaded"
+
+    def test_upload_pdf_rejected(self, client):
+        """PDF 暂不支持解析，上传直接 400 拒绝。"""
+        response = client.post(
+            f"/api/knowledge-bases/{KB_ID}/documents",
+            files={"file": ("test.pdf", b"%PDF-1.4 test content", "application/pdf")},
+        )
+        assert response.status_code == 400
+        assert "PDF" in response.json()["detail"]
 
     def test_upload_no_file(self, client):
         """不传文件参数应返回 422。"""
@@ -65,7 +74,7 @@ class TestUploadDocument:
             mock_upload.side_effect = ValueError("未提供文件")
             response = client.post(
                 f"/api/knowledge-bases/{KB_ID}/documents",
-                files={"file": ("test.pdf", b"%PDF-1.4", "application/pdf")},
+                files={"file": ("test.docx", b"PK\x03\x04", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
             )
             assert response.status_code == 500
 
@@ -77,17 +86,6 @@ class TestUploadDocument:
         )
         assert response.status_code == 400
         assert "不支持" in response.json()["detail"]
-
-    def test_upload_pdf_valid(self, client):
-        """上传 .pdf 文件格式验证通过。"""
-        with patch("routers.document.document_service.upload_document",
-                   new_callable=AsyncMock) as mock_upload:
-            mock_upload.return_value = make_doc_dict(file_name="test.pdf")
-            response = client.post(
-                f"/api/knowledge-bases/{KB_ID}/documents",
-                files={"file": ("test.pdf", b"%PDF-1.4", "application/pdf")},
-            )
-            assert response.status_code == 201
 
     def test_upload_docx_valid(self, client):
         """上传 .docx 文件格式验证通过。"""
