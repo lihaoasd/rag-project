@@ -65,10 +65,11 @@ class SearchRequest(BaseModel):
     top_k: int = Field(10, ge=1, le=50, description="向量检索候选数量（也是无重排时的返回条数上限）")
     similarity_threshold: float = Field(0.6, ge=0, le=1, description="相似度阈值")
     kb_ids: list[str] | None = Field(None, description="知识库 ID 列表，支持多知识库检索")
-    retrieval_method: Literal["vector", "hybrid"] | None = Field(
+    retrieval_method: Literal["vector", "fulltext", "hybrid", "hybrid_es"] | None = Field(
         None,
-        description="检索方式：vector=纯向量检索，hybrid=向量+BM25混合检索；不传则沿用服务端检索配置",
+        description="检索方式：vector=纯向量，hybrid=向量+BM25混合，fulltext=ES全文检索，hybrid_es=向量+ES关键词RRF；不传则沿用服务端默认（retrieval_default_method）",
     )
+    highlight: bool = Field(True, description="是否返回高亮片段（fulltext/hybrid_es 生效）")
     hybrid_ranker: Literal["rrf", "weighted"] | None = Field(
         None,
         description="混合检索融合策略：rrf=RRFRanker，weighted=WeightedRanker；仅 hybrid 模式生效",
@@ -98,6 +99,7 @@ class SearchResultItem(BaseModel):
     source_chunk_index: int = -1
     kb_id: str = ""
     kb_name: str = ""
+    highlight: str | None = Field(None, description="ES 高亮片段（含 <em> 标签），非 fulltext/hybrid_es 为 null")
 
 
 class SearchResponse(BaseModel):
@@ -332,3 +334,53 @@ class ErrorResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
+
+
+# ============================================================
+# 词库（lexicon）
+# ============================================================
+class LexiconTermCreate(BaseModel):
+    term: str = Field(..., min_length=1, max_length=255, description="词条（标准词）")
+    aliases: list[str] = Field(default_factory=list, description="别名/同义词列表")
+    category: str = Field("", max_length=50, description="分类（自由文本，可空）")
+    enabled: bool = Field(True, description="启用状态")
+
+
+class LexiconTermUpdate(BaseModel):
+    term: str | None = Field(None, min_length=1, max_length=255)
+    aliases: list[str] | None = Field(None)
+    category: str | None = Field(None, max_length=50)
+    enabled: bool | None = Field(None)
+
+
+class LexiconTermResponse(BaseModel):
+    id: str
+    term: str
+    aliases: list[str]
+    category: str
+    enabled: bool
+    created_at: str
+    updated_at: str
+
+
+class LexiconTermListResponse(BaseModel):
+    items: list[LexiconTermResponse]
+    total: int
+
+
+class LexiconStatsResponse(BaseModel):
+    total: int
+    enabled: int
+    categories: dict[str, int]
+
+
+class LexiconImportRequest(BaseModel):
+    """CSV 导入：每行 `词条,别名1;别名2,分类`（表头可选）"""
+
+    content: str = Field(..., description="CSV 文本内容（UTF-8）")
+
+
+class LexiconImportResponse(BaseModel):
+    imported: int
+    skipped: int
+    errors: list[str] = Field(default_factory=list)

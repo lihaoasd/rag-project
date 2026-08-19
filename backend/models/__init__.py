@@ -7,6 +7,7 @@ from .document import Document, DocumentChunk
 from .conversation import Conversation, Message
 from .model_config import ModelConfig, KBModelBinding
 from .prompt_template import PromptTemplate
+from .lexicon import LexiconTerm
 
 __all__ = [
     "Base",
@@ -18,4 +19,5 @@ __all__ = [
     "ModelConfig",
     "KBModelBinding",
     "PromptTemplate",
+    "LexiconTerm",
 ]

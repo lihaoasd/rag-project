@@ -87,6 +87,10 @@ async def delete_knowledge_base(kb_id: str) -> bool:
     except Exception as e:
         logger.error("删除 Milvus Collection 失败: %s", e, exc_info=True)
 
+    # 2.5 删除 ES 数据（best-effort，由对账兜底）
+    from core import es_store
+    await es_store.delete_by_kb(kb_id)
+
     # 3. 删除 MinIO 中该知识库的所有文档文件（同步 I/O，放到线程池）
     try:
         await asyncio.to_thread(minio_client.delete_prefix, f"{kb_id}/")

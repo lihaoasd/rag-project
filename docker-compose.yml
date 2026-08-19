@@ -52,3 +52,26 @@ services:
     depends_on:
       - etcd
       - minio
+
+  # === Elasticsearch（全文检索，IK 中文分词） ===
+  elasticsearch:
+    build: ./elasticsearch
+    container_name: bid_es
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+      - bootstrap.memory_lock=false
+      - ingest.geoip.downloader.enabled=false
+    volumes:
+      - ./volumes/elasticsearch:/usr/share/elasticsearch/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # 后端跑在宿主机，IK 远程词典经此访问
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped

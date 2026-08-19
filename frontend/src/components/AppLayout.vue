@@ -46,6 +46,12 @@
             <span>模型配置</span>
           </template>
         </el-menu-item>
+        <el-menu-item index="/lexicon">
+          <template #title>
+            <el-icon><Collection /></el-icon>
+            <span>词库管理</span>
+          </template>
+        </el-menu-item>
       </el-menu>
     </el-aside>
 

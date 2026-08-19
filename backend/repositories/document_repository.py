@@ -3,7 +3,7 @@
 """
 import uuid
 
-from sqlalchemy import select, update, delete
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.document import Document, DocumentChunk
@@ -211,6 +211,26 @@ class DocumentRepository:
             doc_id, offset, limit, total,
         )
         return chunks, total
+
+    async def list_chunks_by_kb(self, kb_id: str) -> list[DocumentChunk]:
+        """查询知识库下全部切片（ES rebuild 用，按 chunk_index 升序）。"""
+        stmt = (
+            select(DocumentChunk)
+            .where(DocumentChunk.kb_id == kb_id)
+            .order_by(DocumentChunk.chunk_index.asc())
+        )
+        return list((await self.session.scalars(stmt)).all())
+
+    async def count_chunks_by_kb(self) -> dict[str, int]:
+        """按知识库统计切片数（ES 对账用）。"""
+        rows = (
+            await self.session.execute(
+                select(DocumentChunk.kb_id, func.count(DocumentChunk.id)).group_by(
+                    DocumentChunk.kb_id
+                )
+            )
+        ).all()
+        return {kb_id: cnt for kb_id, cnt in rows}
 
     async def get_chunk_by_id(self, chunk_id: str) -> DocumentChunk | None:
         """按 ID 获取单个切片。"""

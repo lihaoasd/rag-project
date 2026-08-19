@@ -9,6 +9,17 @@ from services import search_service
 from tests.helpers import KB_ID, DOC_ID
 
 
+@pytest.fixture(autouse=True)
+def _default_vector():
+    """本文件聚焦 Milvus 向量/hybrid 路径，固定默认检索方式为 vector；
+    真实默认值（fulltext）由 test_search_es.py 覆盖。"""
+    from config import settings
+    original = settings.retrieval_default_method
+    settings.retrieval_default_method = "vector"
+    yield
+    settings.retrieval_default_method = original
+
+
 class TestSearch:
     @pytest.mark.asyncio
     async def test_search_returns_results(self, mock_retrieve):

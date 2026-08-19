@@ -92,6 +92,21 @@ class TestSearch:
             assert mock_search.call_args.kwargs["hybrid_ranker"] == "weighted"
             assert mock_search.call_args.kwargs["hybrid_weights"] == [0.7, 0.3]
 
+    def test_search_passes_highlight(self, client):
+        with patch("routers.search.search_service.search",
+                   new_callable=AsyncMock) as mock_search:
+            mock_search.return_value = {
+                "query": "测试查询",
+                "total": 0,
+                "results": [],
+            }
+            response = client.post(
+                f"/api/knowledge-bases/{KB_ID}/search",
+                json={"query": "测试查询", "retrieval_method": "fulltext", "highlight": False},
+            )
+            assert response.status_code == 200
+            assert mock_search.call_args.kwargs["highlight"] is False
+
     def test_search_empty_results(self, client):
         with patch("routers.search.search_service.search",
                    new_callable=AsyncMock) as mock_search:

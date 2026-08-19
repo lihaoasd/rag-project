@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE properties SYSTEM "http://java.sun.com/dtd/properties.dtd">
+<properties>
+    <comment>IK Analyzer 扩展配置</comment>
+    <!--
+      ⚠️ 启动依赖：remote_ext_dict 指向的后端若在 ES 启动时不可达，IK 词典初始化会中断
+      （analyze 报 _QuantifierDict is null，需重启 ES）。请确保后端已运行再启用；
+      后端不可达时请清空该 entry，IK 仅用本地词典（查询扩展仍即时生效）。
+    -->
+    <!-- 远程词典：指向后端导出端点（后端跑在宿主机时用 host.docker.internal） -->
+    <entry key="remote_ext_dict">
+        http://host.docker.internal:8000/api/lexicon/export/ik-dict
+    </entry>
+    <entry key="remote_ext_stopwords"></entry>
+</properties>

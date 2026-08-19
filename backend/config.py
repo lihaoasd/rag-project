@@ -52,6 +52,24 @@ class Settings(BaseSettings):
     retrieval_rerank_threshold: float = 0.8
     retrieval_hybrid_enabled: bool = True  # 混合检索开关（稠密 + BM25 稀疏融合，RRF）
 
+    # === Elasticsearch 全文检索配置 ===
+    es_host: str = "localhost"
+    es_port: int = 9200
+    es_index_name: str = "bid_chunks"
+    es_sync_enabled: bool = True          # ES 双写开关
+    es_username: str = ""
+    es_password: str = ""
+    es_highlight_enabled: bool = True     # 检索是否返回高亮片段
+
+    # === 检索方式 ===
+    retrieval_default_method: str = "fulltext"  # 未传 retrieval_method 时的默认方式
+    retrieval_es_top_k_factor: int = 2          # fulltext 召回放大系数
+    retrieval_rrf_k: int = 60                   # RRF 常数
+
+    # === ES 对账 ===
+    es_reconcile_enabled: bool = True           # 每日定时对账开关
+    es_reconcile_interval_hours: int = 24       # 对账间隔（小时）
+
     # === 服务配置 ===
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000

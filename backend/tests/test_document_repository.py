@@ -45,6 +45,28 @@ class TestDocumentRepository:
         result = await repo.list_by_kb(KB_ID)
         assert len(result) == 2
 
+    # ---- list_chunks_by_kb / count_chunks_by_kb（ES 对账/重建用）----
+    @pytest.mark.asyncio
+    async def test_list_chunks_by_kb(self, repo, mock_session):
+        c1 = MockChunk(chunk_index=0)
+        c2 = MockChunk(chunk_index=1)
+        mock_result = MagicMock()
+        mock_result.all.return_value = [c1, c2]
+        mock_session.scalars.return_value = mock_result
+
+        result = await repo.list_chunks_by_kb(KB_ID)
+        assert len(result) == 2
+        assert result[0].chunk_index == 0
+
+    @pytest.mark.asyncio
+    async def test_count_chunks_by_kb(self, repo, mock_session):
+        mock_result = MagicMock()
+        mock_result.all.return_value = [(KB_ID, 3), ("kb2", 5)]
+        mock_session.execute.return_value = mock_result
+
+        result = await repo.count_chunks_by_kb()
+        assert result == {KB_ID: 3, "kb2": 5}
+
     @pytest.mark.asyncio
     async def test_list_by_kb_invalid_uuid(self, repo):
         result = await repo.list_by_kb("not-a-uuid")

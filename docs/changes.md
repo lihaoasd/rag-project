@@ -2,6 +2,46 @@
 
 ## 2026-08-19
 
+- 需求：修复 ES 对账任务异常 `NameError: name 'func' is not defined`（`document_repository.count_chunks_by_kb` 使用 `func.count` 但未导入）。
+- 改动：`repositories/document_repository.py` 导入补 `func`；`tests/test_document_repository.py` 新增 `list_chunks_by_kb` / `count_chunks_by_kb` 用例（按现有 MagicMock result 风格）。
+- 验证：受影响测试 43 passed；后端全量测试 449 passed。
+
+## 2026-08-19
+
+- 需求：在服务器 192.168.60.120 上通过 Docker 部署自有 Elasticsearch（含 IK 中文分词），后端切换至该 ES。
+- 改动：
+  - `elasticsearch/Dockerfile`：IK 插件下载源由 GitHub（release 资产已清空，404）改为 **InfiniLabs 官方发布服务器** `https://release.infinilabs.com/analysis-ik/stable/elasticsearch-analysis-ik-8.13.4.zip`（`docs/08` §3.1 同步更新）；
+  - `elasticsearch/config/IKAnalyzer.cfg.xml`：补充启动依赖警告（remote_ext_dict 指向的后端不可达会导致 IK 词典初始化中断，需后端先行或清空该 entry）；
+  - `backend/.env`：`ES_HOST=192.168.60.120`、清空认证（自建 ES 无鉴权；原 192.168.60.121 的 elastic 认证配置移除）；
+  - 服务器部署（192.168.60.120）：`/opt/es`（Dockerfile + IKAnalyzer.cfg.xml，远程词典**当前禁用**——后端未运行，IK 用本地词典）、镜像 `es-ik:8.13.4`、容器 `bid-es`（9200、1g 堆、数据卷 `/opt/es/data`、`--restart unless-stopped`）、`vm.max_map_count=262144`（已达标）、预创建 `bid_chunks` 索引（`ik_index/ik_smart` 分析器）。
+- 说明：IK 本地词典工作正常（analyze 验证通过）；词库"分词词典热更新"待后端稳定运行后启用 remote_ext_dict 生效，当前词库仅查询扩展（即时）路径生效。
+- 验证：镜像构建成功（analysis-ik 8.13.4 安装）、IK analyze 正常切词、E2E 冒烟通过（写入→检索命中 score 2.59→高亮→清理）；`config.py` 加载新 ES 地址正确；后端测试全量 447 passed。
+
+## 2026-08-19
+
+- 需求：ES 连接改为远程实例（`192.168.60.121:9200`，elastic 认证）；远程 ES 未安装 IK 插件，需保证全文检索可用。
+- 改动：`backend/.env` 写入 `ES_HOST/ES_PORT/ES_USERNAME/ES_PASSWORD`（并修复 .env 追加导致的 GBK 编码问题，整体转码 UTF-8）；`core/es_store.py` `ensure_index()` 增加 **IK→cjk 分析器自动降级**（探测 `unknown analyzer` 错误，降级后按 bigram 检索并记录 `_analyzer_mode`），es_search 字段加权改用 `_TEXT_FIELDS` 常量；`tests/test_es_store.py` 补降级/非分析器错误用例与 `_analyzer_mode` 重置 fixture；设计文档新增 §4.3 分析器降级说明。
+- 验证：后端测试通过（es_store/search_es 24 passed）；对远程 ES 端到端冒烟通过——`ensure_index` 降级 cjk 建索引、写入、检索命中、高亮 `<em>` 片段正确、删除清理成功。
+
+## 2026-08-19
+
+- 需求：ES + IK 全文检索集成（`docs/08-es-fulltext-search-design.md` + `docs/plan/23-es-fulltext-search-plan.md`）——新增 `fulltext`（ES 纯全文检索，前后端默认）与 `hybrid_es`（向量 + ES 关键词 RRF）检索方式、ES 后端高亮、词库前端管理（IK 远程词典 + 查询扩展）、双写同步与对账重建。
+- 改动：
+  - 部署：`docker-compose.yml` 新增 `elasticsearch` 服务（8.13.4 + IK 插件 + `host.docker.internal` 远程词典访问）；新增 `elasticsearch/Dockerfile`、`elasticsearch/config/IKAnalyzer.cfg.xml`；
+  - 后端：`pyproject.toml` 加 `elasticsearch>=8.0,<9`；`config.py` 新增 ES/检索/对账配置（`retrieval_default_method=fulltext`）；新增 `core/es_store.py`（索引/双写/检索高亮/删除/对账统计）、`models/lexicon.py`（LexiconTerm）、`repositories/lexicon_repository.py`、`services/lexicon_service.py`（CRUD + 缓存 + 查询扩展 + ik-dict/csv 导出）、`services/es_admin_service.py`（对账/重建）、`routers/lexicon.py`、`routers/es_admin.py`；`services/search_service.py` 重构为多路召回（fulltext/hybrid_es + RRF）；`services/document_service.py`/`kb_service.py` 双写与删除/重切/重解析 ES 清理；`repositories/document_repository.py` 补按 kb 统计/列表；`models/schemas.py` SearchRequest 四值 + highlight、SearchResultItem.highlight；`main.py` 注册路由 + 启动 ES 初始化/词库缓存 + 每日定时对账协程；迁移 `0013_lexicon_terms.py`；
+  - 前端：`api/lexicon.js` 新增；`api/search.js` 透传 highlight；`SearchView.vue` 检索方式四值下拉（默认 fulltext）+ 后端高亮渲染（`<em>` 样式）；新增 `LexiconView.vue` 词库管理页（CRUD/开关/CSV 导入导出）+ 路由与侧边栏入口；
+  - 测试：新增 `test_es_store.py`、`test_search_es.py`、`test_lexicon_service.py`、`test_lexicon_router.py`、`test_es_admin_router.py`，更新 `test_search_service.py`（默认方式固定 vector 聚焦向量路径）、`test_schemas.py`、`test_search_router.py`；`uv sync --extra dev` 补齐 dev 依赖。
+- 说明：词库查询扩展仅作用于 ES 检索路径（设计 §6.3"双端一致"未实现，Milvus 侧保持原 query）；IK 远程词典热更新受 IK Monitor 轮询限制（约 1 小时），查询扩展即时生效兜底。
+- 验证：后端全量测试通过（445 passed）；前端 `npm run build` 通过；待部署验证（docker compose build elasticsearch + alembic upgrade head + 上传文档三处落库冒烟）。
+
+## 2026-08-19
+
+- 需求：ES + IK 全文检索详细设计文档（`docs/08-es-fulltext-search-design.md`）评审反馈确认——新增 `fulltext` 检索方式并作为前后端默认（原 `keyword` 并入）、词库分类采用自由文本、对账采用手动 rebuild + 每日定时对账告警、ES 数据卷不纳入备份（恢复时从 PG rebuild 重建）。
+- 改动：新增 `docs/08-es-fulltext-search-design.md`（ES+IK 部署、索引设计、双写同步、词库前端更新、检索链路 fulltext/hybrid_es + RRF + 高亮、对账与重建、备份恢复策略、实施步骤与验证）；设计文档按评审结论更新（§5.6 备份策略、§7.1 检索方式表、§10 配置、§11 步骤、§12 验证、§14 开放问题全部收口）。
+- 验证：文档评审输出，未涉及代码。
+
+## 2026-08-19
+
 - 需求：切片详情面板中关联图片改为缩略图展示，并标注图片个数。
 - 改动：`ChunkListView.vue` 详情面板图片区改为"关联图片 + N 张"标注 + 缩略图网格（点击缩略图仍可放大预览全部），列表页缩略图保持不变。
 - 验证：前端构建通过。

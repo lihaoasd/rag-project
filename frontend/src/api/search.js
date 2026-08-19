@@ -14,6 +14,7 @@ export function search({
   rerank_model_id,
   rerank_top_n,
   rerank_vector_threshold,
+  highlight = true,
 }) {
   return apiClient
     .post('/search', {
@@ -27,6 +28,7 @@ export function search({
       rerank_model_id: rerank_model_id || null,
       rerank_top_n: rerank_top_n ?? 5,
       rerank_vector_threshold: rerank_vector_threshold ?? null,
+      highlight,
     })
     .then((res) => res.data)
 }
@@ -41,6 +43,7 @@ export function searchSingle(kbId, {
   retrieval_method,
   hybrid_ranker,
   hybrid_weights,
+  highlight = true,
 }) {
   return apiClient
     .post(`/knowledge-bases/${kbId}/search`, {
@@ -50,6 +53,7 @@ export function searchSingle(kbId, {
       retrieval_method: retrieval_method ?? null,
       hybrid_ranker: hybrid_ranker ?? null,
       hybrid_weights: hybrid_weights ?? null,
+      highlight,
     })
     .then((res) => res.data)
 }

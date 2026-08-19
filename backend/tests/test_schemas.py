@@ -180,6 +180,19 @@ class TestSearchRequest:
         req = SearchRequest(query="测试查询", retrieval_method="hybrid")
         assert req.retrieval_method == "hybrid"
 
+        req = SearchRequest(query="测试查询", retrieval_method="fulltext")
+        assert req.retrieval_method == "fulltext"
+
+        req = SearchRequest(query="测试查询", retrieval_method="hybrid_es")
+        assert req.retrieval_method == "hybrid_es"
+
+    def test_valid_highlight_default(self):
+        req = SearchRequest(query="测试查询")
+        assert req.highlight is True  # 默认返回高亮
+
+        req = SearchRequest(query="测试查询", highlight=False)
+        assert req.highlight is False
+
     def test_valid_hybrid_ranker_params(self):
         req = SearchRequest(
             query="测试查询",

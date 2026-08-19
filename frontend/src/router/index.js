@@ -40,6 +40,11 @@ const routes = [
     name: 'Models',
     component: () => import('@/views/ModelConfigView.vue'),
   },
+  {
+    path: '/lexicon',
+    name: 'Lexicon',
+    component: () => import('@/views/LexiconView.vue'),
+  },
 ]
 
 const router = createRouter({

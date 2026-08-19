@@ -41,8 +41,10 @@
         <div class="param-group">
           <label class="param-label">检索方式</label>
           <el-select v-model="retrievalMethod" style="width: 100%">
-            <el-option label="vector" value="vector" />
-            <el-option label="hybrid" value="hybrid" />
+            <el-option label="fulltext（ES 全文检索，默认）" value="fulltext" />
+            <el-option label="hybrid_es（向量 + ES 关键词 RRF）" value="hybrid_es" />
+            <el-option label="vector（纯向量）" value="vector" />
+            <el-option label="hybrid（向量 + BM25 混合）" value="hybrid" />
           </el-select>
         </div>
 
@@ -195,7 +197,7 @@
             <div
               class="result-text"
               :class="{ 'is-expanded': item.expanded }"
-              v-html="highlightText(item.text, query)"
+              v-html="item.highlight ? item.highlight : highlightText(item.text, query)"
             />
             <div class="expand-toggle">
               <el-button text type="primary" size="small" @click="toggleExpand(item)">
@@ -236,7 +238,7 @@ const searching = ref(false)
 const elapsed = ref(0)
 const topK = ref(10)
 const similarityThreshold = ref(0.6)
-const retrievalMethod = ref('vector')
+const retrievalMethod = ref('fulltext')
 const hybridRanker = ref('rrf')
 const denseWeight = ref(0.5)
 const rerankModels = ref([])
@@ -279,6 +281,7 @@ async function handleSearch() {
       rerank_model_id: rerankModelId.value || null,
       rerank_top_n: rerankTopN.value,
       rerank_vector_threshold: useVectorThreshold.value ? rerankVectorThreshold.value : null,
+      highlight: true,
     })
     results.value = (data?.results || []).map((r, i) => ({ ...r, rank: i + 1, expanded: false }))
     total.value = data?.total || 0
@@ -517,6 +520,14 @@ onMounted(async () => {
   color: var(--color-primary-dark);
   padding: 0 3px;
   border-radius: 3px;
+}
+
+.result-text :deep(em) {
+  background: #D1FAE5;
+  color: var(--color-primary-dark);
+  padding: 0 3px;
+  border-radius: 3px;
+  font-style: normal;
 }
 
 .result-meta {

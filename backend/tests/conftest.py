@@ -56,6 +56,8 @@ def mock_async_session(mock_session):
         "services.search_service.async_session",
         "services.model_service.async_session",
         "services.prompt_service.async_session",
+        "services.lexicon_service.async_session",
+        "services.es_admin_service.async_session",
         "core.model_factory.async_session",
     ]
     active_patches = []

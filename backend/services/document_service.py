@@ -16,6 +16,7 @@ from pathlib import Path
 from fastapi import UploadFile
 
 from config import settings
+from core import es_store
 from core.database import async_session
 from core.indexing import build_index, chunk_documents, delete_index
 from core.model_factory import resolve_model_config
@@ -91,6 +92,8 @@ async def _parse_and_store_in_batches(
                 continue
 
             milvus_pks = await build_index(chunks, metadatas, kb_id)
+            # ES 双写（best-effort，失败由对账兜底）
+            await es_store.bulk_index(chunks, metadatas, kb_id)
             current_chunk_index += len(chunks)
             await _store_chunk_batch(
                 doc_id,
@@ -110,6 +113,8 @@ async def _parse_and_store_in_batches(
         batch_chunks = chunks[i : i + batch_size]
         batch_metas = metadatas[i : i + batch_size]
         milvus_pks = await build_index(batch_chunks, batch_metas, kb_id)
+        # ES 双写（best-effort，失败由对账兜底）
+        await es_store.bulk_index(batch_chunks, batch_metas, kb_id)
         current_chunk_index += len(batch_chunks)
         await _store_chunk_batch(
             doc_id,
@@ -359,6 +364,9 @@ async def delete_document(kb_id: str, doc_id: str) -> bool:
     except Exception as e:
         logger.error("删除 Milvus 向量失败: %s", e, exc_info=True)
 
+    # 2.5 ES 删除（best-effort，由对账兜底）
+    await es_store.delete_by_doc(doc_id)
+
     # 3. MinIO 删除（同步 I/O，放到线程池）
     try:
         await asyncio.to_thread(minio_client.delete, doc.object_key)
@@ -531,6 +539,9 @@ async def delete_chunk(kb_id: str, chunk_id: str) -> bool:
         except Exception as e:
             logger.error("删除 Milvus 单向量失败: chunk_id=%s, error=%s", chunk_id, e, exc_info=True)
 
+    # 2.5 ES 删除（best-effort，由对账兜底）
+    await es_store.delete_by_chunk(str(chunk.doc_id), chunk.chunk_index)
+
     # 3. 更新文档切片计数
     try:
         async with async_session() as session:
@@ -590,6 +601,16 @@ async def update_chunk(kb_id: str, chunk_id: str, new_text: str) -> dict:
         doc_repo = DocumentRepository(session)
         await doc_repo.update_chunk_text(chunk_id, new_text, new_char_count, new_milvus_pk)
 
+    # 4. ES 覆盖写入（_id 幂等覆盖同 doc_id+chunk_index；best-effort）
+    try:
+        async with async_session() as session:
+            doc_repo = DocumentRepository(session)
+            doc = await doc_repo.get_by_id(str(chunk.doc_id))
+        metadata["file_name"] = doc.file_name if doc else ""
+        await es_store.bulk_index([new_text], [metadata], kb_id)
+    except Exception as e:
+        logger.error("ES 覆盖切片失败: chunk_id=%s, error=%s", chunk_id, e, exc_info=True)
+
     logger.info("切片已更新: chunk_id=%s, char_count=%d", chunk_id, new_char_count)
     return await get_chunk(kb_id, chunk_id)
 
@@ -631,8 +652,9 @@ async def rechunk_document(
             # 3. 删除旧切片（PG）
             await doc_repo.delete_chunks_by_doc_id(doc_id)
 
-        # 4. 删除旧向量（Milvus）
+        # 4. 删除旧向量（Milvus）+ ES 旧文档
         await delete_index(kb_id, doc_id)
+        await es_store.delete_by_doc(doc_id)
         await _cleanup_doc_images(kb_id, doc_id)
 
         # 5. 从 MinIO 下载文件（同步 I/O，放到线程池）
@@ -733,8 +755,9 @@ async def reparse_document(kb_id: str, doc_id: str) -> None:
             # 3. 删除旧切片（PG）
             await doc_repo.delete_chunks_by_doc_id(doc_id)
 
-        # 4. 删除旧向量（Milvus）
+        # 4. 删除旧向量（Milvus）+ ES 旧文档
         await delete_index(kb_id, doc_id)
+        await es_store.delete_by_doc(doc_id)
         await _cleanup_doc_images(kb_id, doc_id)
 
         # 5. 从 MinIO 下载文件

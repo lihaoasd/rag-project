@@ -24,6 +24,7 @@ dependencies = [
     "alembic>=1.13.0",
     "minio>=7.2.0",
     "langfuse>=4,<5",
+    "elasticsearch>=8.0,<9",
 ]
 
 [project.optional-dependencies]
