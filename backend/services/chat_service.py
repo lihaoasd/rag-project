@@ -78,6 +78,8 @@ def _extract_sources(retrieved: list[dict]) -> list[dict]:
             "file_name": r["file_name"],
             "page_number": r["page_number"],
             "chunk_index": r.get("chunk_index", 0),
+            "chunk_type": r.get("chunk_type", "text"),
+            "source_chunk_index": r.get("source_chunk_index", -1),
             "score": r["score"],
             "text": r["text"][:500],  # 截断长文本
         }

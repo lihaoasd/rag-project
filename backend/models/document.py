@@ -1,10 +1,10 @@
 """
 Document + DocumentChunk ORM 模型（无外键约束）。
 """
-from sqlalchemy import BigInteger, Integer, String, Text
+from sqlalchemy import BigInteger, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, UUIDMixin, TimestampMixin, CreatedAtMixin
+from .base import Base, UUIDMixin, TimestampMixin, CreatedAtMixin, UTF8JSONB
 
 
 class Document(Base, UUIDMixin, TimestampMixin):
@@ -19,6 +19,8 @@ class Document(Base, UUIDMixin, TimestampMixin):
     status: Mapped[str] = mapped_column(String(20), default="uploaded", server_default="uploaded", nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     chunk_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    processed_chunk_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    parse_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class DocumentChunk(Base, UUIDMixin, CreatedAtMixin):
@@ -31,3 +33,10 @@ class DocumentChunk(Base, UUIDMixin, CreatedAtMixin):
     char_count: Mapped[int] = mapped_column(Integer, nullable=False)
     text_content: Mapped[str] = mapped_column(Text, nullable=False)
     milvus_pk: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    chunk_metadata: Mapped[dict] = mapped_column(
+        "metadata",
+        UTF8JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )

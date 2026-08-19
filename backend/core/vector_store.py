@@ -15,8 +15,24 @@ from config import settings
 
 # 标量字段（VARCHAR/INT64）需与写入时的 metadata 字段一一对应，
 # indexing 与 retrieval 共用，避免 schema 不一致。
-SCALAR_FIELD_NAMES = ["file_name", "page_number", "chunk_index", "heading", "heading_path"]
-SCALAR_FIELD_TYPES = [DataType.VARCHAR, DataType.INT64, DataType.INT64, DataType.VARCHAR, DataType.VARCHAR]
+SCALAR_FIELD_NAMES = [
+    "file_name",
+    "page_number",
+    "chunk_index",
+    "heading",
+    "heading_path",
+    "chunk_type",
+    "source_chunk_index",
+]
+SCALAR_FIELD_TYPES = [
+    DataType.VARCHAR,
+    DataType.INT64,
+    DataType.INT64,
+    DataType.VARCHAR,
+    DataType.VARCHAR,
+    DataType.VARCHAR,
+    DataType.INT64,
+]
 
 
 def get_vector_store(

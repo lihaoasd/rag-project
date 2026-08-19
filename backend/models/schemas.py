@@ -41,6 +41,8 @@ class DocumentResponse(BaseModel):
     status: str
     error_message: str | None
     chunk_count: int | None
+    processed_chunk_count: int | None = None
+    parse_duration_ms: int | None = None
     created_at: str
 
 
@@ -92,6 +94,8 @@ class SearchResultItem(BaseModel):
     file_name: str
     page_number: int
     chunk_index: int
+    chunk_type: str = "text"
+    source_chunk_index: int = -1
     kb_id: str = ""
     kb_name: str = ""
 
@@ -115,6 +119,8 @@ class ChatSourceItem(BaseModel):
     file_name: str
     page_number: int
     chunk_index: int
+    chunk_type: str = "text"
+    source_chunk_index: int = -1
     score: float
     text: str
 
@@ -136,6 +142,8 @@ class ChunkResponse(BaseModel):
     page_number: int
     char_count: int
     text_preview: str
+    chunk_type: str = "text"
+    source_chunk_index: int = -1
     created_at: str
 
 
@@ -148,6 +156,7 @@ class ChunkDetailResponse(BaseModel):
     char_count: int
     text_content: str
     milvus_pk: str | None
+    metadata: dict = Field(default_factory=dict)
     created_at: str
 
 

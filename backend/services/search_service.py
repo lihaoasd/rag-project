@@ -150,6 +150,8 @@ async def search(
             "file_name": hit["file_name"],
             "page_number": hit["page_number"],
             "chunk_index": hit["chunk_index"],
+            "chunk_type": hit.get("chunk_type", "text"),
+            "source_chunk_index": hit.get("source_chunk_index", -1),
             "kb_id": kid,
             "kb_name": kb_names.get(kid, kid),
         })

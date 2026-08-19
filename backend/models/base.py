@@ -1,10 +1,25 @@
 """
 SQLAlchemy 基础模型 — DeclarativeBase + 通用 Mixin。
 """
+import json
 import uuid
 from datetime import datetime
+
 from sqlalchemy import DateTime, String, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class UTF8JSONB(JSONB):
+    """JSONB 类型：序列化时保留 UTF-8 原文，避免反斜杠 u 转义。"""
+
+    def bind_processor(self, dialect):
+        def process(value):
+            if value is None:
+                return None
+            return json.dumps(value, ensure_ascii=False)
+
+        return process
 
 
 class Base(DeclarativeBase):

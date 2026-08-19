@@ -1,6 +1,8 @@
 """
 数据库连接管理 — SQLAlchemy async engine + session factory。
 """
+import json
+
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -16,6 +18,7 @@ engine = create_async_engine(
     settings.database_url,
     echo=False,
     poolclass=NullPool,
+    json_serializer=lambda obj: json.dumps(obj, ensure_ascii=False),
 )
 
 # 会话工厂

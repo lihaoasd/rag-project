@@ -47,6 +47,16 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="已入库" width="100" align="center">
+          <template #default="{ row }">
+            {{ row.processed_chunk_count ?? '-' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="解析耗时" width="110" align="center">
+          <template #default="{ row }">
+            {{ formatDuration(row.parse_duration_ms) }}
+          </template>
+        </el-table-column>
         <el-table-column label="页数" width="80" align="center">
           <template #default="{ row }">
             {{ row.page_count ?? '-' }}
@@ -200,6 +210,12 @@ function formatSize(bytes) {
 function formatDate(iso) {
   if (!iso) return '-'
   return new Date(iso).toLocaleString('zh-CN')
+}
+
+function formatDuration(ms) {
+  if (ms == null) return '-'
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
 }
 
 function showUploadDialog() {

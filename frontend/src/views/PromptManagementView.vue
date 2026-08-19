@@ -14,6 +14,7 @@
           <el-radio-button value="entity_extraction">实体抽取</el-radio-button>
           <el-radio-button value="document_summary">文档总结</el-radio-button>
           <el-radio-button value="custom">自定义</el-radio-button>
+          <el-radio-button value="image_recognition">图片识别</el-radio-button>
         </el-radio-group>
       </div>
       <div class="toolbar-right">
@@ -113,6 +114,7 @@
                 <el-option label="实体抽取" value="entity_extraction" />
                 <el-option label="文档总结" value="document_summary" />
                 <el-option label="自定义" value="custom" />
+                <el-option label="图片识别" value="image_recognition" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -270,6 +272,7 @@ const SCENARIO_LABELS = {
   entity_extraction: '实体抽取',
   document_summary: '文档总结',
   custom: '自定义',
+  image_recognition: '图片识别',
 }
 
 const SCENARIO_TAG_TYPES = {
@@ -277,6 +280,7 @@ const SCENARIO_TAG_TYPES = {
   entity_extraction: 'warning',
   document_summary: 'success',
   custom: 'info',
+  image_recognition: 'danger',
 }
 
 // --- State ---

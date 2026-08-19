@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     # === 文档处理配置 ===
     chunk_size: int = 512
     chunk_overlap: int = 64
+    parse_batch_size: int = 16
     retrieval_top_k: int = 5
     retrieval_similarity_threshold: float = 0.6
     retrieval_rerank_threshold: float = 0.8

@@ -45,6 +45,8 @@ class MockDocument:
         self.status = kwargs.get("status", "uploaded")
         self.error_message = kwargs.get("error_message", None)
         self.chunk_count = kwargs.get("chunk_count", None)
+        self.processed_chunk_count = kwargs.get("processed_chunk_count", None)
+        self.parse_duration_ms = kwargs.get("parse_duration_ms", None)
         self.created_at = kwargs.get("created_at", None)
         self.updated_at = kwargs.get("updated_at", None)
 
@@ -61,6 +63,7 @@ class MockChunk:
         self.char_count = kwargs.get("char_count", 100)
         self.text_content = kwargs.get("text_content", "测试切片文本内容")
         self.milvus_pk = kwargs.get("milvus_pk", "pk_12345")
+        self.chunk_metadata = kwargs.get("chunk_metadata", {})
         self.created_at = kwargs.get("created_at", None)
 
 

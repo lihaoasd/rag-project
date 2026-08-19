@@ -23,6 +23,10 @@ logger = get_logger(__name__)
 
 MODEL_TYPES = ("llm", "embedding", "rerank", "vision", "ocr")
 REQUIRED_MODEL_TYPES = ("llm", "embedding")
+DEFAULT_VISION_PROMPT = (
+    "请识别这张投标文档图片中的全部文字和关键信息，并用简洁中文输出结构化文本。"
+    "如果包含表格、流程图或架构图，请用文本描述其结构和内容；不要编造不存在的内容。"
+)
 
 
 def resolve_api_key(api_key: str | None) -> str | None:
@@ -160,6 +164,108 @@ def create_reranker(config: dict):
         api_base=config.get("api_base") or "",
         api_key=resolve_api_key(config.get("api_key")),
         endpoint=params.get("endpoint", "/rerank"),
+    )
+
+
+class OpenAICompatibleVisionClient:
+    """OpenAI 兼容多模态视觉模型客户端（base64 data URL，同步）。"""
+
+    def __init__(
+        self,
+        model: str,
+        api_base: str,
+        api_key: str | None = None,
+        endpoint: str = "/chat/completions",
+        timeout: float = 60,
+        prompt: str | None = None,
+        max_tokens: int | None = None,
+        temperature: float = 0.1,
+    ):
+        self.model = model
+        self.api_base = (api_base or "").rstrip("/")
+        self.api_key = api_key
+        self.endpoint = endpoint
+        self.timeout = timeout
+        self.prompt = prompt
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            import httpx
+
+            self._client = httpx.Client(timeout=self.timeout)
+        return self._client
+
+    def recognize(
+        self,
+        image_bytes: bytes,
+        content_type: str = "image/png",
+        prompt: str | None = None,
+    ) -> str:
+        """识别图片并返回文本；失败由调用方捕获。"""
+        import base64
+
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        data_url = f"data:{content_type};base64,{b64}"
+        user_prompt = prompt or self.prompt or DEFAULT_VISION_PROMPT
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        payload: dict = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+        }
+        if self.max_tokens is not None:
+            payload["max_tokens"] = self.max_tokens
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+
+        resp = self._get_client().post(
+            f"{self.api_base}{self.endpoint}",
+            json=payload,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        return self._extract_text(resp.json())
+
+    @staticmethod
+    def _extract_text(data) -> str:
+        """从 OpenAI 兼容 chat completions 响应提取文本。"""
+        if not isinstance(data, dict):
+            return ""
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            return ""
+        return str(content).strip()
+
+    def close(self) -> None:
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+
+def create_vision_client(config: dict):
+    """创建 OpenAI 兼容视觉模型客户端。"""
+    params = config.get("params") or {}
+    logger.info("创建 Vision Client: platform=%s, model=%s", config.get("platform"), config.get("model"))
+    return OpenAICompatibleVisionClient(
+        model=config["model"],
+        api_base=config.get("api_base") or "",
+        api_key=resolve_api_key(config.get("api_key")),
+        endpoint=params.get("endpoint", "/chat/completions"),
+        timeout=params.get("timeout", 60),
+        prompt=params.get("prompt"),
+        max_tokens=params.get("max_tokens"),
+        temperature=params.get("temperature", 0.1),
     )
 
 

@@ -206,12 +206,25 @@ def is_heading(
 # ============================================================
 
 @dataclass
+class WordImage:
+    """Word 文档中提取出的单张图片。"""
+
+    image_bytes: bytes
+    content_type: str
+    object_key: str | None = None
+    ocr_text: str = ""
+    vision_text: str = ""
+    image_index: int | None = None
+
+
+@dataclass
 class ParagraphItem:
     """Word 文档解析后的单个段落/表格项"""
     text: str
     is_heading: bool = False
     heading_level: Optional[int] = None
     is_table: bool = False
+    images: list[WordImage] = field(default_factory=list)
 
 
 # ============================================================
@@ -389,7 +402,8 @@ class DocxParser(BaseParser):
             if tag == qn("w:p"):
                 # 段落
                 text = self._extract_paragraph_text(child)
-                if not text:
+                images = self._extract_images_from_element(child, doc)
+                if not text and not images:
                     continue
                 style_name = self._get_style_name(child, doc)
                 heading, level = is_heading(text, style_name)
@@ -398,19 +412,54 @@ class DocxParser(BaseParser):
                     is_heading=heading,
                     heading_level=level,
                     is_table=False,
+                    images=images,
                 ))
             elif tag == qn("w:tbl"):
                 # 表格
                 table_text = self._extract_table_text(child)
-                if table_text:
-                    items.append(ParagraphItem(
-                        text=table_text,
-                        is_heading=False,
-                        heading_level=None,
-                        is_table=True,
-                    ))
+                images = self._extract_images_from_element(child, doc)
+                if not table_text and not images:
+                    continue
+                items.append(ParagraphItem(
+                    text=table_text,
+                    is_heading=False,
+                    heading_level=None,
+                    is_table=True,
+                    images=images,
+                ))
 
         return items
+
+    @staticmethod
+    def _extract_images_from_element(element, doc) -> list[WordImage]:
+        """从段落或表格 XML 中提取图片关系对应的图片字节。"""
+        from docx.oxml.ns import qn
+
+        images: list[WordImage] = []
+        rels = doc.part.rels
+        seen: set[str] = set()
+        vml_imagedata_tag = "{urn:schemas-microsoft-com:vml}imagedata"
+
+        def _add(rid: str | None) -> None:
+            if not rid or rid in seen:
+                return
+            seen.add(rid)
+            rel = rels.get(rid)
+            if rel is None:
+                return
+            try:
+                part = rel.target_part
+                blob = part.blob
+                content_type = getattr(part, "content_type", "application/octet-stream")
+            except Exception:
+                return
+            images.append(WordImage(image_bytes=blob, content_type=content_type))
+
+        for blip in element.iter(qn("a:blip")):
+            _add(blip.get(qn("r:embed")))
+        for imagedata in element.iter(vml_imagedata_tag):
+            _add(imagedata.get(qn("r:id")))
+        return images
 
     @staticmethod
     def _extract_paragraph_text(p_elem) -> str:

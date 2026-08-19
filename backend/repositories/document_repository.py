@@ -49,6 +49,8 @@ class DocumentRepository:
         error_message: str | None = None,
         page_count: int | None = None,
         chunk_count: int | None = None,
+        processed_chunk_count: int | None = None,
+        parse_duration_ms: int | None = None,
     ) -> None:
         """更新文档状态和相关字段。"""
         uuid.UUID(doc_id)  # 验证格式
@@ -59,6 +61,10 @@ class DocumentRepository:
             values["page_count"] = page_count
         if chunk_count is not None:
             values["chunk_count"] = chunk_count
+        if processed_chunk_count is not None:
+            values["processed_chunk_count"] = processed_chunk_count
+        if parse_duration_ms is not None:
+            values["parse_duration_ms"] = parse_duration_ms
         stmt = update(Document).where(Document.id == doc_id).values(**values)
         await self.session.execute(stmt)
         await self.session.commit()
@@ -157,6 +163,16 @@ class DocumentRepository:
                 char_count=len(meta.get("text", "")),
                 text_content=meta.get("text", ""),
                 milvus_pk=pk,
+                chunk_metadata={
+                    "chunk_type": meta.get("chunk_type", "text"),
+                    "source_chunk_index": meta.get("source_chunk_index", -1),
+                    "image_index": meta.get("image_index", 0),
+                    "object_key": meta.get("object_key", ""),
+                    "mime_type": meta.get("mime_type", ""),
+                    "image_refs": meta.get("image_refs", []),
+                    "heading": meta.get("heading", ""),
+                    "heading_path": meta.get("heading_path", ""),
+                },
             )
             chunks.append(chunk)
         self.session.add_all(chunks)

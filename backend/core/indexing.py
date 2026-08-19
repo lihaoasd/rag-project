@@ -66,6 +66,8 @@ async def build_index(
                 "chunk_index": meta.get("chunk_index", i),
                 "heading": meta.get("heading", ""),
                 "heading_path": meta.get("heading_path", ""),
+                "chunk_type": meta.get("chunk_type", "text"),
+                "source_chunk_index": meta.get("source_chunk_index", -1),
             },
             relationships={
                 NodeRelationship.SOURCE: RelatedNodeInfo(node_id=doc_id),
@@ -170,6 +172,8 @@ def chunk_documents(
         node.metadata.setdefault("chunk_index", i)
         node.metadata.setdefault("heading", "")          # PDF 无标题概念，Word 由 word_chunker 填充
         node.metadata.setdefault("heading_path", "")     # 同上
+        node.metadata.setdefault("chunk_type", "text")
+        node.metadata.setdefault("source_chunk_index", -1)
         # 将 text 加入 metadata，供 batch_create_chunks 使用
         node.metadata["text"] = node.text
 
@@ -230,6 +234,8 @@ async def insert_single_vector(kb_id: str, text: str, metadata: dict) -> str:
             "chunk_index": metadata.get("chunk_index", 0),
             "heading": metadata.get("heading", ""),
             "heading_path": metadata.get("heading_path", ""),
+            "chunk_type": metadata.get("chunk_type", "text"),
+            "source_chunk_index": metadata.get("source_chunk_index", -1),
         },
         relationships={
             NodeRelationship.SOURCE: RelatedNodeInfo(node_id=doc_id),

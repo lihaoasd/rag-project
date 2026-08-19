@@ -1,11 +1,12 @@
 """
 WordChunker 模块单元测试 — aggregate_paragraphs + chunk_blocks + word_chunk。
 """
-from core.parser import ParagraphItem
+from core.parser import ParagraphItem, WordImage
 from core.word_chunker import (
     aggregate_paragraphs,
     chunk_blocks,
     word_chunk,
+    word_chunk_blocks,
     LogicalBlock,
 )
 
@@ -209,3 +210,77 @@ class TestWordChunk:
         assert chunks == []
         assert metadatas == []
         assert nodes == []
+
+
+class TestWordChunkImages:
+    def test_image_chunk_generated_and_linked_to_source_text_chunk(self):
+        image = WordImage(
+            image_bytes=b"fake-png",
+            content_type="image/png",
+            object_key="kb/doc/images/a.png",
+            ocr_text="投标报价：100万元",
+            vision_text="这是一张报价表",
+        )
+        items = [
+            ParagraphItem(text="报价章节正文"),
+            ParagraphItem(text="", images=[image]),
+        ]
+
+        chunks, metadatas, nodes = word_chunk(
+            items,
+            doc_id="doc-1",
+            file_name="test.docx",
+        )
+
+        assert len(chunks) == 2
+        assert metadatas[0]["chunk_type"] == "text"
+        assert metadatas[0]["image_refs"][0]["image_index"] == 1
+        assert metadatas[0]["image_refs"][0]["image_chunk_index"] == 1
+        assert "[图片 1]" in chunks[0]
+
+        assert metadatas[1]["chunk_type"] == "image"
+        assert metadatas[1]["source_chunk_index"] == 0
+        assert metadatas[1]["object_key"] == "kb/doc/images/a.png"
+        assert "OCR识别：投标报价：100万元" in chunks[1]
+        assert "视觉描述：这是一张报价表" in chunks[1]
+
+    def test_image_only_paragraph_keeps_image_chunk(self):
+        image = WordImage(image_bytes=b"fake-png", content_type="image/png")
+        items = [ParagraphItem(text="", images=[image])]
+
+        chunks, metadatas, _ = word_chunk(items, "doc-1", "test.docx")
+
+        assert len(chunks) == 1
+        assert metadatas[0]["chunk_type"] == "image"
+        assert metadatas[0]["source_chunk_index"] == -1
+
+    def test_word_chunk_blocks_global_offsets(self):
+        image = WordImage(
+            image_bytes=b"fake-png",
+            content_type="image/png",
+            object_key="kb/doc/images/a.png",
+            ocr_text="OCR",
+            vision_text="Vision",
+        )
+        block = LogicalBlock(
+            heading="章节",
+            heading_level=1,
+            heading_path=["章节"],
+            paragraphs=["正文"],
+            images=[image],
+        )
+
+        chunks, metadatas, _ = word_chunk_blocks(
+            [block],
+            doc_id="doc-1",
+            file_name="test.docx",
+            start_chunk_index=5,
+            start_image_index=3,
+            text_chunk_offset=2,
+        )
+
+        assert metadatas[0]["chunk_index"] == 5
+        assert metadatas[1]["chunk_index"] == 6
+        assert metadatas[1]["source_chunk_index"] == 2
+        assert metadatas[0]["image_refs"][0]["image_index"] == 3
+        assert metadatas[0]["image_refs"][0]["image_chunk_index"] == 6

@@ -9,6 +9,7 @@ asyncio.to_thread() 放到线程池执行，避免阻塞 asyncio 事件循环。
 """
 import asyncio
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -19,14 +20,119 @@ from core.database import async_session
 from core.indexing import build_index, chunk_documents, delete_index
 from core.model_factory import resolve_model_config
 from core.parser import parse_document as parse_file, ParagraphItem
-from core.word_chunker import word_chunk
+from core.word_chunker import aggregate_paragraphs, word_chunk_blocks
 from repositories.document_repository import DocumentRepository
 from repositories.kb_repository import KnowledgeBaseRepository
+from services.image_recognition_service import process_word_images
 from utils import minio_client
 from utils.file_utils import get_file_extension, ensure_temp_dir
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+async def _cleanup_doc_images(kb_id: str, doc_id: str) -> None:
+    """best-effort 清理文档下的图片对象。"""
+    try:
+        await asyncio.to_thread(minio_client.delete_prefix, f"{kb_id}/{doc_id}/images/")
+    except Exception as e:
+        logger.error("清理文档图片失败: doc_id=%s, error=%s", doc_id, e)
+
+
+async def _store_chunk_batch(
+    doc_id: str,
+    kb_id: str,
+    metadatas: list[dict],
+    milvus_pks: list[str],
+    processed_count: int,
+) -> None:
+    """写入一批 chunk 到 PG，并更新文档进度。"""
+    async with async_session() as session:
+        doc_repo = DocumentRepository(session)
+        await doc_repo.batch_create_chunks(doc_id, kb_id, metadatas, milvus_pks)
+        await doc_repo.update_status(
+            doc_id,
+            "processing",
+            processed_chunk_count=processed_count,
+        )
+
+
+async def _parse_and_store_in_batches(
+    parsed,
+    file_type: str,
+    doc_id: str,
+    kb_id: str,
+    file_name: str,
+    ocr_config: dict | None,
+    vision_config: dict | None,
+) -> tuple[int, int]:
+    """按批次执行图片识别、分块、向量化与落库，返回 (chunk_count, page_count)。"""
+    batch_size = settings.parse_batch_size
+    current_chunk_index = 0
+    current_text_offset = 0
+    current_image_index = 1
+    last_text_chunk_index = -1
+
+    if file_type in ("docx", "doc"):
+        blocks = aggregate_paragraphs(parsed)
+        for i in range(0, len(blocks), batch_size):
+            batch_blocks = blocks[i : i + batch_size]
+            await process_word_images(
+                batch_blocks,
+                kb_id,
+                doc_id,
+                ocr_config=ocr_config,
+                vision_config=vision_config,
+            )
+            chunks, metadatas, _ = word_chunk_blocks(
+                batch_blocks,
+                doc_id,
+                file_name,
+                start_chunk_index=current_chunk_index,
+                start_image_index=current_image_index,
+                text_chunk_offset=current_text_offset,
+                last_text_chunk_index=last_text_chunk_index,
+            )
+            if not chunks:
+                continue
+
+            milvus_pks = await build_index(chunks, metadatas, kb_id)
+            current_chunk_index += len(chunks)
+            await _store_chunk_batch(
+                doc_id,
+                kb_id,
+                metadatas,
+                milvus_pks,
+                current_chunk_index,
+            )
+
+            text_count = sum(
+                1 for meta in metadatas if meta.get("chunk_type") == "text"
+            )
+            if text_count:
+                current_text_offset += text_count
+                last_text_chunk_index = current_text_offset - 1
+            current_image_index += sum(len(b.images) for b in batch_blocks)
+
+        return current_chunk_index, 1
+
+    for d in parsed:
+        d.metadata["doc_id"] = doc_id
+        d.metadata["file_name"] = file_name
+    chunks, metadatas, _ = chunk_documents(parsed)
+    for i in range(0, len(chunks), batch_size):
+        batch_chunks = chunks[i : i + batch_size]
+        batch_metas = metadatas[i : i + batch_size]
+        milvus_pks = await build_index(batch_chunks, batch_metas, kb_id)
+        current_chunk_index += len(batch_chunks)
+        await _store_chunk_batch(
+            doc_id,
+            kb_id,
+            batch_metas,
+            milvus_pks,
+            current_chunk_index,
+        )
+    return len(chunks), len(parsed)
 
 
 def _doc_to_dict(doc) -> dict:
@@ -40,6 +146,8 @@ def _doc_to_dict(doc) -> dict:
         "status": doc.status,
         "error_message": doc.error_message,
         "chunk_count": doc.chunk_count,
+        "processed_chunk_count": doc.processed_chunk_count,
+        "parse_duration_ms": doc.parse_duration_ms,
         "created_at": doc.created_at.isoformat() if doc.created_at else "",
     }
 
@@ -141,6 +249,7 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
     清理：finally 中删除临时文件
     """
     temp_path = None
+    parse_started_at = time.perf_counter()
 
     try:
         # 1. 获取文档记录
@@ -165,56 +274,55 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
 
         # 3. 解析文档
         ocr_config = await resolve_model_config(kb_id, "ocr")
+        vision_config = await resolve_model_config(kb_id, "vision")
         parsed = await parse_file(temp_path, file_type, ocr_config=ocr_config)
         if not parsed:
             raise ValueError("文档解析结果为空，可能是不支持的格式或文件损坏")
 
-        # 4. 文本切片 — Word 走段落聚合，PDF 走 SentenceSplitter
-        if file_type in ("docx", "doc"):
-            # Word: parsed 为 list[ParagraphItem]，走 word_chunker
-            chunks, metadatas, _ = word_chunk(
-                parsed, doc_id, doc.file_name,
-                chunk_size=None, chunk_overlap=None,
-            )
-            page_count = 1  # Word 无页码概念
-        else:
-            # PDF: parsed 为 list[LlamaDocument]，走 chunk_documents
-            for d in parsed:
-                d.metadata["doc_id"] = doc_id
-                d.metadata["file_name"] = doc.file_name
-            chunks, metadatas, _ = chunk_documents(parsed)
-            page_count = len(parsed)
+        # 4. 按批次处理图片识别、分块、向量化与落库
+        chunk_count, page_count = await _parse_and_store_in_batches(
+            parsed,
+            file_type,
+            doc_id,
+            kb_id,
+            doc.file_name,
+            ocr_config,
+            vision_config,
+        )
 
-        # 5. Embedding + Milvus 索引
-        milvus_pks = await build_index(chunks, metadatas, kb_id)
-
-        # 6. PG 写入切片记录 + 7. 更新状态 → completed
+        # 5. 更新状态 → completed
+        duration_ms = int((time.perf_counter() - parse_started_at) * 1000)
         async with async_session() as session:
             doc_repo = DocumentRepository(session)
             kb_repo = KnowledgeBaseRepository(session)
-
-            await doc_repo.batch_create_chunks(doc_id, kb_id, metadatas, milvus_pks)
-            chunk_count = len(chunks)
             await doc_repo.update_status(
                 doc_id,
                 "completed",
                 page_count=page_count,
                 chunk_count=chunk_count,
+                processed_chunk_count=chunk_count,
+                parse_duration_ms=duration_ms,
             )
-            # 8. 更新知识库文档计数
+            # 6. 更新知识库文档计数
             await kb_repo.increment_doc_count(kb_id)
 
         logger.info("文档解析完成: doc_id=%s, pages=%d, chunks=%d", doc_id, page_count, chunk_count)
 
     except Exception as e:
         error_msg = str(e)
+        duration_ms = int((time.perf_counter() - parse_started_at) * 1000)
         logger.error("文档解析失败: doc_id=%s, error=%s", doc_id, error_msg, exc_info=True)
 
         # 更新状态 → failed
         try:
             async with async_session() as session:
                 doc_repo = DocumentRepository(session)
-                await doc_repo.update_status(doc_id, "failed", error_message=error_msg)
+                await doc_repo.update_status(
+                    doc_id,
+                    "failed",
+                    error_message=error_msg,
+                    parse_duration_ms=duration_ms,
+                )
         except Exception as db_err:
             logger.error("更新文档失败状态异常: %s", db_err)
 
@@ -266,6 +374,7 @@ async def delete_document(kb_id: str, doc_id: str) -> bool:
         await asyncio.to_thread(minio_client.delete, doc.object_key)
     except Exception as e:
         logger.error("删除 MinIO 文件失败: %s", e, exc_info=True)
+    await _cleanup_doc_images(kb_id, doc_id)
 
     # 4. 更新知识库文档计数
     try:
@@ -290,6 +399,8 @@ def _chunk_to_dict(chunk) -> dict:
         "page_number": chunk.page_number,
         "char_count": chunk.char_count,
         "text_preview": (chunk.text_content or "")[:200],
+        "chunk_type": (chunk.chunk_metadata or {}).get("chunk_type", "text"),
+        "source_chunk_index": (chunk.chunk_metadata or {}).get("source_chunk_index", -1),
         "created_at": chunk.created_at.isoformat() if chunk.created_at else "",
     }
 
@@ -304,6 +415,7 @@ def _chunk_to_detail_dict(chunk) -> dict:
         "char_count": chunk.char_count,
         "text_content": chunk.text_content or "",
         "milvus_pk": chunk.milvus_pk,
+        "metadata": chunk.chunk_metadata or {},
         "created_at": chunk.created_at.isoformat() if chunk.created_at else "",
     }
 
@@ -343,6 +455,12 @@ async def delete_chunk(kb_id: str, chunk_id: str) -> bool:
 
     if chunk is None:
         return False
+
+    if chunk.chunk_metadata.get("chunk_type") == "image" and chunk.chunk_metadata.get("object_key"):
+        try:
+            await asyncio.to_thread(minio_client.delete, chunk.chunk_metadata["object_key"])
+        except Exception as e:
+            logger.error("删除图片对象失败: chunk_id=%s, error=%s", chunk_id, e, exc_info=True)
 
     # 2. Milvus 删除（best-effort，与现有 delete_document 模式一致）
     if chunk.milvus_pk is not None:
@@ -395,6 +513,8 @@ async def update_chunk(kb_id: str, chunk_id: str, new_text: str) -> dict:
         "file_name": "",
         "page_number": chunk.page_number,
         "chunk_index": chunk.chunk_index,
+        "chunk_type": (chunk.chunk_metadata or {}).get("chunk_type", "text"),
+        "source_chunk_index": (chunk.chunk_metadata or {}).get("source_chunk_index", -1),
     }
     try:
         new_milvus_pk = await insert_single_vector(kb_id, new_text, metadata)
@@ -427,6 +547,7 @@ async def rechunk_document(
         chunk_overlap: 新切片重叠大小（None 则用 settings 默认值）
     """
     temp_path = None
+    parse_started_at = time.perf_counter()
     cs = chunk_size or settings.chunk_size
     co = chunk_overlap or settings.chunk_overlap
 
@@ -450,6 +571,7 @@ async def rechunk_document(
 
         # 4. 删除旧向量（Milvus）
         await delete_index(kb_id, doc_id)
+        await _cleanup_doc_images(kb_id, doc_id)
 
         # 5. 从 MinIO 下载文件（同步 I/O，放到线程池）
         temp_dir = ensure_temp_dir(settings.temp_dir)
@@ -459,37 +581,33 @@ async def rechunk_document(
 
         # 6. 解析文档
         ocr_config = await resolve_model_config(kb_id, "ocr")
+        vision_config = await resolve_model_config(kb_id, "vision")
         parsed = await parse_file(temp_path, file_type, ocr_config=ocr_config)
         if not parsed:
             raise ValueError("文档解析结果为空")
 
-        # 7. 重切片（用新参数）— Word 走段落聚合，PDF 走 SentenceSplitter
-        if file_type in ("docx", "doc"):
-            chunks, metadatas, _ = word_chunk(
-                parsed, doc_id, doc.file_name,
-                chunk_size=cs, chunk_overlap=co,
-            )
-            page_count = 1
-        else:
-            for d in parsed:
-                d.metadata["doc_id"] = doc_id
-                d.metadata["file_name"] = doc.file_name
-            chunks, metadatas, _ = chunk_documents(parsed, chunk_size=cs, chunk_overlap=co)
-            page_count = len(parsed)
+        # 7. 按批次处理图片识别、分块、向量化与落库
+        chunk_count, page_count = await _parse_and_store_in_batches(
+            parsed,
+            file_type,
+            doc_id,
+            kb_id,
+            doc.file_name,
+            ocr_config,
+            vision_config,
+        )
 
-        # 8. 向量化 + 索引
-        milvus_pks = await build_index(chunks, metadatas, kb_id)
-
-        # 9. PG 写入新切片 + 更新状态
+        # 8. 更新状态
+        duration_ms = int((time.perf_counter() - parse_started_at) * 1000)
         async with async_session() as session:
             doc_repo = DocumentRepository(session)
-            await doc_repo.batch_create_chunks(doc_id, kb_id, metadatas, milvus_pks)
-            chunk_count = len(chunks)
             await doc_repo.update_status(
                 doc_id,
                 "completed",
                 page_count=page_count,
                 chunk_count=chunk_count,
+                processed_chunk_count=chunk_count,
+                parse_duration_ms=duration_ms,
             )
 
         logger.info(
@@ -499,11 +617,17 @@ async def rechunk_document(
 
     except Exception as e:
         error_msg = str(e)
+        duration_ms = int((time.perf_counter() - parse_started_at) * 1000)
         logger.error("重切片失败: doc_id=%s, error=%s", doc_id, error_msg, exc_info=True)
         try:
             async with async_session() as session:
                 doc_repo = DocumentRepository(session)
-                await doc_repo.update_status(doc_id, "failed", error_message=error_msg)
+                await doc_repo.update_status(
+                    doc_id,
+                    "failed",
+                    error_message=error_msg,
+                    parse_duration_ms=duration_ms,
+                )
         except Exception as db_err:
             logger.error("更新文档失败状态异常: %s", db_err)
 
@@ -523,6 +647,7 @@ async def reparse_document(kb_id: str, doc_id: str) -> None:
         - reparse_document: 清旧数据后重解析，文档计数不变
     """
     temp_path = None
+    parse_started_at = time.perf_counter()
 
     try:
         # 1. 获取文档记录
@@ -544,6 +669,7 @@ async def reparse_document(kb_id: str, doc_id: str) -> None:
 
         # 4. 删除旧向量（Milvus）
         await delete_index(kb_id, doc_id)
+        await _cleanup_doc_images(kb_id, doc_id)
 
         # 5. 从 MinIO 下载文件
         temp_dir = ensure_temp_dir(settings.temp_dir)
@@ -553,37 +679,33 @@ async def reparse_document(kb_id: str, doc_id: str) -> None:
 
         # 6. 解析文档
         ocr_config = await resolve_model_config(kb_id, "ocr")
+        vision_config = await resolve_model_config(kb_id, "vision")
         parsed = await parse_file(temp_path, file_type, ocr_config=ocr_config)
         if not parsed:
             raise ValueError("文档解析结果为空")
 
-        # 7. 切片 — Word 走段落聚合，PDF 走 SentenceSplitter
-        if file_type in ("docx", "doc"):
-            chunks, metadatas, _ = word_chunk(
-                parsed, doc_id, doc.file_name,
-                chunk_size=None, chunk_overlap=None,
-            )
-            page_count = 1
-        else:
-            for d in parsed:
-                d.metadata["doc_id"] = doc_id
-                d.metadata["file_name"] = doc.file_name
-            chunks, metadatas, _ = chunk_documents(parsed)
-            page_count = len(parsed)
+        # 7. 按批次处理图片识别、分块、向量化与落库
+        chunk_count, page_count = await _parse_and_store_in_batches(
+            parsed,
+            file_type,
+            doc_id,
+            kb_id,
+            doc.file_name,
+            ocr_config,
+            vision_config,
+        )
 
-        # 8. 向量化 + 索引
-        milvus_pks = await build_index(chunks, metadatas, kb_id)
-
-        # 9. PG 写入新切片 + 更新状态
+        # 8. 更新状态
+        duration_ms = int((time.perf_counter() - parse_started_at) * 1000)
         async with async_session() as session:
             doc_repo = DocumentRepository(session)
-            await doc_repo.batch_create_chunks(doc_id, kb_id, metadatas, milvus_pks)
-            chunk_count = len(chunks)
             await doc_repo.update_status(
                 doc_id,
                 "completed",
                 page_count=page_count,
                 chunk_count=chunk_count,
+                processed_chunk_count=chunk_count,
+                parse_duration_ms=duration_ms,
             )
 
         logger.info(
@@ -593,11 +715,17 @@ async def reparse_document(kb_id: str, doc_id: str) -> None:
 
     except Exception as e:
         error_msg = str(e)
+        duration_ms = int((time.perf_counter() - parse_started_at) * 1000)
         logger.error("重新解析失败: doc_id=%s, error=%s", doc_id, error_msg, exc_info=True)
         try:
             async with async_session() as session:
                 doc_repo = DocumentRepository(session)
-                await doc_repo.update_status(doc_id, "failed", error_message=error_msg)
+                await doc_repo.update_status(
+                    doc_id,
+                    "failed",
+                    error_message=error_msg,
+                    parse_duration_ms=duration_ms,
+                )
         except Exception as db_err:
             logger.error("更新文档失败状态异常: %s", db_err)
 

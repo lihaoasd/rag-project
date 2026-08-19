@@ -12,7 +12,7 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-SCENARIOS = ["rag_qa", "entity_extraction", "document_summary", "custom"]
+SCENARIOS = ["rag_qa", "entity_extraction", "document_summary", "custom", "image_recognition"]
 
 
 def _to_dict(pt: PromptTemplate) -> dict:

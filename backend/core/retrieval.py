@@ -140,6 +140,8 @@ async def retrieve(
             "file_name": node.metadata.get("file_name", ""),
             "page_number": node.metadata.get("page_number", 1),
             "chunk_index": node.metadata.get("chunk_index", 0),
+            "chunk_type": node.metadata.get("chunk_type", "text"),
+            "source_chunk_index": node.metadata.get("source_chunk_index", -1),
         })
 
     get_client().update_current_span(

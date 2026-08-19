@@ -55,6 +55,7 @@ def mock_async_session(mock_session):
         "services.chat_service.async_session",
         "services.search_service.async_session",
         "services.model_service.async_session",
+        "services.prompt_service.async_session",
         "core.model_factory.async_session",
     ]
     active_patches = []
@@ -78,11 +79,13 @@ def mock_async_session(mock_session):
 def mock_minio():
     """全局 mock MinIO 客户端操作。"""
     with patch("utils.minio_client.upload") as mock_upload, \
+         patch("utils.minio_client.upload_bytes") as mock_upload_bytes, \
          patch("utils.minio_client.download") as mock_download, \
          patch("utils.minio_client.delete") as mock_delete, \
          patch("utils.minio_client.delete_prefix") as mock_delete_prefix:
         yield {
             "upload": mock_upload,
+            "upload_bytes": mock_upload_bytes,
             "download": mock_download,
             "delete": mock_delete,
             "delete_prefix": mock_delete_prefix,

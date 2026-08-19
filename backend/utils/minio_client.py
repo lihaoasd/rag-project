@@ -1,6 +1,7 @@
 """
 MinIO 客户端封装 — 文档文件的上传、删除、批量清理。
 """
+from io import BytesIO
 from pathlib import Path
 
 from minio import Minio
@@ -51,6 +52,23 @@ def upload(object_key: str, file_path: Path, content_type: str = "application/oc
         content_type=content_type,
     )
     logger.debug("MinIO 上传成功: %s", object_key)
+
+
+def upload_bytes(
+    object_key: str,
+    data: bytes,
+    content_type: str = "application/octet-stream",
+) -> None:
+    """上传 bytes 到 MinIO，用于 Word 图片等内存数据。"""
+    client = _get_client()
+    client.put_object(
+        bucket_name=settings.minio_bucket,
+        object_name=object_key,
+        data=BytesIO(data),
+        length=len(data),
+        content_type=content_type,
+    )
+    logger.debug("MinIO bytes 上传成功: %s (%d bytes)", object_key, len(data))
 
 
 def download(object_key: str, file_path: Path) -> None:
