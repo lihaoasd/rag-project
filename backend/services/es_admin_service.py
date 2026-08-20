@@ -8,21 +8,28 @@ from config import settings
 from core import es_store
 from core.database import async_session
 from repositories.document_repository import DocumentRepository
+from repositories.kb_repository import KnowledgeBaseRepository
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 _REBUILD_BATCH = 100
+_DEFAULT_PAGE_SIZE = 20
 
 
-async def reconcile_status() -> dict:
+async def reconcile_status(page: int = 1, page_size: int = _DEFAULT_PAGE_SIZE) -> dict:
     """对账：PG（权威源）vs ES（派生数据）的切片数/文档级差异（只读）。
+
+    Args:
+        page: 知识库列表页码（从 1 开始）。
+        page_size: 每页知识库数量。
 
     Returns:
         {
           healthy, index, index_stats,           # ES 自身健康/存储
           pg_total, es_total, diff_count,         # 总数与差异库数
-          kbs: [{kb_id, pg, es, status, pg_docs, es_docs}],   # 全库三态
+          kbs: [{kb_id, kb_name, pg, es, status, pg_docs, es_docs}],  # 全库三态（分页）
+          kb_total,                              # 知识库总数（分页用）
           differences: [{kb_id, pg, es}],          # 兼容旧字段（非 ok 的库）
           doc_diffs: [{kb_id, doc_id, file_name, pg, es}],    # 文档级差异
           doc_diff_count,
@@ -45,6 +52,7 @@ async def reconcile_status() -> dict:
             "diff_count": 0,
             "differences": [],
             "kbs": [],
+            "kb_total": 0,
             "doc_diffs": [],
             "doc_diff_count": 0,
         }
@@ -58,6 +66,7 @@ async def reconcile_status() -> dict:
         pg_kb_docs = await repo.count_docs_by_kb()
         pg_doc_counts = await repo.count_chunks_by_doc()
         doc_meta = await repo.list_doc_meta()
+        kb_names = {kb.id: kb.name for kb in await KnowledgeBaseRepository(session).list_all()}
 
     # 1. 全库三态
     kbs: list[dict] = []
@@ -72,6 +81,7 @@ async def reconcile_status() -> dict:
             status = "residual"
         kbs.append({
             "kb_id": kb,
+            "kb_name": kb_names.get(kb, ""),
             "pg": pg,
             "es": es,
             "status": status,
@@ -84,8 +94,13 @@ async def reconcile_status() -> dict:
         for k in kbs
         if k["status"] != "ok"
     ]
+    kb_total = len(kbs)
 
-    # 2. 文档级差异（输出上限 500 条防超长响应）
+    # 2. 知识库列表分页（diff_count / kb_total 仍按全量统计）
+    start = (page - 1) * page_size
+    kbs = kbs[start : start + page_size]
+
+    # 3. 文档级差异（输出上限 500 条防超长响应）
     doc_diffs: list[dict] = []
     for doc_id in sorted(set(pg_doc_counts) | set(es_doc_counts)):
         pg = pg_doc_counts.get(doc_id, 0)
@@ -111,6 +126,7 @@ async def reconcile_status() -> dict:
         "diff_count": len(differences),
         "differences": differences,
         "kbs": kbs,
+        "kb_total": kb_total,
         "doc_diffs": doc_diffs,
         "doc_diff_count": len(doc_diffs),
     }

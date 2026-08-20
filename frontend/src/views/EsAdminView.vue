@@ -108,10 +108,13 @@
     <!-- 知识库对账（④ 全库三态） -->
     <div class="section-title">
       <span>知识库对账</span>
-      <span class="section-sub">共 {{ kbs.length }} 个知识库，{{ diffCount }} 个有差异</span>
+      <span class="section-sub">共 {{ kbTotal }} 个知识库，{{ diffCount }} 个有差异</span>
     </div>
     <el-table :data="kbs" border stripe v-loading="loading" class="mb">
       <el-table-column prop="kb_id" label="知识库 ID" min-width="260" show-overflow-tooltip />
+      <el-table-column label="知识库名称" min-width="200" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.kb_name || row.kb_id }}</template>
+      </el-table-column>
       <el-table-column prop="pg" label="PG 切片数" width="110" />
       <el-table-column prop="es" label="ES 文档数" width="110" />
       <el-table-column prop="pg_docs" label="PG 文档数" width="110" />
@@ -138,6 +141,17 @@
         </template>
       </el-table-column>
     </el-table>
+    <el-pagination
+      v-if="kbTotal > pageSize"
+      v-model:current-page="page"
+      v-model:page-size="pageSize"
+      :total="kbTotal"
+      :page-sizes="[10, 20, 50]"
+      layout="total, sizes, prev, pager, next"
+      @current-change="loadStatus"
+      @size-change="onPageSizeChange"
+      class="mb"
+    />
 
     <!-- 文档级差异（②） -->
     <div class="section-title">
@@ -178,10 +192,13 @@ const status = ref({})
 const loading = ref(false)
 const rebuildingAll = ref(false)
 const rebuildingKb = ref(null)
+const page = ref(1)
+const pageSize = ref(20)
 
 const indexStats = computed(() => status.value.index_stats || null)
 const diffCount = computed(() => status.value.diff_count ?? 0)
 const kbs = computed(() => status.value.kbs ?? [])
+const kbTotal = computed(() => status.value.kb_total ?? 0)
 const docDiffs = computed(() => status.value.doc_diffs ?? [])
 const docDiffCount = computed(() => status.value.doc_diff_count ?? 0)
 
@@ -197,12 +214,22 @@ function statusText(status) {
 async function loadStatus() {
   loading.value = true
   try {
-    status.value = await getEsStatus()
+    status.value = await getEsStatus(page.value, pageSize.value)
+    // 后端切片后当前页为空（如删除知识库）时回到第一页
+    if (status.value.kbs?.length === 0 && page.value > 1) {
+      page.value = 1
+      status.value = await getEsStatus(page.value, pageSize.value)
+    }
   } catch (err) {
     ElMessage.error(err?.response?.data?.detail || err?.message || '获取对账状态失败')
   } finally {
     loading.value = false
   }
+}
+
+function onPageSizeChange() {
+  page.value = 1
+  loadStatus()
 }
 
 async function confirmRebuild(kbId = null) {

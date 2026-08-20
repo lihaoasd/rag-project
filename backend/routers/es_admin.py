@@ -12,9 +12,9 @@ router = APIRouter(tags=["ES 管理"])
 
 
 @router.get("/api/es/status")
-async def es_status():
+async def es_status(page: int = 1, page_size: int = 20):
     """对账：各知识库 PG 切片数 vs ES 文档数差异（只读，不修改数据）。"""
-    return await es_admin_service.reconcile_status()
+    return await es_admin_service.reconcile_status(page=page, page_size=page_size)
 
 
 @router.post("/api/es/rebuild")
