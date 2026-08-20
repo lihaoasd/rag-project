@@ -18,30 +18,13 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def _resolve_retrieval_method(retrieval_method: str | None) -> bool:
-    """把检索方式参数解析为是否启用混合检索。"""
-    if retrieval_method is None:
-        return settings.retrieval_hybrid_enabled
-    if retrieval_method == "vector":
-        return False
-    if retrieval_method == "hybrid":
-        return True
+def _resolve_query_mode(retrieval_method: str | None) -> VectorStoreQueryMode:
+    """把检索策略解析为 Milvus 查询模式：dense=稠密向量，sparse=BM25 稀疏向量。"""
+    if retrieval_method in (None, "dense"):
+        return VectorStoreQueryMode.DEFAULT
+    if retrieval_method == "sparse":
+        return VectorStoreQueryMode.SPARSE
     raise ValueError(f"不支持的检索方式: {retrieval_method}")
-
-
-def _resolve_hybrid_ranker(
-    hybrid_ranker: str | None,
-    hybrid_weights: list[float] | None = None,
-) -> tuple[str, dict]:
-    """把融合策略参数解析为 MilvusVectorStore 支持的 ranker 配置。"""
-    if hybrid_ranker in (None, "rrf"):
-        return "RRFRanker", {}
-    if hybrid_ranker == "weighted":
-        weights = hybrid_weights if hybrid_weights is not None else [1.0, 1.0]
-        if len(weights) != 2:
-            raise ValueError("WeightedRanker 需要 [向量权重, 关键词权重] 两个权重")
-        return "WeightedRanker", {"weights": weights}
-    raise ValueError(f"不支持的混合检索融合策略: {hybrid_ranker}")
 
 
 @observe(as_type="retriever", capture_input=False, capture_output=False)
@@ -51,38 +34,27 @@ async def retrieve(
     top_k: int = 5,
     similarity_threshold: float = 0.6,
     retrieval_method: str | None = None,
-    hybrid_ranker: str | None = None,
-    hybrid_weights: list[float] | None = None,
 ) -> list[dict[str, Any]]:
-    """在指定知识库中执行语义检索。
+    """在指定知识库中执行单路检索。
 
     Args:
         query: 检索关键词或自然语言描述
         kb_id: 目标知识库 ID
         top_k: 返回的最相关结果数
-        similarity_threshold: 相似度阈值（IP 分数），低于此分数丢弃
-        retrieval_method: 检索方式：vector/hybrid，为空则沿用服务端配置
-        hybrid_ranker: 混合检索融合策略：rrf/weighted，仅 hybrid 生效
-        hybrid_weights: WeightedRanker 的 [向量权重, 关键词权重]
+        similarity_threshold: 相似度阈值（IP 分数），低于此分数丢弃；仅 dense 生效
+        retrieval_method: 检索策略：dense（稠密向量）/ sparse（BM25 稀疏向量），为空默认 dense
 
     Returns:
         按分数降序排列的结果列表:
         [{score, text, doc_id, file_name, page_number, chunk_index}, ...]
     """
-    hybrid = _resolve_retrieval_method(retrieval_method)
-    if hybrid:
-        ranker_name, ranker_params = _resolve_hybrid_ranker(
-            hybrid_ranker, hybrid_weights
-        )
-    else:
-        ranker_name, ranker_params = "RRFRanker", {}
+    mode = _resolve_query_mode(retrieval_method)
+    is_sparse = mode == VectorStoreQueryMode.SPARSE
     retrieval_metadata = {
-        "method": "hybrid" if hybrid else "vector",
+        "method": "sparse" if is_sparse else "dense",
         "kb_id": kb_id,
         "top_k": top_k,
         "similarity_threshold": similarity_threshold,
-        "hybrid_ranker": ranker_name,
-        "hybrid_ranker_params": ranker_params,
     }
 
     # 1. resolve Embedding 配置（维度 + client）
@@ -91,12 +63,7 @@ async def retrieve(
     embed_model = create_embedding(embed_config)
 
     # 2. 创建 vector_store + index
-    vector_store = get_vector_store(
-        kb_id,
-        dim,
-        hybrid_ranker=ranker_name,
-        hybrid_ranker_params=ranker_params,
-    )
+    vector_store = get_vector_store(kb_id, dim)
 
     # 检查 Collection 是否存在
     if vector_store.collection_name not in vector_store.client.list_collections():
@@ -110,20 +77,22 @@ async def retrieve(
 
     # 3. 构建 VectorStoreIndex + Retriever
     index = VectorStoreIndex.from_vector_store(vector_store, embed_model=embed_model)
-    query_mode = VectorStoreQueryMode.HYBRID if hybrid else VectorStoreQueryMode.DEFAULT
     retriever = index.as_retriever(
-        similarity_top_k=top_k, vector_store_query_mode=query_mode
+        similarity_top_k=top_k, vector_store_query_mode=mode
     )
 
-    # 4. 查询向量化
-    query_embedding = await embed_model.aget_query_embedding(query)
-    query_bundle = QueryBundle(query_str=query, embedding=query_embedding)
+    # 4. 查询向量化（sparse 用 BM25 内置函数，无需 embedding）
+    if is_sparse:
+        query_bundle = QueryBundle(query_str=query)
+    else:
+        query_embedding = await embed_model.aget_query_embedding(query)
+        query_bundle = QueryBundle(query_str=query, embedding=query_embedding)
 
     # 5. 检索
     nodes = await retriever.aretrieve(query_bundle)
 
-    # 6. 后处理：相似度阈值过滤（混合模式融合分数非 [0,1]，仅稠密模式适用）
-    if hybrid:
+    # 6. 后处理：相似度阈值过滤（BM25 稀疏分数非 [0,1]，仅稠密模式适用）
+    if is_sparse:
         filtered_nodes = nodes
     else:
         processor = SimilarityPostprocessor(similarity_cutoff=similarity_threshold)

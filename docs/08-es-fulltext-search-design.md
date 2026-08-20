@@ -7,7 +7,7 @@
 
 ### 1.1 背景
 
-当前检索能力：Milvus 稠密向量（`vector`）+ Milvus 内置 BM25 混合检索（`hybrid`）。关键词检索存在以下不足：
+当前检索能力：Milvus 稠密向量 + Milvus 内置 BM25 稀疏向量。关键词检索存在以下不足：
 
 - 分词为 jieba 通用词典，投标专业术语（资质名、公司名、项目编号）切分不准；
 - 无后端高亮（前端仅简单子串高亮）、无模糊/短语/同义词能力；
@@ -17,8 +17,8 @@
 
 1. 引入 **Elasticsearch + IK 中文分词** 作为全文检索引擎，提供精确关键词检索、短语匹配、后端高亮；
 2. **词库通过前端界面维护**，IK 远程词典热更新，实现"加词即生效"（受 IK 轮询间隔约束，见 §6.4）；
-3. 保留并融合现有向量检索：新增 `fulltext`（ES 纯关键词全文检索，**前端默认**）与 `hybrid_es`（向量 + ES 关键词 RRF 融合）检索方式；
-4. 对现有 `vector` / `hybrid` 检索与问答链路**零破坏**。
+3. 检索页改为**三路独立策略可多选**：`dense`（Milvus 稠密）、`sparse`（Milvus BM25 稀疏）、`fulltext`（ES 纯关键词全文检索），多选按 RRF 融合，默认仅勾选 `dense`；
+4. 问答链路（chat）保持纯稠密检索**不受影响**。
 
 ### 1.3 边界（本期不做）
 
@@ -37,7 +37,7 @@
                 ▼                          ▼
 ┌────────────────────────────────────────────────────────────┐
 │                   后端 (FastAPI)                             │
-│  search_service（fulltext / hybrid_es / RRF 融合 / rerank）    │
+│  search_service（dense/sparse/fulltext 三路召回 + RRF + rerank）│
 │  lexicon_service（词库 CRUD + 导出 IK 词典 + 查询扩展）        │
 │  document_service（解析批次 → 三处落库：PG + Milvus + ES）     │
 └───────┬───────────────┬──────────────────┬─────────────────┘
@@ -55,7 +55,7 @@
 数据流：
 
 - **写入**：文档解析 → 切片 → 每批次同时写 PG（`document_chunks`）、Milvus（向量）、ES（`bid_chunks`）；
-- **检索**：search 页按 `retrieval_method` 选择 ES / Milvus / 融合路径；
+- **检索**：search 页按 `retrieval_methods` 多选策略（dense/sparse/fulltext）走 Milvus / ES / RRF 融合路径；
 - **词库**：前端 → `lexicon_terms` 表 → 导出为 IK 远程词典（ES 轮询热更新）+ 后端内存缓存（查询扩展）。
 
 ## 3. Elasticsearch 部署
@@ -305,18 +305,18 @@ expanded = expand(query, terms)
 
 ### 7.1 检索方式扩展
 
-`SearchRequest.retrieval_method` 扩展为四值（前端下拉同步，**默认 `fulltext`**）：
+`SearchRequest.retrieval_methods` 为**三路独立策略，可多选**（前端三复选，**默认仅勾选 `dense`**）：
 
 | 值 | 含义 | 路径 | 高亮 |
 |----|------|------|------|
-| `vector` | Milvus 稠密（现状，不变） | `retrieve()` | 前端子串 |
-| `hybrid` | Milvus 稠密+稀疏（现状，不变） | `retrieve()` | 前端子串 |
-| `fulltext` | **ES 纯关键词全文检索（新增，前端默认）** | `es_search()` | **ES 高亮** |
-| `hybrid_es` | **Milvus 稠密 + ES 关键词 RRF（新增）** | `retrieve(vector)` + `es_search()` + RRF | ES 高亮 |
+| `dense` | Milvus 稠密向量 | `retrieve(method="dense")`（DEFAULT mode） | 前端子串 |
+| `sparse` | Milvus 内置 BM25 稀疏向量（jieba 分词） | `retrieve(method="sparse")`（SPARSE mode，免 embedding、无阈值语义） | 前端子串 |
+| `fulltext` | ES 纯关键词全文检索 | `es_search()` | **ES 高亮** |
 
-- chat 链路（`retrieve_and_rank`）不感知新方式，`retrieve()` 内部校验逻辑不变；
-- `search_service.search()` 按 `retrieval_method` 分支，`fulltext` / `hybrid_es` 不再把该参数透传给 `retrieve()`；
-- 请求未传 `retrieval_method` 时沿用 `settings.retrieval_default_method`（默认 `fulltext`），前端下拉默认值同。
+- **单选**：直接返回该路结果，不做 RRF，分数保留原始语义（IP 相似度 / Milvus BM25 / ES BM25）；
+- **多选**：各路独立召回后 Python 端 RRF 融合（k=60），如 `dense+fulltext`（等价旧 `hybrid_es`）、`dense+sparse`（等价旧 `hybrid`）；
+- chat 链路（`retrieve_and_rank`）不感知多策略，`retrieve()` 默认 `dense` 纯稠密；
+- 请求未传 `retrieval_methods` 时沿用 `settings.retrieval_default_methods`（默认 `["dense"]`），前端默认勾选同。旧四值模式（`vector`/`hybrid`/`hybrid_es`）与 `weighted` 融合已移除。
 
 ### 7.2 ES 查询构造（core/es_store.py）
 
@@ -345,41 +345,44 @@ es_search(query, kb_ids, top_k, highlight=True):
                "highlight": "".join(h["highlight"]["text"]) if highlight else None } for h in hits ]
 ```
 
-### 7.3 RRF 融合（hybrid_es）
+### 7.3 RRF 融合（多选）
 
-复用现有 RRF 思路，Python 端实现（k=60）：
+单选直返、多选融合，Python 端实现（k=60）：
 
 ```
 伪代码：
-vector_hits = await retrieve(query, kb_id, top_k, retrieval_method="vector", ...)   # 逐 kb 并发
-es_hits     = await es_search(query, kb_ids, top_k=top_k*factor)
-merged = rrf_merge(vector_hits, es_hits, k=60)   # score = Σ 1/(k + rank_i)
+ranked_lists = []
+if "dense"    in methods: ranked_lists.append(retrieve(query, kb_ids, top_k, method="dense",  threshold=vector_gate))  # 逐 kb 并发
+if "sparse"   in methods: ranked_lists.append(retrieve(query, kb_ids, top_k, method="sparse"))                         # 逐 kb 并发，无阈值
+if "fulltext" in methods: ranked_lists.append(es_search(query, kb_ids, top_k=top_k*factor))                            # 词库扩展 + 高亮
+all_hits = ranked_lists[0] if len(ranked_lists) == 1 else rrf_merge(ranked_lists, k=60)
 # 之后与现有 rerank 逻辑衔接：可选 rerank 收口 + 阈值过滤
 ```
 
 - 与现有 `search_service` 的"并发检索多 kb → 合并排序 → 可选 rerank"结构兼容，新增一路召回即可；
-- fulltext 模式无 [0,1] 阈值语义：`similarity_threshold` 对 fulltext 不生效（文档注明）；hybrid_es 的阈值由 rerank/向量侧控制。
+- sparse/fulltext 无 [0,1] 阈值语义：`similarity_threshold` 对 sparse/fulltext 不生效（文档注明）；多选时的阈值由 rerank/向量侧控制。
 
 ### 7.4 高亮
 
 - `SearchResponse` 结果项新增 `highlight: str | None`（含 `<em>` 标签的片段）；
-- 前端 `SearchView`：`fulltext` / `hybrid_es` 模式优先渲染后端 highlight（`v-html`，样式 `<em>` 高亮），`vector` / `hybrid` 保留现有 `highlightText` 前端逻辑。
+- 前端 `SearchView`：勾选 `fulltext` 时优先渲染后端 highlight（`v-html`，样式 `<em>` 高亮），其余策略保留现有 `highlightText` 前端逻辑。
 
 ### 7.5 检索参数
 
 | 配置项 | 默认 | 说明 |
 |--------|------|------|
-| `retrieval_default_method` | `fulltext` | 未传 `retrieval_method` 时默认的检索方式 |
+| `retrieval_default_methods` | `["dense"]` | 未传 `retrieval_methods` 时默认勾选的策略列表 |
 | `es_top_k_factor` | 2 | fulltext 召回量 = top_k × factor（给 RRF/rerank 留余量） |
 | `rrf_k` | 60 | RRF 常数 |
 | `es_highlight_enabled` | True | 是否返回高亮片段 |
+| `retrieval_hybrid_enabled` | True | Milvus 稀疏字段开关（sparse 策略依赖，默认开启） |
 
 ## 8. API 接口变更汇总
 
 ### 8.1 SearchRequest（models/schemas.py）
 
 ```python
-retrieval_method: Literal["vector", "fulltext", "hybrid", "hybrid_es"] | None = None
+retrieval_methods: list[Literal["dense", "sparse", "fulltext"]] | None = None
 highlight: bool = True
 ```
 
@@ -392,7 +395,7 @@ highlight: bool = True
 | 路由文件 | 端点 |
 |----------|------|
 | `routers/lexicon.py` | `/api/lexicon/terms` CRUD、`/import`、`/export/ik-dict`、`/export/csv`、`/stats` |
-| `routers/search.py` | `/api/search`、`/api/knowledge-bases/{kb_id}/search` 新增 `retrieval_method` 分支（同端点扩展） |
+| `routers/search.py` | `/api/search`、`/api/knowledge-bases/{kb_id}/search` 透传 `retrieval_methods`（同端点扩展） |
 | `routers/es_admin.py` | `/api/es/status`、`/api/es/rebuild`（对账/重建） |
 
 ## 9. 数据库迁移
@@ -411,7 +414,7 @@ es_username: str = ""
 es_password: str = ""
 
 # === 检索 ===
-retrieval_default_method: str = "fulltext"  # 未传 retrieval_method 时的默认方式
+retrieval_default_methods: list[str] = ["dense"]  # 未传 retrieval_methods 时的默认策略列表
 retrieval_es_top_k_factor: int = 2          # fulltext 召回放大系数
 retrieval_rrf_k: int = 60                   # RRF 常数
 
@@ -430,9 +433,9 @@ es_reconcile_interval_hours: int = 24       # 对账间隔（小时）
 | 2 | `uv add elasticsearch`；config.py 新增 ES 配置 | 配置加载正常 |
 | 3 | `core/es_store.py`：AsyncElasticsearch 单例、`ensure_index()`（mapping/settings）、`bulk_index()`、`delete_by_doc/kb/chunk()`、`es_search()`（含 highlight） | 单元测试（mock client）+ 手动起 ES 冒烟 |
 | 4 | `document_service._parse_and_store_in_batches` 插入 ES 写入；delete/rechunk/reparse/update_chunk 各流程补 ES 清理 | 上传文档 → PG/Milvus/ES 三处 count 一致；删除文档 → ES 同步删除 |
-| 5 | `search_service` 扩展 fulltext / hybrid_es 分支 + RRF；schemas 扩展 retrieval_method/highlight；routers/search.py 透传；`retrieval_default_method` 默认 fulltext | 三种检索方式返回正确、高亮片段返回 |
+| 5 | `search_service` 三路召回（dense/sparse/fulltext）+ 单选直返/多选 RRF；schemas 扩展 retrieval_methods/highlight；routers/search.py 透传；`retrieval_default_methods` 默认 `["dense"]` | 三种检索方式返回正确、高亮片段返回、多选融合正确 |
 | 6 | `0013_lexicon_terms` 迁移 + model + repository + `lexicon_service` + `routers/lexicon.py`（CRUD/import/export/ik-dict）+ 内存缓存与失效 | CRUD 单测；`/api/lexicon/export/ik-dict` 输出正确 |
-| 7 | 前端：`api/lexicon.js`、`LexiconView.vue`、路由 `/lexicon`；`api/search.js` + `SearchView.vue` 检索方式下拉四值 + 后端高亮渲染 | `npm run build` 通过；页面操作词库增删改查 |
+| 7 | 前端：`api/lexicon.js`、`LexiconView.vue`、路由 `/lexicon`；`api/search.js` + `SearchView.vue` 检索策略三复选（默认 dense）+ 后端高亮渲染 + 分数展示适配 | `npm run build` 通过；页面操作词库增删改查 |
 | 8 | `routers/es_admin.py` 对账/重建 + **每日定时对账任务**（main.py lifespan 启动后台协程，按 `es_reconcile_interval_hours` 执行 status 对账，差异写日志/告警） | 对账接口显示差异、rebuild 后一致、定时任务按周期执行 |
 | 9 | 测试与回归：pytest 全量 + 手动回归 vector/hybrid/chat | 见 §12 |
 
@@ -441,22 +444,22 @@ es_reconcile_interval_hours: int = 24       # 对账间隔（小时）
 ### 12.1 单元测试
 
 - `es_store`：查询构造（mock `AsyncElasticsearch`）、bulk 写入、删除、highlight 解析；
-- `search_service`：keyword / hybrid_es 分支、RRF 融合正确性（构造固定 rank 验证分数）、retrieval_method 透传；
+- `search_service`：单选直返（不 RRF）、多选 RRF 融合正确性（构造固定 rank 验证分数）、retrieval_methods 透传、sparse 免阈值；
 - `lexicon`：CRUD、重复 term 409、CSV 导入、ik-dict 导出格式、查询扩展逻辑；
-- 现有 `vector` / `hybrid` 测试保持通过（回归）。
+- 现有 `dense` 路径测试保持通过（回归）。
 
 ### 12.2 集成验证
 
 1. 上传一份 PDF：PG `document_chunks` count == Milvus count == ES count；
-2. `retrieval_method=fulltext`：精确术语（如"建筑工程施工总承包一级"）命中，返回 highlight 片段（`<em>` 包裹）；不传 `retrieval_method` 时默认走 fulltext；
-3. `retrieval_method=hybrid_es`：语义 + 关键词融合，top-k 相关性与单一 vector 对比不劣化；
+2. `retrieval_methods=["fulltext"]`：精确术语（如"建筑工程施工总承包一级"）命中，返回 highlight 片段（`<em>` 包裹）；默认（不传）仅走 `dense`；
+3. `retrieval_methods=["dense","fulltext"]`：语义 + 关键词融合，top-k 相关性与单一 dense 对比不劣化；
 4. 词库：前端新增词条"甲建设集团"→ `/api/lexicon/export/ik-dict` 包含该词；查询"甲建设集团"经查询扩展命中含"甲公司"的文档（即时生效）；重启/等待 IK 轮询后 `_analyze` 验证 IK 分词正确；
 5. 删除文档/知识库：ES 数据同步清理；`/api/es/status` 无差异；每日定时对账任务运行后无告警；
 6. 问答（chat）回归：SSE 正常，来源引用正常（确认 chat 未受影响）。
 
 ### 12.3 前端
 
-`npm run build` 通过；检索页四模式切换、高亮渲染、词库管理页 CRUD 正常。
+`npm run build` 通过；检索页三策略复选（默认 dense）、多选 RRF、高亮渲染、词库管理页 CRUD 正常。
 
 ## 13. 风险与应对
 
@@ -466,19 +469,19 @@ es_reconcile_interval_hours: int = 24       # 对账间隔（小时）
 | 词库分词生效延迟 ~1 小时 | IK `remote_ext_dict` 轮询间隔固定 | 查询扩展端即时生效兜底；文档明示限制；如不满足再做自定义加载（后续） |
 | ES 内存占用 | 与 Milvus、PostgreSQL 叠加 | `ES_JAVA_OPTS=-Xms1g -Xmx1g`；数据量级小时单节点足够；监控堆使用 |
 | 双写一致性 | ES 写入/删除失败导致数据漂移 | best-effort + 日志 + `/api/es/status` 对账 + `/api/es/rebuild` 重建 |
-| 分数体系差异 | keyword 无 [0,1] 阈值；RRF 分数非相似度 | 阈值仅对 vector/rerank 生效；前端分数展示按检索方式说明 |
-| 两套关键词能力并存（Milvus BM25 vs ES）语义混淆 | chat 用 Milvus hybrid，search 页新增 ES 路径 | 明确边界：chat 不动；search 页新增 keyword/hybrid_es；文档与前端标注 |
+| 分数体系差异 | BM25/RRF 分数无 [0,1] 阈值；sparse/fulltext 无阈值语义 | 阈值仅对 dense/rerank 生效；前端按策略显示分数（dense/rerank 百分比，sparse/fulltext/RRF 原始数字） |
+| 两套关键词能力并存（Milvus BM25 vs ES）语义混淆 | chat 用纯稠密，search 页三策略可自由组合 | 明确边界：chat 不动；search 页 dense/sparse/fulltext 三复选 + RRF；文档与前端标注 |
 | 授权 | Elastic License（Basic 免费） | 单节点 Basic 功能足够；如需 Apache 2.0 可评估 OpenSearch+IK 移植版（本期不做） |
 
 ## 14. 开放问题（评审确认）
 
-1. ~~前端检索方式默认值~~ → **已确认：新增 `fulltext` 类型（纯 ES 全文检索）作为前端与后端默认**（`retrieval_default_method=fulltext`，原 `keyword` 命名并入 `fulltext`）；
+1. ~~前端检索方式默认值~~ → 早期确认 `fulltext` 为默认（`retrieval_default_method=fulltext`）；**已被 §14.1 多选模型取代**（默认仅勾 `dense`，`fulltext` 降为可选策略之一）；
 2. ~~词库分类固定枚举还是自由文本~~ → **已确认：自由文本**；
 3. ~~`/api/es/rebuild` 触发方式~~ → **已确认：手动 rebuild + 每日定时对账告警**（`es_reconcile_enabled` / `es_reconcile_interval_hours=24`，对账差异写日志/告警，不自动 rebuild）;
 4. ~~ES 数据卷是否纳入备份范围~~ → **已确认：不备份 ES 卷，恢复时从 PG rebuild 重建**（备份 = PG + MinIO，见 §5.6）。
 
-### 14.1 新增检索方式类型（默认值）— 已定
+### 14.1 检索策略多选模型 — 已定
 
-- **类型名**：`fulltext`（纯 ES 全文检索，行为即原 `keyword`，`es_search()` + ES 高亮）；
-- **默认值**：前端下拉默认 `fulltext`；后端未传 `retrieval_method` 时用 `settings.retrieval_default_method = "fulltext"`；
-- 类型清单最终为：`vector` / `hybrid` / `fulltext` / `hybrid_es`（见 §7.1）。
+- **策略清单**：`dense`（Milvus 稠密）/ `sparse`（Milvus BM25 稀疏）/ `fulltext`（ES 全文，`es_search()` + ES 高亮）；
+- **多选规则**：单选直返（保留原始分数），多选 Python 端 RRF 融合（k=60）；
+- **默认值**：前端三复选默认仅勾 `dense`；后端未传 `retrieval_methods` 时用 `settings.retrieval_default_methods = ["dense"]`（原四值模式 `vector`/`hybrid`/`fulltext`/`hybrid_es` 与 weighted 融合已移除）。

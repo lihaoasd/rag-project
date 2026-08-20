@@ -10,14 +10,14 @@ from tests.helpers import KB_ID, DOC_ID
 
 
 @pytest.fixture(autouse=True)
-def _default_vector():
-    """本文件聚焦 Milvus 向量/hybrid 路径，固定默认检索方式为 vector；
-    真实默认值（fulltext）由 test_search_es.py 覆盖。"""
+def _default_dense():
+    """本文件聚焦 Milvus 稠密路径，固定默认策略为 dense；
+    真实默认值（retrieval_default_methods）由 test_search_es.py 覆盖。"""
     from config import settings
-    original = settings.retrieval_default_method
-    settings.retrieval_default_method = "vector"
+    original = settings.retrieval_default_methods
+    settings.retrieval_default_methods = ["dense"]
     yield
-    settings.retrieval_default_method = original
+    settings.retrieval_default_methods = original
 
 
 class TestSearch:
@@ -60,33 +60,124 @@ class TestSearch:
         assert mock_retrieve.call_args.kwargs["top_k"] == 5
 
     @pytest.mark.asyncio
-    async def test_search_passes_retrieval_method(self, mock_retrieve):
-        """检索方式参数应透传到 retrieve。"""
+    async def test_search_passes_dense_method(self, mock_retrieve):
+        """dense 策略应透传到 retrieve。"""
         mock_retrieve.return_value = []
 
         await search_service.search(
             kb_ids=[KB_ID],
             query="test",
-            retrieval_method="vector",
+            retrieval_methods=["dense"],
         )
 
-        assert mock_retrieve.call_args.kwargs["retrieval_method"] == "vector"
+        assert mock_retrieve.call_args.kwargs["retrieval_method"] == "dense"
 
     @pytest.mark.asyncio
-    async def test_search_passes_hybrid_ranker_params(self, mock_retrieve):
-        """混合检索融合策略与权重应透传到 retrieve。"""
+    async def test_search_passes_sparse_method_without_threshold(self, mock_retrieve):
+        """sparse 策略透传到 retrieve，且不传相似度阈值（BM25 分数无 [0,1] 语义）。"""
         mock_retrieve.return_value = []
 
         await search_service.search(
             kb_ids=[KB_ID],
             query="test",
-            retrieval_method="hybrid",
-            hybrid_ranker="weighted",
-            hybrid_weights=[0.7, 0.3],
+            retrieval_methods=["sparse"],
+            similarity_threshold=0.6,
         )
 
-        assert mock_retrieve.call_args.kwargs["hybrid_ranker"] == "weighted"
-        assert mock_retrieve.call_args.kwargs["hybrid_weights"] == [0.7, 0.3]
+        assert mock_retrieve.call_args.kwargs["retrieval_method"] == "sparse"
+        assert "similarity_threshold" not in mock_retrieve.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_single_method_returns_directly_without_rrf(self, mock_retrieve):
+        """单选 dense 时直接返回该路结果，不做 RRF 融合（分数保留原始语义）。"""
+        mock_retrieve.return_value = [{
+            "score": 0.88,
+            "text": "文本",
+            "doc_id": DOC_ID,
+            "file_name": "test.pdf",
+            "page_number": 1,
+            "chunk_index": 3,
+            "kb_id": KB_ID,
+        }]
+
+        result = await search_service.search(
+            kb_ids=[KB_ID], query="test", retrieval_methods=["dense"],
+        )
+
+        assert result["total"] == 1
+        assert result["results"][0]["score"] == 0.88  # 未被 RRF 改写
+        assert result["results"][0]["chunk_index"] == 3
+
+    @pytest.mark.asyncio
+    async def test_single_method_sorts_by_score_across_kbs(self, mock_retrieve):
+        """单选 dense 多知识库时，拼接后的结果仍应按分数降序（跨 kb 全局排序）。"""
+        async def _side_effect(**kwargs):
+            if kwargs["kb_id"] == "kb_a":
+                return [{
+                    "score": 0.5, "text": "低分", "doc_id": DOC_ID,
+                    "file_name": "a.pdf", "page_number": 1, "chunk_index": 0,
+                    "kb_id": "kb_a",
+                }]
+            return [{
+                "score": 0.9, "text": "高分", "doc_id": DOC_ID,
+                "file_name": "b.pdf", "page_number": 1, "chunk_index": 0,
+                "kb_id": "kb_b",
+            }]
+        mock_retrieve.side_effect = _side_effect
+
+        result = await search_service.search(
+            kb_ids=["kb_a", "kb_b"], query="test", retrieval_methods=["dense"],
+        )
+
+        assert [r["score"] for r in result["results"]] == [0.9, 0.5]
+        assert result["results"][0]["kb_id"] == "kb_b"
+
+    @pytest.mark.asyncio
+    async def test_multiple_methods_merge_with_rrf(self, mock_retrieve):
+        """多选（dense+sparse）时两路召回按 RRF 融合。"""
+        lexicon_cache = {}
+        from services import lexicon_service
+        lexicon_service._cache = lexicon_cache
+        try:
+            dense_hits = [
+                {"score": 0.9, "text": "向量文本0", "doc_id": DOC_ID,
+                 "file_name": "t.pdf", "page_number": 1, "chunk_index": 0,
+                 "chunk_type": "text", "source_chunk_index": -1, "kb_id": KB_ID},
+            ]
+            sparse_hits = [
+                {"score": 5.0, "text": "稀疏文本1", "doc_id": DOC_ID,
+                 "file_name": "t.pdf", "page_number": 1, "chunk_index": 1,
+                 "chunk_type": "text", "source_chunk_index": -1, "kb_id": KB_ID},
+            ]
+
+            async def _side_effect(**kwargs):
+                return dense_hits if kwargs.get("retrieval_method") == "dense" else sparse_hits
+            mock_retrieve.side_effect = _side_effect
+
+            result = await search_service.search(
+                kb_ids=[KB_ID], query="测试", retrieval_methods=["dense", "sparse"],
+            )
+
+            assert mock_retrieve.await_count == 2  # 两路各一次
+            assert result["total"] == 2
+            # dense chunk0：rank0 → 1/61；sparse chunk1：rank0 → 1/61，k=60
+            assert abs(result["results"][0]["score"] - round(1.0 / 61, 4)) < 1e-6
+        finally:
+            lexicon_service._cache = None
+
+    @pytest.mark.asyncio
+    async def test_invalid_method_raises(self, mock_retrieve):
+        with pytest.raises(ValueError):
+            await search_service.search(
+                kb_ids=[KB_ID], query="x", retrieval_methods=["graph"]
+            )
+
+    @pytest.mark.asyncio
+    async def test_empty_methods_raises(self, mock_retrieve):
+        with pytest.raises(ValueError):
+            await search_service.search(
+                kb_ids=[KB_ID], query="x", retrieval_methods=[]
+            )
 
     @pytest.mark.asyncio
     async def test_search_no_rerank_uses_similarity_threshold(self, mock_retrieve):
@@ -120,8 +211,8 @@ class TestSearchWithRerank:
         with patch("core.retrieval.create_reranker", return_value=reranker), \
              patch("services.search_service.model_service.get_model",
                    new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
-                                              "model": "bge-reranker", "api_base": "http://x",
-                                              "api_key": None, "params": {}})):
+                                               "model": "bge-reranker", "api_base": "http://x",
+                                               "api_key": None, "params": {}})):
             result = await search_service.search(
                 kb_ids=[KB_ID], query="测试", top_k=10, rerank_model_id="r1",
             )
@@ -166,8 +257,8 @@ class TestSearchWithRerank:
         with patch("core.retrieval.create_reranker", return_value=reranker), \
              patch("services.search_service.model_service.get_model",
                    new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
-                                              "model": "bge-reranker", "api_base": "http://x",
-                                              "api_key": None, "params": {}})):
+                                               "model": "bge-reranker", "api_base": "http://x",
+                                               "api_key": None, "params": {}})):
             result = await search_service.search(
                 kb_ids=[KB_ID], query="测试", top_k=10, rerank_model_id="r1",
                 similarity_threshold=0.6,
@@ -194,8 +285,8 @@ class TestSearchWithRerank:
         with patch("core.retrieval.create_reranker", return_value=reranker), \
              patch("services.search_service.model_service.get_model",
                    new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
-                                              "model": "bge-reranker", "api_base": "http://x",
-                                              "api_key": None, "params": {}})):
+                                               "model": "bge-reranker", "api_base": "http://x",
+                                               "api_key": None, "params": {}})):
             await search_service.search(
                 kb_ids=[KB_ID], query="测试", top_k=10, rerank_model_id="r1",
                 rerank_top_n=2,
@@ -206,27 +297,8 @@ class TestSearchWithRerank:
         assert called_docs == ["文本0", "文本1"]
 
     @pytest.mark.asyncio
-    async def test_search_rerank_vector_threshold_gate(self, mock_retrieve):
-        """显式传 rerank_vector_threshold 时应作为向量门槛传入 retrieve。"""
-        mock_retrieve.return_value = []
-        reranker = MagicMock()
-        reranker.arerank = AsyncMock(return_value=[])
-
-        with patch("core.retrieval.create_reranker", return_value=reranker), \
-             patch("services.search_service.model_service.get_model",
-                   new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
-                                              "model": "bge-reranker", "api_base": "http://x",
-                                              "api_key": None, "params": {}})):
-            await search_service.search(
-                kb_ids=[KB_ID], query="测试", top_k=10, rerank_model_id="r1",
-                similarity_threshold=0.6, rerank_vector_threshold=0.8,
-            )
-
-        assert mock_retrieve.call_args.kwargs["similarity_threshold"] == 0.8
-
-    @pytest.mark.asyncio
     async def test_search_rerank_default_vector_gate_is_zero(self, mock_retrieve):
-        """有 rerank 且不传 rerank_vector_threshold 时，向量门槛应为 0（全召回交给 rerank）。"""
+        """有 rerank 时，向量门槛应为 0（全召回交给 rerank）。"""
         mock_retrieve.return_value = []
         reranker = MagicMock()
         reranker.arerank = AsyncMock(return_value=[])
@@ -234,8 +306,8 @@ class TestSearchWithRerank:
         with patch("core.retrieval.create_reranker", return_value=reranker), \
              patch("services.search_service.model_service.get_model",
                    new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
-                                              "model": "bge-reranker", "api_base": "http://x",
-                                              "api_key": None, "params": {}})):
+                                               "model": "bge-reranker", "api_base": "http://x",
+                                               "api_key": None, "params": {}})):
             await search_service.search(
                 kb_ids=[KB_ID], query="测试", top_k=10, rerank_model_id="r1",
                 similarity_threshold=0.75,
@@ -253,8 +325,8 @@ class TestSearchWithRerank:
         with patch("core.retrieval.create_reranker", return_value=reranker), \
              patch("services.search_service.model_service.get_model",
                    new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
-                                              "model": "bge-reranker", "api_base": "http://x",
-                                              "api_key": None, "params": {}})):
+                                               "model": "bge-reranker", "api_base": "http://x",
+                                               "api_key": None, "params": {}})):
             await search_service.search(
                 kb_ids=[KB_ID], query="测试", top_k=5, rerank_model_id="r1",
                 rerank_top_n=20,

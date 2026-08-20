@@ -4,8 +4,8 @@ MilvusVectorStore 工厂 — 统一创建/获取知识库 Collection 实例。
 每个知识库一个 Collection（kb_{kb_id}），使用 IVF_FLAT 索引。
 Schema、Collection、Index 均由 MilvusVectorStore 自动管理（overwrite=False）。
 
-开启 retrieval_hybrid_enabled 时，额外启用 Milvus 内置 BM25 稀疏检索
-（SPARSE_FLOAT_VECTOR 字段 + BM25 函数 + jieba 中文分词），检索时走稠密+稀疏融合。
+开启 retrieval_hybrid_enabled 时，启用 Milvus 内置 BM25 稀疏字段
+（SPARSE_FLOAT_VECTOR 字段 + BM25 函数 + jieba 中文分词），供 sparse 检索策略使用。
 """
 from llama_index.vector_stores.milvus import MilvusVectorStore
 from llama_index.vector_stores.milvus.utils import BM25BuiltInFunction
@@ -38,8 +38,6 @@ SCALAR_FIELD_TYPES = [
 def get_vector_store(
     kb_id: str,
     dim: int | None = None,
-    hybrid_ranker: str = "RRFRanker",
-    hybrid_ranker_params: dict | None = None,
 ) -> MilvusVectorStore:
     """为指定知识库创建或获取 MilvusVectorStore 实例。
 
@@ -65,7 +63,4 @@ def get_vector_store(
             output_field_names="sparse_embedding",
             analyzer_params={"tokenizer": "jieba"},
         )
-        kwargs["hybrid_ranker"] = hybrid_ranker
-        if hybrid_ranker_params:
-            kwargs["hybrid_ranker_params"] = hybrid_ranker_params
     return MilvusVectorStore(**kwargs)

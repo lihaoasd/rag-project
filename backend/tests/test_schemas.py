@@ -167,24 +167,21 @@ class TestSearchRequest:
         assert req.query == "测试查询"
         assert req.top_k == 10  # 默认值
         assert req.similarity_threshold == 0.6  # 默认值
-        assert req.retrieval_method is None  # 默认值
-        assert req.hybrid_ranker is None  # 默认值
-        assert req.hybrid_weights is None  # 默认值
+        assert req.retrieval_methods is None  # 默认值
         assert req.rerank_top_n == 5  # 默认值
-        assert req.rerank_vector_threshold is None  # 默认值
 
     def test_valid_retrieval_methods(self):
-        req = SearchRequest(query="测试查询", retrieval_method="vector")
-        assert req.retrieval_method == "vector"
+        req = SearchRequest(query="测试查询", retrieval_methods=["dense"])
+        assert req.retrieval_methods == ["dense"]
 
-        req = SearchRequest(query="测试查询", retrieval_method="hybrid")
-        assert req.retrieval_method == "hybrid"
+        req = SearchRequest(query="测试查询", retrieval_methods=["sparse"])
+        assert req.retrieval_methods == ["sparse"]
 
-        req = SearchRequest(query="测试查询", retrieval_method="fulltext")
-        assert req.retrieval_method == "fulltext"
+        req = SearchRequest(query="测试查询", retrieval_methods=["fulltext"])
+        assert req.retrieval_methods == ["fulltext"]
 
-        req = SearchRequest(query="测试查询", retrieval_method="hybrid_es")
-        assert req.retrieval_method == "hybrid_es"
+        req = SearchRequest(query="测试查询", retrieval_methods=["dense", "sparse", "fulltext"])
+        assert req.retrieval_methods == ["dense", "sparse", "fulltext"]
 
     def test_valid_highlight_default(self):
         req = SearchRequest(query="测试查询")
@@ -193,46 +190,25 @@ class TestSearchRequest:
         req = SearchRequest(query="测试查询", highlight=False)
         assert req.highlight is False
 
-    def test_valid_hybrid_ranker_params(self):
-        req = SearchRequest(
-            query="测试查询",
-            retrieval_method="hybrid",
-            hybrid_ranker="weighted",
-            hybrid_weights=[0.7, 0.3],
-        )
-        assert req.hybrid_ranker == "weighted"
-        assert req.hybrid_weights == [0.7, 0.3]
-
     def test_invalid_retrieval_method_raises_error(self):
         with pytest.raises(ValidationError):
-            SearchRequest(query="测试查询", retrieval_method="graph")
+            SearchRequest(query="测试查询", retrieval_methods=["graph"])
 
-    def test_invalid_hybrid_ranker_raises_error(self):
         with pytest.raises(ValidationError):
-            SearchRequest(query="测试查询", hybrid_ranker="score")
-
-    def test_invalid_hybrid_weights_length_raises_error(self):
-        with pytest.raises(ValidationError):
-            SearchRequest(query="测试查询", hybrid_weights=[0.5])
+            SearchRequest(query="测试查询", retrieval_methods=["dense", "graph"])
 
     def test_valid_custom_params(self):
         req = SearchRequest(
             query="测试查询",
             top_k=5,
             similarity_threshold=0.8,
-            retrieval_method="vector",
-            hybrid_ranker="rrf",
-            hybrid_weights=[1.0, 1.0],
+            retrieval_methods=["dense", "fulltext"],
             rerank_top_n=30,
-            rerank_vector_threshold=0.7,
         )
         assert req.top_k == 5
         assert req.similarity_threshold == 0.8
-        assert req.retrieval_method == "vector"
-        assert req.hybrid_ranker == "rrf"
-        assert req.hybrid_weights == [1.0, 1.0]
+        assert req.retrieval_methods == ["dense", "fulltext"]
         assert req.rerank_top_n == 30
-        assert req.rerank_vector_threshold == 0.7
 
     def test_missing_query_raises_error(self):
         with pytest.raises(ValidationError):

@@ -8,12 +8,9 @@ export function search({
   query,
   top_k,
   similarity_threshold,
-  retrieval_method,
-  hybrid_ranker,
-  hybrid_weights,
+  retrieval_methods,
   rerank_model_id,
   rerank_top_n,
-  rerank_vector_threshold,
   highlight = true,
 }) {
   return apiClient
@@ -22,12 +19,9 @@ export function search({
       query,
       top_k: top_k || 10,
       similarity_threshold: similarity_threshold || 0.6,
-      retrieval_method: retrieval_method ?? null,
-      hybrid_ranker: hybrid_ranker ?? null,
-      hybrid_weights: hybrid_weights ?? null,
+      retrieval_methods: retrieval_methods ?? null,
       rerank_model_id: rerank_model_id || null,
       rerank_top_n: rerank_top_n ?? 5,
-      rerank_vector_threshold: rerank_vector_threshold ?? null,
       highlight,
     })
     .then((res) => res.data)
@@ -40,9 +34,7 @@ export function searchSingle(kbId, {
   query,
   top_k,
   similarity_threshold,
-  retrieval_method,
-  hybrid_ranker,
-  hybrid_weights,
+  retrieval_methods,
   highlight = true,
 }) {
   return apiClient
@@ -50,9 +42,7 @@ export function searchSingle(kbId, {
       query,
       top_k: top_k || 10,
       similarity_threshold: similarity_threshold || 0.6,
-      retrieval_method: retrieval_method ?? null,
-      hybrid_ranker: hybrid_ranker ?? null,
-      hybrid_weights: hybrid_weights ?? null,
+      retrieval_methods: retrieval_methods ?? null,
       highlight,
     })
     .then((res) => res.data)

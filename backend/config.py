@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 5
     retrieval_similarity_threshold: float = 0.6
     retrieval_rerank_threshold: float = 0.8
-    retrieval_hybrid_enabled: bool = True  # 混合检索开关（稠密 + BM25 稀疏融合，RRF）
+    retrieval_hybrid_enabled: bool = True  # Milvus 稀疏字段开关（BM25 稀疏策略依赖；关闭时 sparse 不可用）
 
     # === Elasticsearch 全文检索配置 ===
     es_host: str = "localhost"
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     es_highlight_enabled: bool = True     # 检索是否返回高亮片段
 
     # === 检索方式 ===
-    retrieval_default_method: str = "fulltext"  # 未传 retrieval_method 时的默认方式
+    retrieval_default_methods: list[str] = ["dense"]  # 未传 retrieval_methods 时默认勾选的策略（dense/sparse/fulltext）
     retrieval_es_top_k_factor: int = 2          # fulltext 召回放大系数
     retrieval_rrf_k: int = 60                   # RRF 常数
 

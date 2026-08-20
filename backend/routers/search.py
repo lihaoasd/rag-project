@@ -28,12 +28,9 @@ async def search_multi(body: SearchRequest):
             query=body.query,
             top_k=body.top_k,
             similarity_threshold=body.similarity_threshold,
-            retrieval_method=body.retrieval_method,
-            hybrid_ranker=body.hybrid_ranker,
-            hybrid_weights=body.hybrid_weights,
+            retrieval_methods=body.retrieval_methods,
             rerank_model_id=body.rerank_model_id,
             rerank_top_n=body.rerank_top_n,
-            rerank_vector_threshold=body.rerank_vector_threshold,
             highlight=body.highlight,
         )
         logger.info("检索完成: total=%d", result.get("total", 0))
@@ -58,12 +55,9 @@ async def search_single(kb_id: str, body: SearchRequest):
             query=body.query,
             top_k=body.top_k,
             similarity_threshold=body.similarity_threshold,
-            retrieval_method=body.retrieval_method,
-            hybrid_ranker=body.hybrid_ranker,
-            hybrid_weights=body.hybrid_weights,
+            retrieval_methods=body.retrieval_methods,
             rerank_model_id=body.rerank_model_id,
             rerank_top_n=body.rerank_top_n,
-            rerank_vector_threshold=body.rerank_vector_threshold,
             highlight=body.highlight,
         )
         logger.info("检索完成: total=%d", result.get("total", 0))

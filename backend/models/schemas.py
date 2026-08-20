@@ -65,26 +65,13 @@ class SearchRequest(BaseModel):
     top_k: int = Field(10, ge=1, le=50, description="向量检索候选数量（也是无重排时的返回条数上限）")
     similarity_threshold: float = Field(0.6, ge=0, le=1, description="相似度阈值")
     kb_ids: list[str] | None = Field(None, description="知识库 ID 列表，支持多知识库检索")
-    retrieval_method: Literal["vector", "fulltext", "hybrid", "hybrid_es"] | None = Field(
+    retrieval_methods: list[Literal["dense", "sparse", "fulltext"]] | None = Field(
         None,
-        description="检索方式：vector=纯向量，hybrid=向量+BM25混合，fulltext=ES全文检索，hybrid_es=向量+ES关键词RRF；不传则沿用服务端默认（retrieval_default_method）",
+        description="检索策略（可多选）：dense=稠密向量，sparse=稀疏向量(BM25)，fulltext=ES全文检索；多选时按 RRF 融合，单选直接返回该路结果；不传则沿用服务端默认（retrieval_default_methods）",
     )
-    highlight: bool = Field(True, description="是否返回高亮片段（fulltext/hybrid_es 生效）")
-    hybrid_ranker: Literal["rrf", "weighted"] | None = Field(
-        None,
-        description="混合检索融合策略：rrf=RRFRanker，weighted=WeightedRanker；仅 hybrid 模式生效",
-    )
-    hybrid_weights: list[float] | None = Field(
-        None,
-        min_length=2,
-        max_length=2,
-        description="权重融合策略的 [向量权重, 关键词权重]，仅 weighted 模式生效",
-    )
+    highlight: bool = Field(True, description="是否返回高亮片段（fulltext 生效）")
     rerank_model_id: str | None = Field(None, description="排序模型配置 ID，为空则不做重排")
     rerank_top_n: int = Field(5, ge=0, le=30, description="进入排序模型的向量候选数量")
-    rerank_vector_threshold: float | None = Field(
-        None, ge=0, le=1, description="进入排序模型的最低向量相似度，为空则等于 similarity_threshold"
-    )
 
 
 class SearchResultItem(BaseModel):
@@ -99,7 +86,7 @@ class SearchResultItem(BaseModel):
     source_chunk_index: int = -1
     kb_id: str = ""
     kb_name: str = ""
-    highlight: str | None = Field(None, description="ES 高亮片段（含 <em> 标签），非 fulltext/hybrid_es 为 null")
+    highlight: str | None = Field(None, description="ES 高亮片段（含 <em> 标签），非 fulltext 为 null")
 
 
 class SearchResponse(BaseModel):

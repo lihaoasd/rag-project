@@ -1,5 +1,39 @@
 # 修改记录
 
+## 2026-08-20
+
+- 需求：修复单选检索结果未按分数排序的问题（多知识库场景下逐 kb 拼接后未做全局降序排序）。
+- 改动：`services/search_service.py` `search()` 单选分支补 `all_hits.sort(key=lambda x: x["score"], reverse=True)`（dense/sparse 跨 kb 需全局排序；fulltext 的 ES 本身有序，排序无副作用）；`tests/test_search_service.py` 新增 `test_single_method_sorts_by_score_across_kbs`（先写复现用例验证失败，修复后通过）。
+- 验证：后端全量测试 458 passed；前端无改动。
+
+## 2026-08-20
+
+- 需求：取消检索页"自定义向量门槛"（前端勾选+滑块与后端 `rerank_vector_threshold` 参数全链路移除）。
+- 改动：
+  - `models/schemas.py`：`SearchRequest` 移除 `rerank_vector_threshold`；
+  - `services/search_service.py`：`search()` 移除该参数；向量门槛简化为"有排序模型时 0.0（全召回交给 rerank），否则 similarity_threshold"；
+  - `routers/search.py`：两端点不再透传该参数；
+  - 前端 `SearchView.vue`：移除"自定义向量门槛"勾选与滑块（rerank 区保留提示文案"向量门槛 = 相似度阈值；有排序模型时全量召回交给排序模型"）；`api/search.js` 移除该字段；
+  - 测试：`test_search_service.py` 删除 `test_search_rerank_vector_threshold_gate`，`test_schemas.py` 删除相关断言。
+- 验证：后端全量测试 457 passed；前端 `npm run build` 通过。
+
+## 2026-08-20
+
+- 需求：检索参数整改——原四选一互斥模式（`vector`/`hybrid`/`fulltext`/`hybrid_es`）改为**三路独立策略可多选**（`dense` 稠密向量 / `sparse` 稀疏向量 / `fulltext` 全文检索），多选按 Python 端 RRF 融合（k=60），单选直接返回该路结果（保留原始分数语义）；默认仅勾选稠密向量；移除旧模式与 weighted 权重融合。
+- 方案：`docs/plan/24-retrieval-methods-multiselect-plan.md`。
+- 改动：
+  - `config.py`：`retrieval_default_method` → `retrieval_default_methods: list[str] = ["dense"]`；`retrieval_hybrid_enabled` 语义更新为 Milvus 稀疏字段开关；
+  - `models/schemas.py`：`SearchRequest.retrieval_method` → `retrieval_methods: list[Literal["dense","sparse","fulltext"]] | None`；移除 `hybrid_ranker`/`hybrid_weights`；
+  - `core/vector_store.py`：`get_vector_store` 移除 ranker 透传；
+  - `core/retrieval.py`：`_resolve_retrieval_method`/`_resolve_hybrid_ranker` → `_resolve_query_mode`（dense→DEFAULT / sparse→SPARSE）；`retrieve()` 移除 hybrid_ranker/hybrid_weights，**sparse 免 embedding 计算、跳过相似度阈值过滤**（BM25 分数非 [0,1]）；`retrieve_and_rank`（问答链路）保持纯稠密不变；
+  - `services/search_service.py`：`search()` 参数改 `retrieval_methods`；抽出 `_recall_milvus`（dense/sparse 逐 kb 并发）与 `_recall_fulltext`（词库扩展+高亮）；**单选直返 / 多选 RRF**；`retrieval_methods=None` 用默认，显式空列表报错；
+  - `routers/search.py`：两个端点透传 `retrieval_methods`；
+  - 前端：`api/search.js` 参数改 `retrieval_methods`（数组）并移除 hybrid 字段；`SearchView.vue` 检索方式下拉改**三复选**（默认勾选稠密向量）、移除融合策略/权重 UI、结果分数展示适配（rerank/dense 显示百分比，sparse/fulltext 单选与 RRF 多选显示原始数字，修复 BM25 2400%/RRF 3% 失真）；
+  - 测试：`test_schemas.py`/`test_search_router.py`/`test_search_service.py`/`test_search_es.py`/`test_retrieval.py` 全部按新参数重构，新增单选直返、多选 RRF（dense+sparse、dense+fulltext、sparse+fulltext）、sparse 免阈值、空列表报错等用例；
+  - 文档：`docs/08` §1/§7/§8/§10/§11/§12/§13/§14 更新为三策略多选模型；`docs/plan/24` 新增。
+- 验证：后端全量测试 458 passed；前端 `npm run build` 通过。
+- 说明：sparse 依赖 Collection 已有稀疏字段（部署默认 `retrieval_hybrid_enabled=True` 创建，无需重建）；不向后兼容旧客户端参数（属预期，前后端同步整改）。
+
 ## 2026-08-19
 
 - 需求：ES 对账页增加详细统计——①集群/索引状态卡、②文档级差异明细（下钻到具体文档含文件名）、④全库三态对账展示。

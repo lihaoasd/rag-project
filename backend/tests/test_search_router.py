@@ -56,7 +56,7 @@ class TestSearch:
             assert data["total"] == 2
             assert len(data["results"]) == 2
 
-    def test_search_passes_retrieval_method(self, client):
+    def test_search_passes_retrieval_methods(self, client):
         with patch("routers.search.search_service.search",
                    new_callable=AsyncMock) as mock_search:
             mock_search.return_value = {
@@ -66,31 +66,10 @@ class TestSearch:
             }
             response = client.post(
                 f"/api/knowledge-bases/{KB_ID}/search",
-                json={"query": "测试查询", "retrieval_method": "vector"},
+                json={"query": "测试查询", "retrieval_methods": ["dense", "fulltext"]},
             )
             assert response.status_code == 200
-            assert mock_search.call_args.kwargs["retrieval_method"] == "vector"
-
-    def test_search_passes_hybrid_ranker_params(self, client):
-        with patch("routers.search.search_service.search",
-                   new_callable=AsyncMock) as mock_search:
-            mock_search.return_value = {
-                "query": "测试查询",
-                "total": 0,
-                "results": [],
-            }
-            response = client.post(
-                f"/api/knowledge-bases/{KB_ID}/search",
-                json={
-                    "query": "测试查询",
-                    "retrieval_method": "hybrid",
-                    "hybrid_ranker": "weighted",
-                    "hybrid_weights": [0.7, 0.3],
-                },
-            )
-            assert response.status_code == 200
-            assert mock_search.call_args.kwargs["hybrid_ranker"] == "weighted"
-            assert mock_search.call_args.kwargs["hybrid_weights"] == [0.7, 0.3]
+            assert mock_search.call_args.kwargs["retrieval_methods"] == ["dense", "fulltext"]
 
     def test_search_passes_highlight(self, client):
         with patch("routers.search.search_service.search",
@@ -102,10 +81,17 @@ class TestSearch:
             }
             response = client.post(
                 f"/api/knowledge-bases/{KB_ID}/search",
-                json={"query": "测试查询", "retrieval_method": "fulltext", "highlight": False},
+                json={"query": "测试查询", "retrieval_methods": ["fulltext"], "highlight": False},
             )
             assert response.status_code == 200
             assert mock_search.call_args.kwargs["highlight"] is False
+
+    def test_search_invalid_method_returns_422(self, client):
+        response = client.post(
+            f"/api/knowledge-bases/{KB_ID}/search",
+            json={"query": "测试查询", "retrieval_methods": ["graph"]},
+        )
+        assert response.status_code == 422
 
     def test_search_empty_results(self, client):
         with patch("routers.search.search_service.search",
