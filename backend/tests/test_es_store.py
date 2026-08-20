@@ -232,3 +232,78 @@ class TestDelete:
         assert client.delete_by_query.await_args.kwargs["query"] == {
             "term": {"kb_id": KB_ID}
         }
+
+
+class TestStats:
+    @pytest.mark.asyncio
+    async def test_kb_stats(self):
+        client = _make_client()
+        client.search.return_value = {
+            "aggregations": {
+                "by_kb": {
+                    "buckets": [
+                        {"key": KB_ID, "doc_count": 10, "docs": {"value": 3}},
+                        {"key": "kb2", "doc_count": 5, "docs": {"value": 2}},
+                    ]
+                }
+            }
+        }
+        with patch("core.es_store.get_client", return_value=client):
+            result = await es_store.kb_stats()
+        assert result == {KB_ID: {"chunks": 10, "docs": 3}, "kb2": {"chunks": 5, "docs": 2}}
+
+    @pytest.mark.asyncio
+    async def test_kb_stats_failure_returns_empty(self):
+        client = _make_client()
+        client.search.side_effect = Exception("es down")
+        with patch("core.es_store.get_client", return_value=client):
+            assert await es_store.kb_stats() == {}
+
+    @pytest.mark.asyncio
+    async def test_count_by_doc(self):
+        client = _make_client()
+        client.search.return_value = {
+            "aggregations": {
+                "by_doc": {
+                    "buckets": [
+                        {"key": DOC_ID, "doc_count": 3},
+                        {"key": "doc2", "doc_count": 5},
+                    ]
+                }
+            }
+        }
+        with patch("core.es_store.get_client", return_value=client):
+            result = await es_store.count_by_doc()
+        assert result == {DOC_ID: 3, "doc2": 5}
+
+    @pytest.mark.asyncio
+    async def test_index_stats(self):
+        client = _make_client()
+        client.cat = MagicMock()
+        client.cat.indices = AsyncMock(
+            return_value=[
+                {
+                    "health": "green",
+                    "docs.count": "1260",
+                    "docs.deleted": "2",
+                    "store.size": "12.5kb",
+                    "segments.count": "3",
+                }
+            ]
+        )
+        with patch("core.es_store.get_client", return_value=client):
+            result = await es_store.index_stats()
+        assert result == {
+            "health": "green",
+            "docs_count": 1260,
+            "deleted_docs": 2,
+            "store_size": "12.5kb",
+            "segments": 3,
+        }
+
+    @pytest.mark.asyncio
+    async def test_index_stats_failure_returns_none(self):
+        client = _make_client()
+        client.cat.indices.side_effect = Exception("es down")
+        with patch("core.es_store.get_client", return_value=client):
+            assert await es_store.index_stats() is None

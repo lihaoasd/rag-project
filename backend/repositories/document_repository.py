@@ -232,6 +232,36 @@ class DocumentRepository:
         ).all()
         return {kb_id: cnt for kb_id, cnt in rows}
 
+    async def count_chunks_by_doc(self) -> dict[str, int]:
+        """按文档统计切片数：{doc_id: count}（文档级对账用）。"""
+        rows = (
+            await self.session.execute(
+                select(DocumentChunk.doc_id, func.count(DocumentChunk.id)).group_by(
+                    DocumentChunk.doc_id
+                )
+            )
+        ).all()
+        return {str(doc_id): cnt for doc_id, cnt in rows}
+
+    async def count_docs_by_kb(self) -> dict[str, int]:
+        """按知识库统计文档数（ES 对账用）。"""
+        rows = (
+            await self.session.execute(
+                select(Document.kb_id, func.count(Document.id)).group_by(Document.kb_id)
+            )
+        ).all()
+        return {kb_id: cnt for kb_id, cnt in rows}
+
+    async def list_doc_meta(self) -> dict[str, dict]:
+        """全部文档元数据：{doc_id: {"kb_id": ..., "file_name": ...}}（文档级对账用）。"""
+        rows = (
+            await self.session.execute(select(Document.id, Document.kb_id, Document.file_name))
+        ).all()
+        return {
+            str(doc_id): {"kb_id": kb_id, "file_name": file_name}
+            for doc_id, kb_id, file_name in rows
+        }
+
     async def get_chunk_by_id(self, chunk_id: str) -> DocumentChunk | None:
         """按 ID 获取单个切片。"""
         try:

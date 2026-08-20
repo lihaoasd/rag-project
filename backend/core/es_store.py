@@ -332,20 +332,64 @@ async def es_search(
     return hits
 
 
-async def count_by_kb() -> dict[str, int]:
-    """按知识库统计 ES 文档数（对账用）。ES 不可用时返回空 dict。"""
+async def kb_stats() -> dict[str, dict]:
+    """按知识库统计 ES 数据：{kb_id: {"chunks": 切片数, "docs": 文档数}}（对账用）。"""
     client = get_client()
     try:
         resp = await client.search(
             index=settings.es_index_name,
             size=0,
-            aggs={"by_kb": {"terms": {"field": "kb_id", "size": 1000}}},
+            aggs={
+                "by_kb": {
+                    "terms": {"field": "kb_id", "size": 1000},
+                    "aggs": {"docs": {"cardinality": {"field": "doc_id"}}},
+                }
+            },
         )
         buckets = resp.get("aggregations", {}).get("by_kb", {}).get("buckets", [])
+        return {
+            b["key"]: {"chunks": b["doc_count"], "docs": b["docs"]["value"]}
+            for b in buckets
+        }
+    except Exception as e:
+        logger.warning("ES 按库统计失败（可能未启动）: %s", e)
+        return {}
+
+
+async def count_by_doc() -> dict[str, int]:
+    """统计每个文档的 ES 切片数：{doc_id: count}（文档级对账用）。"""
+    client = get_client()
+    try:
+        resp = await client.search(
+            index=settings.es_index_name,
+            size=0,
+            aggs={"by_doc": {"terms": {"field": "doc_id", "size": 10000}}},
+        )
+        buckets = resp.get("aggregations", {}).get("by_doc", {}).get("buckets", [])
         return {b["key"]: b["doc_count"] for b in buckets}
     except Exception as e:
-        logger.warning("ES 统计失败（可能未启动）: %s", e)
+        logger.warning("ES 按文档统计失败（可能未启动）: %s", e)
         return {}
+
+
+async def index_stats() -> dict | None:
+    """ES 索引健康/存储统计（对账页展示用）。ES 不可用时返回 None。"""
+    client = get_client()
+    try:
+        resp = await client.cat.indices(index=settings.es_index_name, format="json")
+        if not resp:
+            return None
+        r = resp[0]
+        return {
+            "health": r.get("health", "unknown"),
+            "docs_count": int(r.get("docs.count", 0) or 0),
+            "deleted_docs": int(r.get("docs.deleted", 0) or 0),
+            "store_size": r.get("store.size", ""),
+            "segments": int(r.get("segments.count", 0) or 0),
+        }
+    except Exception as e:
+        logger.warning("ES 索引统计失败（可能未启动）: %s", e)
+        return None
 
 
 async def ping() -> bool:

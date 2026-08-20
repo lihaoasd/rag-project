@@ -45,6 +45,11 @@ const routes = [
     name: 'Lexicon',
     component: () => import('@/views/LexiconView.vue'),
   },
+  {
+    path: '/es-admin',
+    name: 'EsAdmin',
+    component: () => import('@/views/EsAdminView.vue'),
+  },
 ]
 
 const router = createRouter({

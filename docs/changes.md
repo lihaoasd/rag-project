@@ -2,6 +2,24 @@
 
 ## 2026-08-19
 
+- 需求：ES 对账页增加详细统计——①集群/索引状态卡、②文档级差异明细（下钻到具体文档含文件名）、④全库三态对账展示。
+- 改动：
+  - `core/es_store.py`：`count_by_kb` 替换为 `kb_stats`（按库统计切片数+文档数）；新增 `count_by_doc`（按文档统计切片数）、`index_stats`（health/docs/deleted/store/segments）；
+  - `repositories/document_repository.py`：新增 `count_chunks_by_doc`、`count_docs_by_kb`、`list_doc_meta`；
+  - `services/es_admin_service.py`：`reconcile_status` 重构——返回 `index_stats`、`kbs`（全库三态 ok/missing/residual + pg_docs/es_docs）、`doc_diffs`（文档级差异，上限 500）、`doc_diff_count`；ES 不可达时提前返回（连接问题单独表达，不误报数据差异）；
+  - `main.py`：`es_reconcile_loop` 对 ES 不可达单独告警；
+  - `frontend/src/views/EsAdminView.vue`：新增索引状态统计卡、全库对账表（三态标签+文档数+按库重建）、文档级差异表、ES 连接异常提示；
+  - 测试：`test_es_store` 增 stats 用例、`test_document_repository` 增 3 个统计用例、新增 `test_es_admin_service.py`（对账三态/文档级/ES 不可达）。
+- 验证：后端全量测试 460 passed；前端 `npm run build` 通过；线上接口已生效（3 库全部 ok，文档级差异 0）。
+
+## 2026-08-19
+
+- 需求：定时对账保持"仅告警"（不自动 rebuild），前端新增 ES 对账管理页——手动检查对账状态，发现差异后由用户确认再重建索引。
+- 改动：新增 `frontend/src/api/esAdmin.js`（`getEsStatus` / `rebuildEs`，支持按 kb 或全部）；新增 `frontend/src/views/EsAdminView.vue`（ES 连接/PG/ES/差异数统计卡片、差异表（缺数据/有残留标注）、"重建该库"与"重建全部"均带确认弹窗、重建后自动刷新对账）；`router/index.js` 新增 `/es-admin` 路由；`AppLayout.vue` 侧边栏新增"ES 对账"入口（`DataAnalysis` 图标）。
+- 验证：前端 `npm run build` 通过（EsAdminView 已打包）；后端无改动（复用既有 `/api/es/status`、`/api/es/rebuild` 接口），全量测试 449 passed 不受影响。
+
+## 2026-08-19
+
 - 需求：修复 ES 对账任务异常 `NameError: name 'func' is not defined`（`document_repository.count_chunks_by_kb` 使用 `func.count` 但未导入）。
 - 改动：`repositories/document_repository.py` 导入补 `func`；`tests/test_document_repository.py` 新增 `list_chunks_by_kb` / `count_chunks_by_kb` 用例（按现有 MagicMock result 风格）。
 - 验证：受影响测试 43 passed；后端全量测试 449 passed。

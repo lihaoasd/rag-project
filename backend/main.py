@@ -23,7 +23,12 @@ async def es_reconcile_loop() -> None:
     while True:
         try:
             status = await es_admin_service.reconcile_status()
-            if status.get("diff_count", 0) > 0:
+            if not status.get("healthy"):
+                logger.warning(
+                    "ES 对账：Elasticsearch 不可达（index=%s）",
+                    status.get("index"),
+                )
+            elif status.get("diff_count", 0) > 0:
                 logger.warning(
                     "ES 对账发现差异: %d 个知识库（%s）",
                     status["diff_count"],

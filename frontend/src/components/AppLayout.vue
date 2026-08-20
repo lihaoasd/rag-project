@@ -52,6 +52,12 @@
             <span>词库管理</span>
           </template>
         </el-menu-item>
+        <el-menu-item index="/es-admin">
+          <template #title>
+            <el-icon><DataAnalysis /></el-icon>
+            <span>ES 对账</span>
+          </template>
+        </el-menu-item>
       </el-menu>
     </el-aside>
 

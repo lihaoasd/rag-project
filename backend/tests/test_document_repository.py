@@ -68,6 +68,39 @@ class TestDocumentRepository:
         assert result == {KB_ID: 3, "kb2": 5}
 
     @pytest.mark.asyncio
+    async def test_count_chunks_by_doc(self, repo, mock_session):
+        mock_result = MagicMock()
+        mock_result.all.return_value = [(DOC_ID, 3), ("doc2", 5)]
+        mock_session.execute.return_value = mock_result
+
+        result = await repo.count_chunks_by_doc()
+        assert result == {DOC_ID: 3, "doc2": 5}
+
+    @pytest.mark.asyncio
+    async def test_count_docs_by_kb(self, repo, mock_session):
+        mock_result = MagicMock()
+        mock_result.all.return_value = [(KB_ID, 2), ("kb2", 1)]
+        mock_session.execute.return_value = mock_result
+
+        result = await repo.count_docs_by_kb()
+        assert result == {KB_ID: 2, "kb2": 1}
+
+    @pytest.mark.asyncio
+    async def test_list_doc_meta(self, repo, mock_session):
+        mock_result = MagicMock()
+        mock_result.all.return_value = [
+            (DOC_ID, KB_ID, "a.pdf"),
+            ("doc2", "kb2", "b.pdf"),
+        ]
+        mock_session.execute.return_value = mock_result
+
+        result = await repo.list_doc_meta()
+        assert result == {
+            DOC_ID: {"kb_id": KB_ID, "file_name": "a.pdf"},
+            "doc2": {"kb_id": "kb2", "file_name": "b.pdf"},
+        }
+
+    @pytest.mark.asyncio
     async def test_list_by_kb_invalid_uuid(self, repo):
         result = await repo.list_by_kb("not-a-uuid")
         assert result == []

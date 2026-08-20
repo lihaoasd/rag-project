@@ -16,25 +16,103 @@ _REBUILD_BATCH = 100
 
 
 async def reconcile_status() -> dict:
-    """对账：对比 PG 与 ES 各知识库切片数（只读）。"""
-    healthy = await es_store.ping()
-    es_counts = await es_store.count_by_kb()
-    async with async_session() as session:
-        pg_counts = await DocumentRepository(session).count_chunks_by_kb()
+    """对账：PG（权威源）vs ES（派生数据）的切片数/文档级差异（只读）。
 
-    all_kbs = sorted(set(pg_counts) | set(es_counts))
+    Returns:
+        {
+          healthy, index, index_stats,           # ES 自身健康/存储
+          pg_total, es_total, diff_count,         # 总数与差异库数
+          kbs: [{kb_id, pg, es, status, pg_docs, es_docs}],   # 全库三态
+          differences: [{kb_id, pg, es}],          # 兼容旧字段（非 ok 的库）
+          doc_diffs: [{kb_id, doc_id, file_name, pg, es}],    # 文档级差异
+          doc_diff_count,
+        }
+    """
+    healthy = await es_store.ping()
+
+    async with async_session() as session:
+        repo = DocumentRepository(session)
+        pg_kb_chunks = await repo.count_chunks_by_kb()
+
+    # ES 不可达：连接问题单独表达（healthy=False），不混入"数据差异"误报
+    if not healthy:
+        return {
+            "healthy": False,
+            "index": settings.es_index_name,
+            "index_stats": None,
+            "pg_total": sum(pg_kb_chunks.values()),
+            "es_total": 0,
+            "diff_count": 0,
+            "differences": [],
+            "kbs": [],
+            "doc_diffs": [],
+            "doc_diff_count": 0,
+        }
+
+    es_kb = await es_store.kb_stats()
+    es_doc_counts = await es_store.count_by_doc()
+    index_stats = await es_store.index_stats()
+
+    async with async_session() as session:
+        repo = DocumentRepository(session)
+        pg_kb_docs = await repo.count_docs_by_kb()
+        pg_doc_counts = await repo.count_chunks_by_doc()
+        doc_meta = await repo.list_doc_meta()
+
+    # 1. 全库三态
+    kbs: list[dict] = []
+    for kb in sorted(set(pg_kb_chunks) | set(es_kb)):
+        pg = pg_kb_chunks.get(kb, 0)
+        es = es_kb.get(kb, {}).get("chunks", 0)
+        if pg == es:
+            status = "ok"
+        elif pg > es:
+            status = "missing"
+        else:
+            status = "residual"
+        kbs.append({
+            "kb_id": kb,
+            "pg": pg,
+            "es": es,
+            "status": status,
+            "pg_docs": pg_kb_docs.get(kb, 0),
+            "es_docs": es_kb.get(kb, {}).get("docs", 0),
+        })
+
     differences = [
-        {"kb_id": kb, "pg": pg_counts.get(kb, 0), "es": es_counts.get(kb, 0)}
-        for kb in all_kbs
-        if pg_counts.get(kb, 0) != es_counts.get(kb, 0)
+        {"kb_id": k["kb_id"], "pg": k["pg"], "es": k["es"]}
+        for k in kbs
+        if k["status"] != "ok"
     ]
+
+    # 2. 文档级差异（输出上限 500 条防超长响应）
+    doc_diffs: list[dict] = []
+    for doc_id in sorted(set(pg_doc_counts) | set(es_doc_counts)):
+        pg = pg_doc_counts.get(doc_id, 0)
+        es = es_doc_counts.get(doc_id, 0)
+        if pg != es:
+            meta = doc_meta.get(doc_id, {})
+            doc_diffs.append({
+                "kb_id": meta.get("kb_id", ""),
+                "doc_id": doc_id,
+                "file_name": meta.get("file_name", ""),
+                "pg": pg,
+                "es": es,
+            })
+            if len(doc_diffs) >= 500:
+                break
+
     return {
         "healthy": healthy,
         "index": settings.es_index_name,
-        "pg_total": sum(pg_counts.values()),
-        "es_total": sum(es_counts.values()),
+        "index_stats": index_stats,
+        "pg_total": sum(pg_kb_chunks.values()),
+        "es_total": sum(v["chunks"] for v in es_kb.values()),
         "diff_count": len(differences),
         "differences": differences,
+        "kbs": kbs,
+        "doc_diffs": doc_diffs,
+        "doc_diff_count": len(doc_diffs),
     }
 
 
