@@ -201,6 +201,54 @@ class TestEsSearch:
         assert q["bool"]["minimum_should_match"] == 1
         assert len(q["bool"]["should"]) == 2
 
+    @pytest.mark.asyncio
+    async def test_es_search_records_langfuse_span(self):
+        """es_search 应产出 fulltext retriever span（method/hit_count/elapsed_ms/命中明细）。"""
+        client = _make_client()
+        client.search.return_value = self._resp()
+        mock_lf = MagicMock()
+        with patch("core.es_store.get_client", return_value=client), \
+             patch("core.es_store.lf_get_client", return_value=mock_lf):
+            hits = await es_store.es_search("施工总承包", [KB_ID], top_k=5, highlight=True)
+        assert len(hits) == 1
+        mock_lf.update_current_span.assert_called_once()
+        _, kwargs = mock_lf.update_current_span.call_args
+        md = kwargs["metadata"]
+        assert md["method"] == "fulltext"
+        assert md["kb_ids"] == [KB_ID]
+        assert md["top_k"] == 5
+        assert md["hit_count"] == 1
+        assert "elapsed_ms" in md
+        assert kwargs["output"]["hit_count"] == 1
+        assert kwargs["input"] == "施工总承包"
+
+    @pytest.mark.asyncio
+    async def test_es_search_records_span_on_failure(self):
+        """ES 异常时也应记录 span（hit_count=0），保证 fulltext 路在 Langfuse 不缺失。"""
+        client = _make_client()
+        client.search.side_effect = Exception("es down")
+        mock_lf = MagicMock()
+        with patch("core.es_store.get_client", return_value=client), \
+             patch("core.es_store.lf_get_client", return_value=mock_lf):
+            hits = await es_store.es_search("x", [KB_ID])
+        assert hits == []
+        mock_lf.update_current_span.assert_called_once()
+        md = mock_lf.update_current_span.call_args.kwargs["metadata"]
+        assert md["method"] == "fulltext"
+        assert md["hit_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_es_search_records_span_on_empty(self):
+        """空 kb/queries 提前返回分支也应记录 span（hit_count=0）。"""
+        mock_lf = MagicMock()
+        with patch("core.es_store.lf_get_client", return_value=mock_lf):
+            hits = await es_store.es_search("x", [], top_k=5)
+        assert hits == []
+        mock_lf.update_current_span.assert_called_once()
+        md = mock_lf.update_current_span.call_args.kwargs["metadata"]
+        assert md["method"] == "fulltext"
+        assert md["hit_count"] == 0
+
 
 class TestDelete:
     @pytest.mark.asyncio

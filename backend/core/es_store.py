@@ -7,11 +7,14 @@ Elasticsearch 全文检索封装 — 索引管理、双写同步、检索（IK �
 - 所有方法在 ES 不可用时优雅降级，不阻断解析/检索主流程；
 - 单例 AsyncElasticsearch，应用关闭时 close（见 main.py lifespan）。
 """
+import time
 from typing import Any
 
 from elasticsearch import AsyncElasticsearch, NotFoundError
+from langfuse import get_client as lf_get_client, observe
 
 from config import settings
+from core.observability import format_retrieval_observation
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -243,6 +246,7 @@ async def _delete_by_query(query: dict) -> bool:
         return False
 
 
+@observe(as_type="retriever", capture_input=False, capture_output=False)
 async def es_search(
     query: str | list[str],
     kb_ids: list[str],
@@ -258,9 +262,21 @@ async def es_search(
         [{score, text, doc_id, file_name, page_number, chunk_index,
           chunk_type, source_chunk_index, kb_id, highlight}, ...]
     """
+    t0 = time.perf_counter()
     queries = [query] if isinstance(query, str) else list(query)
     queries = [q for q in queries if q and q.strip()]
     if not kb_ids or not queries:
+        lf_get_client().update_current_span(
+            input=query,
+            metadata={
+                "method": "fulltext",
+                "kb_ids": kb_ids,
+                "top_k": top_k,
+                "hit_count": 0,
+                "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
+            },
+            output=format_retrieval_observation([]),
+        )
         return []
 
     # 字段加权：text 主字段权重最高
@@ -308,6 +324,17 @@ async def es_search(
         resp = await client.search(**search_kwargs)
     except Exception as e:
         logger.warning("ES 检索失败: query=%s, error=%s", queries[0][:50], e)
+        lf_get_client().update_current_span(
+            input=query,
+            metadata={
+                "method": "fulltext",
+                "kb_ids": kb_ids,
+                "top_k": top_k,
+                "hit_count": 0,
+                "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
+            },
+            output=format_retrieval_observation([]),
+        )
         return []
 
     hits: list[dict[str, Any]] = []
@@ -329,6 +356,17 @@ async def es_search(
                 "highlight": "".join(hl_parts) if hl_parts else None,
             }
         )
+    lf_get_client().update_current_span(
+        input=query,
+        metadata={
+            "method": "fulltext",
+            "kb_ids": kb_ids,
+            "top_k": top_k,
+            "hit_count": len(hits),
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
+        },
+        output=format_retrieval_observation(hits),
+    )
     return hits
 
 

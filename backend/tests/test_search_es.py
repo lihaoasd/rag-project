@@ -1,7 +1,7 @@
 """
-Search Service ES 路径测试 — fulltext / 多选 RRF 融合 / 默认策略。
+Search Service ES 路径测试 — fulltext / 多选 RRF 融合 / 默认策略 / Langfuse 追踪。
 """
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -174,3 +174,62 @@ class TestValidation:
             await search_service.search(
                 kb_ids=[KB_ID], query="x", retrieval_methods=["graph"]
             )
+
+
+class TestLangfuseTracing:
+    """三路召回与 search 总 span 的 Langfuse 追踪断言。"""
+
+    def _collect_span_metadata(self, mock_lf):
+        """从 update_current_span 调用中收集 metadata（跳过空 metadata 调用）。"""
+        metas = []
+        for call in mock_lf.update_current_span.call_args_list:
+            md = call.kwargs.get("metadata") or {}
+            metas.append(md)
+        return metas
+
+    @pytest.mark.asyncio
+    async def test_search_records_per_method_hits(self, mock_retrieve):
+        """search 总 span 应汇总每路召回命中数（per_method_hits）。"""
+        mock_lf = MagicMock()
+        lexicon_service._cache = {}
+        try:
+            mock_retrieve.return_value = [_vec_hit(0), _vec_hit(1)]
+            with patch("core.es_store.es_search", new_callable=AsyncMock) as mock_es, \
+                 patch("services.search_service.get_client", return_value=mock_lf):
+                mock_es.return_value = [_es_hit(2)]
+                await search_service.search(
+                    kb_ids=[KB_ID], query="测试",
+                    retrieval_methods=["dense", "sparse", "fulltext"],
+                )
+        finally:
+            lexicon_service._cache = None
+
+        metas = self._collect_span_metadata(mock_lf)
+        assert {"dense": 2, "sparse": 2, "fulltext": 1} in [
+            m.get("per_method_hits") for m in metas
+        ]
+
+    @pytest.mark.asyncio
+    async def test_recall_spans_record_method_and_hit_count(self, mock_retrieve):
+        """每路召回 span 应记录 method / hit_count / elapsed_ms。"""
+        mock_lf = MagicMock()
+        lexicon_service._cache = {}
+        try:
+            mock_retrieve.return_value = [_vec_hit(0)]
+            with patch("core.es_store.es_search", new_callable=AsyncMock) as mock_es, \
+                 patch("services.search_service.get_client", return_value=mock_lf):
+                mock_es.return_value = [_es_hit(1)]
+                await search_service.search(
+                    kb_ids=[KB_ID], query="测试",
+                    retrieval_methods=["dense", "fulltext"],
+                )
+        finally:
+            lexicon_service._cache = None
+
+        metas = self._collect_span_metadata(mock_lf)
+        dense_md = next(m for m in metas if m.get("method") == "dense")
+        assert dense_md["hit_count"] == 1
+        assert dense_md["elapsed_ms"] >= 0
+        fulltext_md = next(m for m in metas if m.get("method") == "fulltext")
+        assert fulltext_md["hit_count"] == 1
+        assert fulltext_md["elapsed_ms"] >= 0

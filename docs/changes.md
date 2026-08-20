@@ -2,6 +2,17 @@
 
 ## 2026-08-20
 
+- 需求：检索三路（dense/sparse/fulltext）Langfuse 追踪增强——每路独立 span（method/命中数/耗时/命中明细），search 总 span 汇总每路命中数，fulltext 路补齐缺失的 ES span。
+- 方案：`docs/plan/25-langfuse-retrieval-tracing-plan.md`。
+- 改动：
+  - `core/es_store.py`：`es_search()` 加 `@observe(as_type="retriever")` 与 span 记录（method=fulltext/kb_ids/top_k/hit_count/elapsed_ms + 命中明细；空查询与 ES 异常分支也记录 hit_count=0）；langfuse `get_client` 以 `lf_get_client` 别名导入（避免与 ES client 工厂命名冲突）；
+  - `services/search_service.py`：`_recall_milvus`/`_recall_fulltext` 加 `@observe` + 计时（elapsed_ms）+ span 记录；`search()` 收集 `per_method_hits` 写入总 span metadata；
+  - 测试：`test_es_store.py` 补 es_search span（成功/异常/空查询三分支）；`test_search_es.py` 补 per_method_hits 与每路 method/hit_count/elapsed_ms 断言；
+  - 文档：`docs/08` 新增 §7.6 Langfuse 检索追踪。
+- 验证：后端全量测试 462 passed；前端无改动。
+
+## 2026-08-20
+
 - 需求：修复单选检索结果未按分数排序的问题（多知识库场景下逐 kb 拼接后未做全局降序排序）。
 - 改动：`services/search_service.py` `search()` 单选分支补 `all_hits.sort(key=lambda x: x["score"], reverse=True)`（dense/sparse 跨 kb 需全局排序；fulltext 的 ES 本身有序，排序无副作用）；`tests/test_search_service.py` 新增 `test_single_method_sorts_by_score_across_kbs`（先写复现用例验证失败，修复后通过）。
 - 验证：后端全量测试 458 passed；前端无改动。

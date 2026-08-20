@@ -10,6 +10,7 @@
 多选时各路独立召回，Python 端 RRF 融合。
 """
 import asyncio
+import time
 from typing import Any
 
 from langfuse import get_client, observe
@@ -17,6 +18,7 @@ from langfuse import get_client, observe
 from config import settings
 from core import es_store
 from core.database import async_session
+from core.observability import format_retrieval_observation
 from core.retrieval import retrieve, rerank
 from repositories.kb_repository import KnowledgeBaseRepository
 from services import lexicon_service, model_service
@@ -68,6 +70,7 @@ async def _apply_rerank(query: str, hits: list[dict], rerank_model_id: str) -> l
     return await rerank(query, hits, config)
 
 
+@observe(as_type="retriever", capture_input=False, capture_output=False)
 async def _recall_milvus(
     query: str,
     kb_ids: list[str],
@@ -75,7 +78,11 @@ async def _recall_milvus(
     top_k: int,
     similarity_threshold: float | None,
 ) -> list[dict]:
-    """Milvus 单路召回（dense/sparse），逐 kb 并发，失败降级为空。"""
+    """Milvus 单路召回（dense/sparse），逐 kb 并发，失败降级为空。
+
+    独立 retriever span：记录 method / 命中数 / 耗时（嵌套的逐 kb retrieve span 保留）。
+    """
+    t0 = time.perf_counter()
     async def _one(kb_id: str):
         try:
             kwargs: dict[str, Any] = dict(
@@ -95,18 +102,47 @@ async def _recall_milvus(
             return []
 
     per_kb = await asyncio.gather(*[_one(kid) for kid in kb_ids])
-    return [h for hits in per_kb for h in hits]
+    all_hits = [h for hits in per_kb for h in hits]
+    get_client().update_current_span(
+        input=query,
+        metadata={
+            "method": method,
+            "kb_ids": kb_ids,
+            "top_k": top_k,
+            "hit_count": len(all_hits),
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
+        },
+        output=format_retrieval_observation(all_hits),
+    )
+    return all_hits
 
 
+@observe(as_type="retriever", capture_input=False, capture_output=False)
 async def _recall_fulltext(
     query: str, kb_ids: list[str], top_k: int, highlight: bool
 ) -> list[dict]:
-    """ES 全文检索（词库查询扩展，OR 语义）。"""
+    """ES 全文检索（词库查询扩展，OR 语义）。
+
+    独立 retriever span：记录 method=fulltext / 命中数 / 耗时。
+    """
+    t0 = time.perf_counter()
     await lexicon_service.ensure_cache()
     expanded = lexicon_service.expand_query(query)
-    return await es_store.es_search(
+    all_hits = await es_store.es_search(
         expanded, kb_ids, top_k=top_k, highlight=highlight
     )
+    get_client().update_current_span(
+        input=query,
+        metadata={
+            "method": "fulltext",
+            "kb_ids": kb_ids,
+            "top_k": top_k,
+            "hit_count": len(all_hits),
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
+        },
+        output=format_retrieval_observation(all_hits),
+    )
+    return all_hits
 
 
 @observe(name="search", capture_input=False, capture_output=False)
@@ -170,18 +206,22 @@ async def search(
 
     # ===== 1. 各路独立召回 =====
     ranked_lists = []
+    per_method_hits: dict[str, int] = {}
     if "dense" in methods:
-        ranked_lists.append(await _recall_milvus(
-            query, kb_ids, "dense", fetch_top_k, vector_gate,
-        ))
+        hits = await _recall_milvus(query, kb_ids, "dense", fetch_top_k, vector_gate)
+        per_method_hits["dense"] = len(hits)
+        ranked_lists.append(hits)
     if "sparse" in methods:
-        ranked_lists.append(await _recall_milvus(
-            query, kb_ids, "sparse", fetch_top_k, None,
-        ))
+        hits = await _recall_milvus(query, kb_ids, "sparse", fetch_top_k, None)
+        per_method_hits["sparse"] = len(hits)
+        ranked_lists.append(hits)
     if "fulltext" in methods:
-        ranked_lists.append(await _recall_fulltext(
+        hits = await _recall_fulltext(
             query, kb_ids, fetch_top_k * settings.retrieval_es_top_k_factor, highlight,
-        ))
+        )
+        per_method_hits["fulltext"] = len(hits)
+        ranked_lists.append(hits)
+    get_client().update_current_span(metadata={"per_method_hits": per_method_hits})
 
     # ===== 2. 单选直返 / 多选 RRF 融合 =====
     if len(ranked_lists) == 1:

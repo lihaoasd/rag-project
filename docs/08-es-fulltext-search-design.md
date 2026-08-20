@@ -377,6 +377,16 @@ all_hits = ranked_lists[0] if len(ranked_lists) == 1 else rrf_merge(ranked_lists
 | `es_highlight_enabled` | True | 是否返回高亮片段 |
 | `retrieval_hybrid_enabled` | True | Milvus 稀疏字段开关（sparse 策略依赖，默认开启） |
 
+### 7.6 Langfuse 检索追踪
+
+三路召回均纳入 Langfuse 观测（`langfuse_enabled=True` 时生效）：
+
+- **每路独立 retriever span**：
+  - `dense` / `sparse`：`search_service._recall_milvus` 产出汇总 span（method/kb_ids/top_k/hit_count/elapsed_ms + 命中明细），内部逐 kb 的 `retrieve()` span 保留形成嵌套；
+  - `fulltext`：`_recall_fulltext` 汇总 span + `core/es_store.es_search` 独立 span（method=fulltext/hit_count/elapsed_ms + 命中明细）；ES 异常或空查询分支也记录（hit_count=0），保证 fulltext 路不缺失。
+- **search 总 span**：metadata 增加 `per_method_hits`（每路命中数汇总），Langfuse 界面可直接对比三路召回效果。
+- 实现约束：`es_store.py` 已有 `get_client()`（ES 客户端），langfuse 的 `get_client` 以别名 `lf_get_client` 导入，避免命名冲突；`langfuse_enabled=False` 时 `update_current_span` 为 no-op，零开销。
+
 ## 8. API 接口变更汇总
 
 ### 8.1 SearchRequest（models/schemas.py）
