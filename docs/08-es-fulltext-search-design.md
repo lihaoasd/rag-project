@@ -380,13 +380,29 @@ all_hits = ranked_lists[0] if len(ranked_lists) == 1 else rrf_merge(ranked_lists
 
 ### 7.6 Langfuse 检索追踪
 
-三路召回均纳入 Langfuse 观测（`langfuse_enabled=True` 时生效）：
+三路召回均纳入 Langfuse 观测（`langfuse_enabled=True` 时生效）。span 统一由 `core/observability.py` 的 **`traced_span` 装饰器**产出：固定命名（小写蛇形）、类型分类（CHAIN/SPAN/GENERATION）、自动计时 `elapsed_ms`、异常自动记 `error`；业务函数只组装自己的 input/output/metadata。
 
-- **每路独立 retriever span**：
-  - `dense` / `sparse`：`search_service._recall_milvus` 产出汇总 span（method/kb_ids/top_k/hit_count/elapsed_ms + 命中明细），内部逐 kb 的 `retrieve()` span 保留形成嵌套；
-  - `fulltext`：`_recall_fulltext` 汇总 span + `core/es_store.es_search` 独立 span（method=fulltext/hit_count/elapsed_ms + 命中明细）；ES 异常或空查询分支也记录（hit_count=0），保证 fulltext 路不缺失。
-- **search 总 span**：metadata 增加 `per_method_hits`（每路命中数汇总），Langfuse 界面可直接对比三路召回效果。
-- 实现约束：`es_store.py` 已有 `get_client()`（ES 客户端），langfuse 的 `get_client` 以别名 `lf_get_client` 导入，避免命名冲突；`langfuse_enabled=False` 时 `update_current_span` 为 no-op，零开销。
+- **span 类型分类**：
+  - `CHAIN`：编排（`search`、`rag_qa`）；
+  - `SPAN`：外部服务/本地计算（`recall_dense`/`recall_sparse`/`recall_fulltext`、`retrieve`、`milvus_query`、`es_query`、`rrf_merge`）；
+  - `GENERATION`：外部模型调用（`embedding` 向量化、`rerank` 重排、LLM 生成）。
+- **调用树**（多选 dense+fulltext + rerank 为例）：
+
+  ```
+  search (CHAIN)
+  ├── recall_dense (SPAN)            # 逐 kb 并发，失败记 error
+  │   └── retrieve (SPAN)            # 逐 kb：kb_id/collection/dim + embed_ms/search_ms/filter_ms
+  │       ├── embedding (GENERATION) # 仅 dense：query 向量化（model/dim/api_base/向量维度）
+  │       └── milvus_query (SPAN)    # Milvus ANN 查询（collection/mode/top_k/阈值/hit_count）
+  ├── recall_fulltext (SPAN)
+  │   └── es_query (SPAN)            # ES 查询（index/top_k/highlight/hit_count）
+  ├── rrf_merge (SPAN)               # 多选时：k/per_method_hits/融合结果；单选无此 span
+  └── rerank (GENERATION)            # 有排序模型时：model/top_n/hit_count
+  ```
+
+- **search 总 span**：metadata 记录 kb_ids/retrieval_methods/top_k/`per_method_hits`（每路命中数汇总）。
+- **环节耗时口径**：`retrieve` span 的 `embed_ms`（向量化）/`search_ms`（Milvus 查询）/`filter_ms`（阈值过滤）字段区分各环节耗时；span 通用 `elapsed_ms` 由装饰器自动补齐。
+- 实现约束：`es_store.py` 已有 `get_client()`（ES 客户端），langfuse 的 `get_client` 以别名 `lf_get_client` 导入，避免命名冲突；`langfuse_enabled=False` 时 `update_current_span` 为 no-op，零开销。**子 span 用 `@observe` 嵌套函数实现**（`traced_span` 内部基于 observe），因为 langfuse v4 客户端没有手动 `start_span` API，嵌套函数被 observe 自动挂为父 span 的子级；`traced_span` 的 name 支持可调用对象（如 `recall_{method}` 动态命名）。
 
 ## 8. API 接口变更汇总
 

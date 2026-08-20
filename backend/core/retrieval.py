@@ -1,17 +1,18 @@
 """
 检索引擎 — llama_index VectorStoreIndex + Retriever + SimilarityPostprocessor。
 """
+import time
 from typing import Any
 
 from llama_index.core import VectorStoreIndex
 from llama_index.core.postprocessor import SimilarityPostprocessor
 from llama_index.core.schema import QueryBundle
 from llama_index.core.vector_stores.types import VectorStoreQueryMode
-from langfuse import get_client, observe
+from langfuse import get_client
 
 from config import settings
 from core.model_factory import create_embedding, create_reranker, resolve_model_config
-from core.observability import format_retrieval_observation
+from core.observability import format_retrieval_observation, traced_span
 from core.vector_store import get_vector_store
 from utils.logging import get_logger
 
@@ -27,7 +28,53 @@ def _resolve_query_mode(retrieval_method: str | None) -> VectorStoreQueryMode:
     raise ValueError(f"不支持的检索方式: {retrieval_method}")
 
 
-@observe(as_type="retriever", capture_input=False, capture_output=False)
+@traced_span("embedding", "GENERATION")
+async def _embed_query(
+    query: str,
+    embed_model: Any,
+    dim: int,
+    embed_config: dict,
+) -> list[float]:
+    """Query 向量化（embedding 子 span，GENERATION）：调用外部 embedding API。"""
+    query_embedding = await embed_model.aget_query_embedding(query)
+    get_client().update_current_span(
+        input=query,
+        metadata={
+            "model": embed_config.get("model"),
+            "dim": dim,
+            "api_base": embed_config.get("api_base"),
+        },
+        output={"embedding_dim": len(query_embedding)},
+    )
+    return query_embedding
+
+
+@traced_span("milvus_query")
+async def _milvus_search(
+    query: str,
+    retriever: Any,
+    query_bundle: QueryBundle,
+    collection: str,
+    mode: str,
+    top_k: int,
+    similarity_threshold: float,
+):
+    """Milvus ANN 检索（子 span，SPAN）：执行检索并记录集合/模式/命中数。"""
+    nodes = await retriever.aretrieve(query_bundle)
+    get_client().update_current_span(
+        input=query,
+        metadata={
+            "collection": collection,
+            "mode": mode,
+            "top_k": top_k,
+            "similarity_threshold": similarity_threshold,
+        },
+        output={"hit_count": len(nodes)},
+    )
+    return nodes
+
+
+@traced_span("retrieve")
 async def retrieve(
     query: str,
     kb_id: str,
@@ -84,19 +131,34 @@ async def retrieve(
     # 4. 查询向量化（sparse 用 BM25 内置函数，无需 embedding）
     if is_sparse:
         query_bundle = QueryBundle(query_str=query)
+        embed_ms = None
     else:
-        query_embedding = await embed_model.aget_query_embedding(query)
+        t_embed = time.perf_counter()
+        query_embedding = await _embed_query(query, embed_model, dim, embed_config)
+        embed_ms = round((time.perf_counter() - t_embed) * 1000, 2)
         query_bundle = QueryBundle(query_str=query, embedding=query_embedding)
 
-    # 5. 检索
-    nodes = await retriever.aretrieve(query_bundle)
+    # 5. 检索（Milvus 查询独立子 span）
+    t_search = time.perf_counter()
+    nodes = await _milvus_search(
+        query=query,
+        retriever=retriever,
+        query_bundle=query_bundle,
+        collection=vector_store.collection_name,
+        mode="sparse" if is_sparse else "dense",
+        top_k=top_k,
+        similarity_threshold=similarity_threshold,
+    )
+    search_ms = round((time.perf_counter() - t_search) * 1000, 2)
 
     # 6. 后处理：相似度阈值过滤（BM25 稀疏分数非 [0,1]，仅稠密模式适用）
+    t_filter = time.perf_counter()
     if is_sparse:
         filtered_nodes = nodes
     else:
         processor = SimilarityPostprocessor(similarity_cutoff=similarity_threshold)
         filtered_nodes = processor.postprocess_nodes(nodes)
+    filter_ms = round((time.perf_counter() - t_filter) * 1000, 2)
 
     # 7. 组装为 service 层兼容的 dict 格式
     hits = []
@@ -113,6 +175,14 @@ async def retrieve(
             "source_chunk_index": node.metadata.get("source_chunk_index", -1),
         })
 
+    retrieval_metadata.update({
+        "embed_ms": embed_ms,
+        "search_ms": search_ms,
+        "filter_ms": filter_ms,
+        "embedding_model": embed_config.get("model"),
+        "dim": dim,
+        "collection": vector_store.collection_name,
+    })
     get_client().update_current_span(
         input=query,
         metadata=retrieval_metadata,
@@ -129,7 +199,7 @@ async def retrieve(
     return hits
 
 
-@observe(as_type="retriever", capture_input=False, capture_output=False)
+@traced_span("rerank", "GENERATION")
 async def rerank(
     query: str,
     hits: list[dict[str, Any]],

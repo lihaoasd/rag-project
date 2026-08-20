@@ -20,6 +20,7 @@ from llama_index.core.base.llms.types import ChatMessage, MessageRole
 from config import settings
 from core.database import async_session
 from core.model_factory import create_llm, resolve_model_config
+from core.observability import traced_span
 from core.prompt_renderer import render_prompt, extract_variables
 from core.retrieval import retrieve_and_rank
 from repositories.conversation_repository import ConversationRepository
@@ -159,7 +160,7 @@ async def _call_llm_stream(llm, messages: list, model: str) -> AsyncGenerator[st
         raise
 
 
-@observe(name="rag_qa", capture_input=False, capture_output=False)
+@traced_span("rag_qa", "CHAIN")
 async def _run_rag(
     kb_id: str,
     message: str,
@@ -169,7 +170,7 @@ async def _run_rag(
 ) -> AsyncGenerator[str, None]:
     """RAG 核心：检索 → Prompt 构建 → LLM 流式生成（逐 token yield）。
 
-    由 @observe 标注，产出 trace "rag_qa"；retrieve/rerank/LLM 各自产出 span。
+    由 traced_span 标注，产出 trace "rag_qa"（CHAIN）；retrieve/rerank/LLM 各自产出 span。
     session_id 与 trace metadata 经 propagate_attributes 下发到所有子 span。
     retrieved 经 result dict 传回（async generator 无法用 return 传值）。
     """

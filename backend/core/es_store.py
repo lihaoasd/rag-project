@@ -11,10 +11,10 @@ import time
 from typing import Any
 
 from elasticsearch import AsyncElasticsearch, NotFoundError
-from langfuse import get_client as lf_get_client, observe
+from langfuse import get_client as lf_get_client
 
 from config import settings
-from core.observability import format_retrieval_observation
+from core.observability import format_retrieval_observation, traced_span
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -246,7 +246,7 @@ async def _delete_by_query(query: dict) -> bool:
         return False
 
 
-@observe(as_type="retriever", capture_input=False, capture_output=False)
+@traced_span("es_query")
 async def es_search(
     query: str | list[str],
     kb_ids: list[str],

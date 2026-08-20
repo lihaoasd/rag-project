@@ -2,6 +2,66 @@
 
 ## 2026-08-20
 
+- 需求：重新设计 Langfuse trace 点——span 类型分类（CHAIN/SPAN/GENERATION）、统一命名（小写蛇形）、统一 `traced_span` 装饰器（自动 elapsed_ms/error）。评审确认：不新增 prepare/config_resolve/kb_name_resolve 环节 span。
+- 方案：`docs/plan/31-langfuse-trace-redesign-plan.md`。
+- 改动：
+  - `core/observability.py`：新增 `traced_span(name, span_type)` 装饰器——基于 observe（v4 无 start_span），支持 async/sync 函数、静态/可调用 name（如 `recall_{method}` 动态命名）、自动计时 `elapsed_ms`、异常自动记 `error`；
+  - `core/retrieval.py`：`_embed_query` → `@traced_span("embedding", "GENERATION")`；`_milvus_search` → `@traced_span("milvus_query")`；`retrieve` → `@traced_span("retrieve")`；`rerank` → `@traced_span("rerank", "GENERATION")`；
+  - `services/search_service.py`：`_recall_milvus` → 动态名 `recall_{method}`；`_recall_fulltext` → `recall_fulltext`；`_rrf_merge_traced` → `rrf_merge`；`search` → `@traced_span("search", "CHAIN")`；
+  - `core/es_store.py`：`es_search` → `@traced_span("es_query")`；
+  - `services/chat_service.py`：`_run_rag` → `@traced_span("rag_qa", "CHAIN")`（LLM generation span 保持）；
+  - 测试：`tests/test_observability.py` 新增 `TestTracedSpan`（async/sync/动态名/异常 error 四用例）；既有 span 断言（retrieval/search_es/es_store）保持通过；
+  - 文档：`docs/08` §7.6 重写（span 类型分类 + 调用树 + traced_span 约束）。
+- 验证：后端全量测试通过；前端无改动。
+
+## 2026-08-20
+
+- 需求：RRF 融合环节（多选召回时的 Python 端融合）也要记录到 Langfuse（用户确认"RRT"指 RRF）。
+- 方案：`docs/plan/30-langfuse-rrf-tracing-plan.md`。
+- 改动：
+  - `backend/services/search_service.py`：新增 `_rrf_merge_traced`（`@observe(name="rrf_merge")` 嵌套函数，langfuse v4 无 start_span 沿用 observe 模式）——记录 input（per_method_hits 各路命中数）/ metadata（method=rrf, k）/ output（融合结果明细），内部委托原 `_rrf_merge`；`search()` 多选分支改调 `_rrf_merge_traced`，单选直返不走 RRF；
+  - 测试：`tests/test_search_es.py` 新增 2 个用例（多选时 rrf span 记录 method=rrf/k/各路命中数/融合输出；单选不出现 rrf span）；
+  - 文档：`docs/08` §7.6 补充 RRF 融合 span。
+- 验证：后端全量测试通过；前端无改动。
+
+## 2026-08-20
+
+- 问题：29 号改动上线后 sparse/dense 检索报 `'Langfuse' object has no attribute 'start_span'` —— langfuse 4.14.4 客户端**无手动 `start_span` API**（v4 已移除）。
+- 修复：`backend/core/retrieval.py` 将 `start_span` 子 span 改为 **`@observe` 嵌套函数**——新增 `_embed_query`（向量化子 span，仅 dense 调用）与 `_milvus_search`（Milvus 检索子 span），observe 自动将二者挂为 `retrieve` 的子 span；`retrieve()` 内调用方式改为 `await _embed_query(...)` / `await _milvus_search(...)`（关键字参数）。
+- 测试：`tests/test_retrieval.py` 子 span 用例改为断言 `_embed_query` / `_milvus_search` 调用（dense 两者都调、sparse 只调 `_milvus_search` 且 embed_ms 为 None、collection 不存在时都不调）。
+- 验证：后端全量测试通过。
+
+## 2026-08-20
+
+- 需求：dense 检索链路 Langfuse 追踪细化——向量化（embedding）作为独立子 span 可见，retrieve span 记录环节级耗时（支撑"dense 检索有时超时"定位）。
+- 方案：`docs/plan/29-langfuse-dense-tracing-plan.md`。
+- 改动：
+  - `backend/core/retrieval.py`：`retrieve()` 内新增嵌套子 span——`embedding`（仅 dense：输入 query，metadata 含 model/dim/api_base，输出向量维度）与 `milvus_search`（metadata 含 collection/mode/top_k/阈值，输出命中数）；retrieve 当前 span metadata 增加 `embed_ms`/`search_ms`/`filter_ms`（sparse 的 embed_ms 为 null）与 `embedding_model`/`dim`/`collection`；
+  - 测试：`tests/test_retrieval.py` 新增 3 个 span 用例（dense 有 embedding+milvus_search span 且带环节耗时、sparse 无 embedding span 且 embed_ms 为 null、collection 不存在时不创建子 span）；
+  - 文档：`docs/08` §7.6 补充 dense/sparse 逐 kb span 细化描述。
+- 验证：后端全量测试通过；前端无改动。
+
+## 2026-08-20
+
+- 需求：词库管理页去掉「状态」相关 UI（用户确认全部去掉：表格「状态」列 + 新增/编辑弹窗「启用」开关）。
+- 方案：`docs/plan/28-lexicon-remove-status-plan.md`。
+- 改动：`frontend/src/views/LexiconView.vue`——删除表格「状态」列（el-switch 开关）与弹窗「启用」表单项；删除不再使用的 `toggleEnabled` 方法；`form` 初始值/`resetForm`/`openEdit` 去掉 `enabled` 字段。后端 `enabled` 字段与接口保持不变（新增词条默认启用，`LexiconTermCreate.enabled` 默认 True）。
+- 验证：前端 `npm run build` 通过；后端无改动。
+
+## 2026-08-20
+
+- 需求：ES 对账页「知识库对账」表只显示 kb_id，需要同时显示知识库名称；且改为后端接口分页（已确认非前端切片）。
+- 方案：`docs/plan/27-es-admin-kbname-pagination-plan.md`。
+- 改动：
+  - `backend/services/es_admin_service.py`：`reconcile_status(page=1, page_size=20)`——新增查询 `knowledge_bases` 名称映射，`kbs` 每行加 `kb_name`（PG 中已删除的库为空串）；`kbs` 按页切片；响应新增 `kb_total`（知识库总数，分页用）；`diff_count`/`differences` 仍按全量统计；
+  - `backend/routers/es_admin.py`：`GET /api/es/status` 增加 `page`、`page_size` 查询参数；
+  - `frontend/src/api/esAdmin.js`：`getEsStatus(page, pageSize)` 透传分页参数；
+  - `frontend/src/views/EsAdminView.vue`：知识库对账表新增「知识库名称」列（位于「知识库 ID」右侧，名称为空回退显示 kb_id）；表下加 `el-pagination`（total 用 `kb_total`，支持 10/20/50 每页，翻页/改页大小重新请求，删除库后空页自动回第 1 页）；页头统计文案改 `kbTotal`；
+  - 测试：`test_es_admin_service.py` 补 `kb_name` 断言与分页/超范围页码用例；`test_es_admin_router.py` 补分页参数透传断言。
+- 验证：后端全量测试 466 passed；前端 `npm run build` 通过。
+
+## 2026-08-20
+
 - 需求：ES 对账页每个知识库都显示"重建"按钮（不论是否有差异），方便词库更新后随时按库重建（让存量文档按新词典重新分词）。
 - 改动：`frontend/src/views/EsAdminView.vue` 知识库对账表格操作列——移除"仅差异库显示重建该库/一致显示无需操作"的条件，改为**每行常显"重建"按钮**（按 kb 重建，含确认弹窗与 loading 态）；页头提示补充"每个知识库均可手动重建（如词库更新后按新词典重新分词）"；删除不再使用的 `.muted` 样式。
 - 验证：前端 `npm run build` 通过；后端无改动。

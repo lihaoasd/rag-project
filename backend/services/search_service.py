@@ -13,12 +13,12 @@ import asyncio
 import time
 from typing import Any
 
-from langfuse import get_client, observe
+from langfuse import get_client
 
 from config import settings
 from core import es_store
 from core.database import async_session
-from core.observability import format_retrieval_observation
+from core.observability import format_retrieval_observation, traced_span
 from core.retrieval import retrieve, rerank
 from repositories.kb_repository import KnowledgeBaseRepository
 from services import lexicon_service, model_service
@@ -48,6 +48,25 @@ def _rrf_merge(ranked_lists: list[list[dict]], k: int = 60) -> list[dict]:
     return merged
 
 
+@traced_span("rrf_merge")
+def _rrf_merge_traced(
+    ranked_lists: list[list[dict]],
+    k: int = 60,
+    method_hits: dict[str, int] | None = None,
+) -> list[dict]:
+    """RRF 融合（独立 span，SPAN）：记录各路召回命中数与融合结果。
+
+    Langfuse v4 无手动 start_span，用 @observe 嵌套函数自动成为 search 的子 span。
+    """
+    get_client().update_current_span(
+        input={"per_method_hits": method_hits or {}},
+        metadata={"method": "rrf", "k": k},
+    )
+    merged = _rrf_merge(ranked_lists, k)
+    get_client().update_current_span(output=format_retrieval_observation(merged))
+    return merged
+
+
 async def _get_kb_name(kb_id: str) -> str:
     """查询知识库名称，失败返回 kb_id。"""
     try:
@@ -70,7 +89,7 @@ async def _apply_rerank(query: str, hits: list[dict], rerank_model_id: str) -> l
     return await rerank(query, hits, config)
 
 
-@observe(as_type="retriever", capture_input=False, capture_output=False)
+@traced_span(lambda query, kb_ids, method, top_k, similarity_threshold: f"recall_{method}")
 async def _recall_milvus(
     query: str,
     kb_ids: list[str],
@@ -117,7 +136,7 @@ async def _recall_milvus(
     return all_hits
 
 
-@observe(as_type="retriever", capture_input=False, capture_output=False)
+@traced_span("recall_fulltext")
 async def _recall_fulltext(
     query: str, kb_ids: list[str], top_k: int, highlight: bool
 ) -> list[dict]:
@@ -145,7 +164,7 @@ async def _recall_fulltext(
     return all_hits
 
 
-@observe(name="search", capture_input=False, capture_output=False)
+@traced_span("search", "CHAIN")
 async def search(
     query: str,
     kb_ids: list[str],
@@ -229,7 +248,9 @@ async def search(
         # 单路召回逐 kb 拼接后需全局按分数降序（fulltext 的 ES 已有序，dense/sparse 跨 kb 需排序）
         all_hits.sort(key=lambda x: x["score"], reverse=True)
     else:
-        all_hits = _rrf_merge(ranked_lists, k=settings.retrieval_rrf_k)
+        all_hits = _rrf_merge_traced(
+            ranked_lists, k=settings.retrieval_rrf_k, method_hits=per_method_hits
+        )
 
     # ===== 3. 可选 rerank（只取前 rerank_top_n 个候选，失败回退原排序） =====
     if rerank_model_id:

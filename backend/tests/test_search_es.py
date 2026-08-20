@@ -233,3 +233,54 @@ class TestLangfuseTracing:
         fulltext_md = next(m for m in metas if m.get("method") == "fulltext")
         assert fulltext_md["hit_count"] == 1
         assert fulltext_md["elapsed_ms"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_rrf_merge_records_span(self, mock_retrieve):
+        """多选召回时 RRF 融合应有独立 span（method=rrf + k + 各路命中数 + 融合输出）。"""
+        mock_lf = MagicMock()
+        lexicon_service._cache = {}
+        try:
+            mock_retrieve.return_value = [_vec_hit(0), _vec_hit(1)]
+            with patch("core.es_store.es_search", new_callable=AsyncMock) as mock_es, \
+                 patch("services.search_service.get_client", return_value=mock_lf):
+                mock_es.return_value = [_es_hit(2)]
+                await search_service.search(
+                    kb_ids=[KB_ID], query="测试",
+                    retrieval_methods=["dense", "sparse", "fulltext"],
+                )
+        finally:
+            lexicon_service._cache = None
+
+        calls = mock_lf.update_current_span.call_args_list
+        # metadata：method=rrf + k
+        metas = self._collect_span_metadata(mock_lf)
+        rrf_md = next(m for m in metas if m.get("method") == "rrf")
+        assert rrf_md["k"] == 60
+        # input：各路召回命中数
+        inputs = [c.kwargs.get("input") for c in calls]
+        assert {"dense": 2, "sparse": 2, "fulltext": 1} in [
+            i.get("per_method_hits") for i in inputs if isinstance(i, dict)
+        ]
+        # output：融合结果明细
+        outputs = [c.kwargs.get("output") for c in calls]
+        assert any(
+            isinstance(o, dict) and o.get("hit_count") == 3 for o in outputs
+        )
+
+    @pytest.mark.asyncio
+    async def test_single_method_skips_rrf_span(self, mock_retrieve):
+        """单选召回不走 RRF，不应出现 method=rrf 的 span。"""
+        mock_lf = MagicMock()
+        lexicon_service._cache = {}
+        try:
+            mock_retrieve.return_value = [_vec_hit(0)]
+            with patch("services.search_service.get_client", return_value=mock_lf):
+                await search_service.search(
+                    kb_ids=[KB_ID], query="测试",
+                    retrieval_methods=["dense"],
+                )
+        finally:
+            lexicon_service._cache = None
+
+        metas = self._collect_span_metadata(mock_lf)
+        assert all(m.get("method") != "rrf" for m in metas)

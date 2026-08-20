@@ -1,11 +1,14 @@
 """
 Langfuse 观测封装（core/observability.py）单元测试。
 """
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from core.observability import (
     format_retrieval_observation,
     setup_langfuse,
+    traced_span,
 )
 
 
@@ -70,3 +73,73 @@ class TestSetupLangfuse:
              patch("core.observability.settings.langfuse_sample_rate", 1.0), \
              patch("langfuse.Langfuse", side_effect=RuntimeError("boom")):
             assert setup_langfuse() is None
+
+
+class TestTracedSpan:
+    """统一 span 装饰器：命名/类型/自动 elapsed_ms/异常 error；支持 sync/async 与动态名。"""
+
+    def _collect(self, mock_lf):
+        return mock_lf.update_current_span.call_args_list
+
+    @pytest.mark.asyncio
+    async def test_async_records_elapsed_ms_and_name(self):
+        """async 函数：span 名与 elapsed_ms 自动记录，业务 metadata 保留。"""
+        @traced_span("my_span")
+        async def fn(x: int) -> int:
+            return x + 1
+
+        mock_lf = MagicMock()
+        with patch("core.observability.get_client", return_value=mock_lf):
+            result = await fn(1)
+
+        assert result == 2
+        calls = self._collect(mock_lf)
+        assert len(calls) == 1
+        _, kwargs = calls[0]
+        assert kwargs["name"] == "my_span"
+        assert kwargs["metadata"]["elapsed_ms"] >= 0
+
+    def test_sync_records_elapsed_ms(self):
+        """sync 函数同样支持（如 rrf_merge）。"""
+        @traced_span("sync_span")
+        def fn(x: int) -> int:
+            return x * 2
+
+        mock_lf = MagicMock()
+        with patch("core.observability.get_client", return_value=mock_lf):
+            result = fn(2)
+
+        assert result == 4
+        _, kwargs = self._collect(mock_lf)[0]
+        assert kwargs["name"] == "sync_span"
+        assert kwargs["metadata"]["elapsed_ms"] >= 0
+
+    def test_dynamic_name_from_args(self):
+        """name 为可调用对象时按实参动态命名（如 recall_{method}）。"""
+        @traced_span(lambda query, kb_ids, method, top_k=5, threshold=None: f"recall_{method}")
+        def fn(query, kb_ids, method, top_k=5, threshold=None):
+            return method
+
+        mock_lf = MagicMock()
+        with patch("core.observability.get_client", return_value=mock_lf):
+            assert fn("q", ["kb1"], "dense") == "dense"
+            assert fn("q", ["kb1"], "sparse") == "sparse"
+
+        names = [c.kwargs["name"] for c in self._collect(mock_lf)]
+        assert names == ["recall_dense", "recall_sparse"]
+
+    @pytest.mark.asyncio
+    async def test_exception_records_error(self):
+        """函数抛异常时记录 error 字段并继续抛出。"""
+        @traced_span("bad_span")
+        async def fn():
+            raise RuntimeError("boom")
+
+        mock_lf = MagicMock()
+        with patch("core.observability.get_client", return_value=mock_lf):
+            with pytest.raises(RuntimeError, match="boom"):
+                await fn()
+
+        _, kwargs = self._collect(mock_lf)[0]
+        assert kwargs["metadata"]["error"] == "boom"
+        assert kwargs["metadata"]["elapsed_ms"] >= 0

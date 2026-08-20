@@ -1,6 +1,7 @@
 """
 检索引擎 rerank / retrieve_and_rank / 查询模式解析单元测试（core/retrieval.py）。
 """
+from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -57,6 +58,104 @@ class TestResolveQueryMode:
             await retrieval.rerank("查询", hits, config, top_n=2)
 
         assert reranker.arerank.call_args.kwargs["top_n"] == 2
+
+
+class TestRetrieveSpanTracing:
+    """retrieve() 的 Langfuse 子 span：向量化（_embed_query）/ Milvus 检索（_milvus_search）+ 环节耗时。"""
+
+    def _patch_retrieve_env(self, embed_model, vector_store, retriever, mock_lf):
+        """patch retrieve() 依赖：config/embedding/vector_store/index/client。"""
+        index = MagicMock()
+        index.as_retriever.return_value = retriever
+        stack = ExitStack()
+        stack.enter_context(patch("core.retrieval.resolve_model_config",
+                                  new=AsyncMock(return_value={"model": "bge-m3", "api_base": "http://x", "params": {}})))
+        stack.enter_context(patch("core.retrieval.create_embedding", return_value=embed_model))
+        stack.enter_context(patch("core.retrieval.get_vector_store", return_value=vector_store))
+        stack.enter_context(patch("core.retrieval.VectorStoreIndex.from_vector_store", return_value=index))
+        stack.enter_context(patch("core.retrieval.get_client", return_value=mock_lf))
+        return stack
+
+    def _retrieve_metadata(self, mock_lf):
+        for call in mock_lf.update_current_span.call_args_list:
+            md = call.kwargs.get("metadata") or {}
+            if "embed_ms" in md:
+                return md
+        return {}
+
+    @pytest.mark.asyncio
+    async def test_dense_calls_embed_and_search_sub_spans(self):
+        """dense 检索应调用 _embed_query（向量化）与 _milvus_search 子 span，retrieve span 带环节耗时。"""
+        embed_model = MagicMock()
+        embed_model.aget_query_embedding = AsyncMock(return_value=[0.1] * 4)
+        vector_store = MagicMock()
+        vector_store.collection_name = f"kb_{KB_ID}"
+        vector_store.client.list_collections.return_value = [vector_store.collection_name]
+        retriever = MagicMock()
+        retriever.aretrieve = AsyncMock(return_value=[])
+        mock_lf = MagicMock()
+
+        with self._patch_retrieve_env(embed_model, vector_store, retriever, mock_lf), \
+             patch("core.retrieval._embed_query", new=AsyncMock(return_value=[0.1] * 4)) as mock_embed, \
+             patch("core.retrieval._milvus_search", new=AsyncMock(return_value=[])) as mock_search:
+            hits = await retrieval.retrieve(query="测试", kb_id=KB_ID, top_k=5)
+
+        assert hits == []
+        # 向量化与检索两个子 span 函数均被调用（observe 装饰后自动嵌套为 retrieve 子 span）
+        assert mock_embed.await_count == 1
+        assert mock_search.await_count == 1
+        assert mock_embed.await_args.args[0] == "测试"
+        assert mock_search.await_args.kwargs["collection"] == f"kb_{KB_ID}"
+        # 环节耗时写入 retrieve span metadata
+        md = self._retrieve_metadata(mock_lf)
+        assert md["embed_ms"] >= 0
+        assert md["search_ms"] >= 0
+        assert md["filter_ms"] >= 0
+        assert md["embedding_model"] == "bge-m3"
+        assert md["dim"] == 1024  # 未配 dimension 时回退 settings.embedding_dim
+
+    @pytest.mark.asyncio
+    async def test_sparse_skips_embedding_sub_span(self):
+        """sparse 走 Milvus BM25，不调用 _embed_query，embed_ms 为 None。"""
+        embed_model = MagicMock()
+        vector_store = MagicMock()
+        vector_store.collection_name = f"kb_{KB_ID}"
+        vector_store.client.list_collections.return_value = [vector_store.collection_name]
+        retriever = MagicMock()
+        retriever.aretrieve = AsyncMock(return_value=[])
+        mock_lf = MagicMock()
+
+        with self._patch_retrieve_env(embed_model, vector_store, retriever, mock_lf), \
+             patch("core.retrieval._embed_query", new=AsyncMock()) as mock_embed, \
+             patch("core.retrieval._milvus_search", new=AsyncMock(return_value=[])) as mock_search:
+            hits = await retrieval.retrieve(
+                query="测试", kb_id=KB_ID, top_k=5, retrieval_method="sparse"
+            )
+
+        assert hits == []
+        mock_embed.assert_not_awaited()
+        assert mock_search.await_count == 1
+        md = self._retrieve_metadata(mock_lf)
+        assert md["embed_ms"] is None
+
+    @pytest.mark.asyncio
+    async def test_collection_missing_no_sub_spans(self):
+        """collection 不存在时提前返回，不调用任何子 span 函数。"""
+        embed_model = MagicMock()
+        vector_store = MagicMock()
+        vector_store.collection_name = f"kb_{KB_ID}"
+        vector_store.client.list_collections.return_value = []  # collection 不存在
+        retriever = MagicMock()
+        mock_lf = MagicMock()
+
+        with self._patch_retrieve_env(embed_model, vector_store, retriever, mock_lf), \
+             patch("core.retrieval._embed_query", new=AsyncMock()) as mock_embed, \
+             patch("core.retrieval._milvus_search", new=AsyncMock()) as mock_search:
+            hits = await retrieval.retrieve(query="测试", kb_id=KB_ID, top_k=5)
+
+        assert hits == []
+        mock_embed.assert_not_awaited()
+        mock_search.assert_not_awaited()
 
 
 class TestRetrieveAndRank:

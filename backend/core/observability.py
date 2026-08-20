@@ -1,12 +1,17 @@
 """
-Langfuse 观测封装 — client 生命周期 + 检索 span 结构化组装。
+Langfuse 观测封装 — client 生命周期 + 检索 span 结构化组装 + 统一 span 装饰器。
 
 统一入口，避免 Langfuse 逻辑散落各处。启用开关见 config.langfuse_enabled。
 注意：v4 SDK 中装饰器路径（@observe / get_client）依赖单例 client，
 须显式构造 Langfuse() 注册（构造器会把实例注册进 LangfuseResourceManager 单例，
 供 @observe 内部的 get_client() 复用）。
 """
-from typing import Any
+import asyncio
+import functools
+import time
+from typing import Any, Callable
+
+from langfuse import get_client, observe
 
 from config import settings
 from utils.logging import get_logger
@@ -59,3 +64,60 @@ def format_retrieval_observation(hits: list[dict], text_limit: int = 200) -> dic
             for i, h in enumerate(hits)
         ],
     }
+
+
+def _update_span(span_name: str, t0: float, error: str | None = None) -> None:
+    """给当前 span 补统一字段：名称（支持动态命名）+ 耗时 + 异常。"""
+    metadata: dict[str, Any] = {
+        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
+    }
+    if error is not None:
+        metadata["error"] = error
+    get_client().update_current_span(name=span_name, metadata=metadata)
+
+
+def traced_span(name: str | Callable[..., str], span_type: str = "SPAN"):
+    """统一 span 装饰器（langfuse v4）：固定命名/类型、自动计时 elapsed_ms、异常记 error。
+
+    Args:
+        name: span 名；可为字符串，或接收被装饰函数实参并返回 span 名的可调用对象
+              （如 recall 按 method 动态命名：lambda query, kb_ids, method, ...: f"recall_{method}"）。
+        span_type: CHAIN / SPAN / GENERATION（外部模型调用用 GENERATION）。
+
+    支持 async 与 sync 函数；业务函数只负责组装自己的 input/output/metadata，
+    由装饰器统一补 elapsed_ms 与异常 error，消除手写计时与遗漏。
+    """
+    def deco(fn: Callable):
+        @functools.wraps(fn)
+        def _resolve_name(*args, **kwargs) -> str:
+            return name(*args, **kwargs) if callable(name) else name
+
+        if asyncio.iscoroutinefunction(fn):
+            @observe(as_type=span_type, capture_input=False, capture_output=False)
+            @functools.wraps(fn)
+            async def async_wrapper(*args, **kwargs):
+                span_name = _resolve_name(*args, **kwargs)
+                t0 = time.perf_counter()
+                try:
+                    result = await fn(*args, **kwargs)
+                    _update_span(span_name, t0)
+                    return result
+                except Exception as e:
+                    _update_span(span_name, t0, error=str(e))
+                    raise
+            return async_wrapper
+
+        @observe(as_type=span_type, capture_input=False, capture_output=False)
+        @functools.wraps(fn)
+        def sync_wrapper(*args, **kwargs):
+            span_name = _resolve_name(*args, **kwargs)
+            t0 = time.perf_counter()
+            try:
+                result = fn(*args, **kwargs)
+                _update_span(span_name, t0)
+                return result
+            except Exception as e:
+                _update_span(span_name, t0, error=str(e))
+                raise
+        return sync_wrapper
+    return deco
