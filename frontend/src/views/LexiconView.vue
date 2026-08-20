@@ -2,7 +2,7 @@
   <div class="lexicon-view">
     <div class="page-header">
       <h2>词库管理</h2>
-      <span class="header-hint">自定义词典：供全文检索分词（IK 最长约 1 小时生效）与查询扩展（即时生效）</span>
+      <span class="header-hint">自定义词典：供全文检索分词（需执行同步脚本并重启 ES 生效）与查询扩展（即时生效）</span>
     </div>
 
     <div class="toolbar">
@@ -31,6 +31,9 @@
       </el-button>
       <el-button @click="handleExport">
         <el-icon><Download /></el-icon>导出
+      </el-button>
+      <el-button @click="handleExportIkDict">
+        <el-icon><Document /></el-icon>导出 IK 词典
       </el-button>
       <el-button type="primary" plain @click="openCreate">
         <el-icon><Plus /></el-icon>新增词条
@@ -138,8 +141,8 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Plus, Upload, Download } from '@element-plus/icons-vue'
-import { listTerms, createTerm, updateTerm, deleteTerm, importTerms, exportCsv } from '@/api/lexicon'
+import { Search, Plus, Upload, Download, Document } from '@element-plus/icons-vue'
+import { listTerms, createTerm, updateTerm, deleteTerm, importTerms, exportCsv, exportIkDict } from '@/api/lexicon'
 
 // --- State ---
 const items = ref([])
@@ -227,7 +230,7 @@ async function toggleEnabled(row, value) {
   try {
     await updateTerm(row.id, { enabled: value })
     row.enabled = value
-    ElMessage.success(value ? '已启用（分词最长 1 小时生效，查询扩展即时生效）' : '已停用')
+    ElMessage.success(value ? '已启用（分词需同步并重启 ES 生效，查询扩展即时生效）' : '已停用')
   } catch (err) {
     ElMessage.error(err?.response?.data?.detail || err?.message || '操作失败')
   }
@@ -282,6 +285,23 @@ async function handleExport() {
     a.download = `lexicon_${new Date().toISOString().slice(0, 10)}.csv`
     a.click()
     URL.revokeObjectURL(url)
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '导出失败')
+  }
+}
+
+/** 导出 IK 词典文件（一行一词，人工放置到 ES 词典目录后重启 ES 生效） */
+async function handleExportIkDict() {
+  try {
+    const dict = await exportIkDict()
+    const blob = new Blob([dict], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'ik_ext.dic'
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('已导出 ik_ext.dic，请放置到 ES 词典目录并重启 ES 生效')
   } catch (err) {
     ElMessage.error(err?.response?.data?.detail || err?.message || '导出失败')
   }

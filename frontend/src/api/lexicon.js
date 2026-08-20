@@ -36,6 +36,11 @@ export function exportCsv() {
   return apiClient.get('/lexicon/export/csv', { responseType: 'text' }).then((res) => res.data)
 }
 
+/** 导出 IK 词典（一行一词，UTF-8 无 BOM，供人工放置到 ES 词典目录） */
+export function exportIkDict() {
+  return apiClient.get('/lexicon/export/ik-dict', { responseType: 'text' }).then((res) => res.data)
+}
+
 /** 词库统计 */
 export function getLexiconStats() {
   return apiClient.get('/lexicon/stats').then((res) => res.data)

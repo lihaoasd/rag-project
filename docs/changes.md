@@ -2,6 +2,23 @@
 
 ## 2026-08-20
 
+- 需求：ES 对账页每个知识库都显示"重建"按钮（不论是否有差异），方便词库更新后随时按库重建（让存量文档按新词典重新分词）。
+- 改动：`frontend/src/views/EsAdminView.vue` 知识库对账表格操作列——移除"仅差异库显示重建该库/一致显示无需操作"的条件，改为**每行常显"重建"按钮**（按 kb 重建，含确认弹窗与 loading 态）；页头提示补充"每个知识库均可手动重建（如词库更新后按新词典重新分词）"；删除不再使用的 `.muted` 样式。
+- 验证：前端 `npm run build` 通过；后端无改动。
+
+## 2026-08-20
+
+- 需求：新增词条"冠状动脉粥样硬化性心脏病"后全文检索仍按碎片分词/高亮（冠状/动脉粥样硬化/心脏病）；同时用户指出原"ES 经 remote_ext_dict 反向轮询后端拉词库"架构不合理（基础设施依赖业务应用），并要求改为**纯人工流程**：导出词库文件 → 人工放置到 ES 词典目录 → 重启 ES 自己加载。
+- 方案：`docs/plan/26-ik-dict-term-activation-plan.md`（终版：人工导出放置 + 挂载 + 重启）。
+- 改动：
+  - 服务器 192.168.60.120：`/opt/es/config/IKAnalyzer.cfg.xml` 改本地词典方案（`ext_dict=extra_main.dic;dicts/ik_ext.dic`，`remote_ext_dict` 清空）；词库词典文件 `/opt/es/dicts/ik_ext.dic`（一行一词，UTF-8 无 BOM）；**重建 bid-es 容器**新增挂载 `config/IKAnalyzer.cfg.xml` 与 `/opt/es/dicts`（→ 容器 `config/analysis-ik/dicts/`，数据卷保留，对账 0 差异）；**删除同步脚本** `/opt/es/sync_ik_dict.sh`（无自动链路）；
+  - 按库重建 ES 索引：`POST /api/es/rebuild?kb_id=98b88fd5-...`（医学词汇库，24 切片，其他库不动）；
+  - 前端：`LexiconView.vue` 新增"导出 IK 词典"按钮（下载 ik_ext.dic + 操作提示），提示文案改为"需导出并放置到 ES 词典目录后重启 ES 生效"；`api/lexicon.js` 新增 `exportIkDict`；
+  - 文档：`docs/08` §1.2/§2/§3.2/§4.2/§4.3/§5.6/§6.2-§6.5/验证/风险表 → 人工导出放置流程；`elasticsearch/config/IKAnalyzer.cfg.xml` 同步（ext_dict → dicts/ik_ext.dic）。
+- 验证：`_analyze` ik_smart/ik_max_word 输出整词"冠状动脉粥样硬化性心脏病[0-12]"（原为 4 个碎片）；ES 搜索整词高亮 `<em>冠状动脉粥样硬化性心脏病</em>`（原碎片高亮），total 244→1（整词精确匹配，召回更精准）；对账 4 库 pg=es diff=0；后端无代码改动；前端 `npm run build` 通过。
+
+## 2026-08-20
+
 - 需求：检索三路（dense/sparse/fulltext）Langfuse 追踪增强——每路独立 span（method/命中数/耗时/命中明细），search 总 span 汇总每路命中数，fulltext 路补齐缺失的 ES span。
 - 方案：`docs/plan/25-langfuse-retrieval-tracing-plan.md`。
 - 改动：

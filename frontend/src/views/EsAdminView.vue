@@ -2,7 +2,7 @@
   <div class="es-admin-view">
     <div class="page-header">
       <h2>ES 全文检索对账</h2>
-      <span class="header-hint">对比 PostgreSQL（权威源）与 Elasticsearch 的切片数；发现差异后由你确认再重建索引</span>
+      <span class="header-hint">对比 PostgreSQL（权威源）与 Elasticsearch 的切片数；每个知识库均可手动重建（如词库更新后按新词典重新分词），发现差异时优先重建对应库</span>
     </div>
 
     <!-- 连接异常提示 -->
@@ -123,10 +123,9 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="140">
+      <el-table-column label="操作" width="110">
         <template #default="{ row }">
           <el-button
-            v-if="row.status !== 'ok'"
             text
             type="primary"
             size="small"
@@ -134,9 +133,8 @@
             :loading="rebuildingKb === row.kb_id"
             @click="confirmRebuild(row.kb_id)"
           >
-            重建该库
+            重建
           </el-button>
-          <span v-else class="muted">无需操作</span>
         </template>
       </el-table-column>
     </el-table>
@@ -328,9 +326,5 @@ onMounted(loadStatus)
   font-weight: 400;
   color: var(--color-text-secondary, #909399);
   margin-left: 8px;
-}
-
-.muted {
-  color: var(--color-text-secondary, #909399);
 }
 </style>

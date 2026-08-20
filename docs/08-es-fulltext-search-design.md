@@ -16,7 +16,7 @@
 ### 1.2 目标
 
 1. 引入 **Elasticsearch + IK 中文分词** 作为全文检索引擎，提供精确关键词检索、短语匹配、后端高亮；
-2. **词库通过前端界面维护**，IK 远程词典热更新，实现"加词即生效"（受 IK 轮询间隔约束，见 §6.4）；
+2. **词库通过前端界面维护**，IK 本地词典文件承载词库（同步脚本写入 + 重启 ES 生效），查询扩展即时生效（见 §6.3/§6.4）；
 3. 检索页改为**三路独立策略可多选**：`dense`（Milvus 稠密）、`sparse`（Milvus BM25 稀疏）、`fulltext`（ES 纯关键词全文检索），多选按 RRF 融合，默认仅勾选 `dense`；
 4. 问答链路（chat）保持纯稠密检索**不受影响**。
 
@@ -56,7 +56,7 @@
 
 - **写入**：文档解析 → 切片 → 每批次同时写 PG（`document_chunks`）、Milvus（向量）、ES（`bid_chunks`）；
 - **检索**：search 页按 `retrieval_methods` 多选策略（dense/sparse/fulltext）走 Milvus / ES / RRF 融合路径；
-- **词库**：前端 → `lexicon_terms` 表 → 导出为 IK 远程词典（ES 轮询热更新）+ 后端内存缓存（查询扩展）。
+- **词库**：前端 → `lexicon_terms` 表 → 同步脚本导出为 IK 本地词典文件（`ik_ext.dic`，加词后重启 ES）+ 后端内存缓存（查询扩展即时生效）。
 
 ## 3. Elasticsearch 部署
 
@@ -70,7 +70,7 @@ ai_bid_rag/
 ├── elasticsearch/
 │   ├── Dockerfile              # 基础镜像 + IK 插件
 │   └── config/
-│       └── IKAnalyzer.cfg.xml  # IK 远程词典配置
+│       └── IKAnalyzer.cfg.xml  # IK 本地词典配置（ext_dict → ik_ext.dic）
 └── volumes/elasticsearch/      # ES 数据卷
 ```
 
@@ -107,22 +107,22 @@ RUN bin/elasticsearch-plugin install --batch \
 COPY config/IKAnalyzer.cfg.xml /usr/share/elasticsearch/config/analysis-ik/IKAnalyzer.cfg.xml
 ```
 
-### 3.2 IKAnalyzer.cfg.xml（远程词典）
+### 3.2 IKAnalyzer.cfg.xml（本地词典文件）
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE properties SYSTEM "http://java.sun.com/dtd/properties.dtd">
 <properties>
-    <comment>IK Analyzer 扩展配置</comment>
-    <!-- 远程词典：指向后端导出端点，词库更新后 IK Monitor 轮询拉取 -->
-    <entry key="remote_ext_dict">
-        http://backend:8000/api/lexicon/export/ik-dict
-    </entry>
+    <comment>IK Analyzer 扩展配置（本地词典方案：ES 不依赖后端）</comment>
+    <!-- 本地词典：词库由同步脚本写入 ik_ext.dic（一行一词），加词后重启 ES 生效 -->
+    <entry key="ext_dict">extra_main.dic;ik_ext.dic</entry>
+    <entry key="ext_stopwords">extra_stopword.dic</entry>
+    <entry key="remote_ext_dict"></entry>
     <entry key="remote_ext_stopwords"></entry>
 </properties>
 ```
 
-> 注意：IK `remote_ext_dict` 由 Monitor 线程轮询，**间隔固定约 1 小时**。词库更新后最迟 1 小时生效（见 §6.4 应对）。
+> 架构决策（2026-08-20）：**废弃 `remote_ext_dict` 远程词典**（ES 反向轮询业务后端，属"基础设施依赖业务应用"，后端不可达会致 IK 初始化中断）。改由**本地词典文件 + 人工管理**：前端词库页"导出 IK 词典"下载 `ik_ext.dic`（一行一词），人工放置到宿主 `/opt/es/dicts/`（已挂载进容器 `config/analysis-ik/dicts/`），重启 ES 生效。ES 进程零依赖后端（见 [26-ik-dict-term-activation-plan.md](plan/26-ik-dict-term-activation-plan.md)）。
 
 ### 3.3 鉴权与安全
 
@@ -175,15 +175,15 @@ PUT /bid_chunks
 ```
 
 - 索引时 `ik_max_word`（细切保证召回），查询时 `ik_smart`（粗切减少噪音）；
-- IK 自定义词典（远程词典）挂在 IK 插件级，作用于所有 IK 分词器，无需改 mapping。
+- IK 自定义词典（本地词典文件 `ik_ext.dic`）挂在 IK 插件级，作用于所有 IK 分词器，无需改 mapping；存量文档需重建索引后整词才可命中（见 §6.4）。
 
 ### 4.3 分析器降级（无 IK 插件时）
 
 远程 ES（如 `192.168.60.121:9200`）未安装 analysis-ik 插件时，`ensure_index()` 检测到 `unknown analyzer` 错误后**自动降级为内置 `cjk` 分析器**（bigram，无需插件），保证中文检索可用。降级结果以模块状态记录（`_analyzer_mode`）。降级影响：
 
 - 中文按双字 bigram 切分，专业术语（"建筑工程施工总承包一级"）不再整词切分，但 bigram 检索 + 后端查询扩展仍可命中；
-- IK 远程词典（词库分词）不可用，**词库仅靠查询扩展生效**（即时）；
-- 如需 IK 词级切分：在远程 ES 安装 `analysis-ik` 插件（版本与 ES 严格一致，当前 8.11.3），并可配置其 `IKAnalyzer.cfg.xml` 的 `remote_ext_dict` 指向后端 `/api/lexicon/export/ik-dict`。
+- IK 本地词典（词库分词）不可用，**词库仅靠查询扩展生效**（即时）；
+- 如需 IK 词级切分：在远程 ES 安装 `analysis-ik` 插件（版本与 ES 严格一致，当前 8.11.3），并配置其 `IKAnalyzer.cfg.xml` 的 `ext_dict` 指向词库本地词典文件（同步脚本写入，见 §3.2）。
 
 ### 4.4 文档 ID
 
@@ -242,7 +242,7 @@ GET  /api/es/status                # 对账：各知识库 PG chunk 数 vs ES co
 - ES 数据卷（`volumes/elasticsearch`）**不纳入备份**——ES 为派生数据，PG `document_chunks` 为权威源；
 - 备份范围：**PG（含 `document_chunks` 全量切片文本）+ MinIO（原文件/图片）**；
 - 灾难恢复流程：恢复 PG + MinIO → 启动 ES → `POST /api/es/rebuild`（全量重建）→ 检索恢复；
-- IK 词典无需备份（后端 `/api/lexicon/export/ik-dict` 实时导出）。
+- IK 词典无需备份（后端 `/api/lexicon/export/ik-dict` 实时导出，同步脚本可随时重建 `ik_ext.dic`）。
 
 ## 6. 词库系统（前端更新）
 
@@ -268,13 +268,13 @@ GET  /api/es/status                # 对账：各知识库 PG chunk 数 vs ES co
 | PUT | `/api/lexicon/terms/{id}` | 更新（词条/别名/分类/启用） |
 | DELETE | `/api/lexicon/terms/{id}` | 删除 |
 | POST | `/api/lexicon/import` | CSV 批量导入（列：term,aliases,category） |
-| GET | `/api/lexicon/export/ik-dict` | **IK 远程词典**：一行一词（enabled 词条），供 ES 轮询 |
+| GET | `/api/lexicon/export/ik-dict` | **IK 词典导出**：一行一词（enabled 词条），供同步脚本写入 ES 本地词典 |
 | GET | `/api/lexicon/export/csv` | 导出全部词条 |
 | GET | `/api/lexicon/stats` | 统计（总数/启用数/分类分布） |
 
 ### 6.3 词库的两个消费端
 
-1. **IK 分词词典（remote_ext_dict）**：解决"术语切分不准"。导出端点输出一行一词，IK Monitor 轮询更新；
+1. **IK 分词词典（本地词典文件 ik_ext.dic）**：解决"术语切分不准"。前端词库页"导出 IK 词典"下载 `ik_ext.dic`（一行一词），**人工放置**到宿主 `/opt/es/dicts/`（挂载进容器 `dicts/`），重启 ES 生效（见 [26-ik-dict-term-activation-plan.md](plan/26-ik-dict-term-activation-plan.md)）；
 2. **查询扩展（后端，即时生效）**：词库别名/同义词扩展 query。检索时加载启用词条到内存缓存（启动加载 + 词库变更时刷新），对 query 做替换/OR 扩展：
 
 ```
@@ -289,8 +289,9 @@ expanded = expand(query, terms)
 
 ### 6.4 生效延迟与应对
 
-- IK `remote_ext_dict` 轮询间隔**固定约 1 小时**：词库分词更新最迟 1 小时生效；
-- 应对：文档中明确该限制；查询扩展端**即时生效**（缓存刷新，无需等 IK），弥补大部分"新词即可搜"诉求；
+- IK 本地词典**无热更新**（Monitor 主要监控远程词典），词库变更后需**重启 ES** 生效；操作路径：前端词库页"导出 IK 词典"→ 下载 `ik_ext.dic` → 人工放置到宿主 `/opt/es/dicts/ik_ext.dic` → `docker restart bid-es`（约 30 秒）；
+- **存量文档**按旧词典切分，重启后仅新写入/新检索按新词典分词；存量整词命中需**按库重建索引**（`POST /api/es/rebuild?kb_id=xxx` 或前端 ES 对账页"重建该库"）；
+- 应对：查询扩展端**即时生效**（缓存刷新，无需等 IK），弥补大部分"新词即可搜"诉求；
 - 若后续要求秒级分词生效：评估自定义 IK 词典加载插件或缩短轮询（需改 IK 源码/换实现），本期不做。
 
 ### 6.5 前端词库管理页
@@ -299,7 +300,7 @@ expanded = expand(query, terms)
   - 词条表格（term/aliases/category/enabled/更新时间）+ 分页 + 搜索；
   - 新增/编辑对话框（词条、别名多输入、分类下拉、启用开关）；
   - 批量导入（CSV 上传）、导出；
-  - 提示条：说明"分词词典最长 1 小时生效，查询扩展即时生效"。
+  - 提示条：说明"分词词典需导出并放置到 ES 词典目录后重启 ES 生效，查询扩展即时生效"。
 
 ## 7. 检索链路设计
 
@@ -463,7 +464,7 @@ es_reconcile_interval_hours: int = 24       # 对账间隔（小时）
 1. 上传一份 PDF：PG `document_chunks` count == Milvus count == ES count；
 2. `retrieval_methods=["fulltext"]`：精确术语（如"建筑工程施工总承包一级"）命中，返回 highlight 片段（`<em>` 包裹）；默认（不传）仅走 `dense`；
 3. `retrieval_methods=["dense","fulltext"]`：语义 + 关键词融合，top-k 相关性与单一 dense 对比不劣化；
-4. 词库：前端新增词条"甲建设集团"→ `/api/lexicon/export/ik-dict` 包含该词；查询"甲建设集团"经查询扩展命中含"甲公司"的文档（即时生效）；重启/等待 IK 轮询后 `_analyze` 验证 IK 分词正确；
+4. 词库：前端新增词条"甲建设集团"→ `/api/lexicon/export/ik-dict` 包含该词；前端"导出 IK 词典"下载 `ik_ext.dic` 放置到 `/opt/es/dicts/` 并重启 ES 后 `_analyze` 验证 IK 分词正确（整词输出）；查询"甲建设集团"经查询扩展命中含"甲公司"的文档（即时生效）；存量文档按库重建索引后整词命中；
 5. 删除文档/知识库：ES 数据同步清理；`/api/es/status` 无差异；每日定时对账任务运行后无告警；
 6. 问答（chat）回归：SSE 正常，来源引用正常（确认 chat 未受影响）。
 
@@ -476,7 +477,7 @@ es_reconcile_interval_hours: int = 24       # 对账间隔（小时）
 | 风险 | 说明 | 应对 |
 |------|------|------|
 | IK 插件与 ES 版本不匹配 | 插件安装失败或启动失败 | 版本严格锁定（Dockerfile 固定镜像 tag 与插件 zip tag 一致）；实施时先验证最新版本号 |
-| 词库分词生效延迟 ~1 小时 | IK `remote_ext_dict` 轮询间隔固定 | 查询扩展端即时生效兜底；文档明示限制；如不满足再做自定义加载（后续） |
+| 词库分词需重启 ES 生效 | IK 本地词典无热更新（Monitor 主要监控远程） | 人工流程：前端导出 ik_ext.dic → 放置 /opt/es/dicts/ → 重启 ES（约 30 秒）；查询扩展端即时生效兜底；存量文档按库重建索引（如不满足再做自定义加载（后续）） |
 | ES 内存占用 | 与 Milvus、PostgreSQL 叠加 | `ES_JAVA_OPTS=-Xms1g -Xmx1g`；数据量级小时单节点足够；监控堆使用 |
 | 双写一致性 | ES 写入/删除失败导致数据漂移 | best-effort + 日志 + `/api/es/status` 对账 + `/api/es/rebuild` 重建 |
 | 分数体系差异 | BM25/RRF 分数无 [0,1] 阈值；sparse/fulltext 无阈值语义 | 阈值仅对 dense/rerank 生效；前端按策略显示分数（dense/rerank 百分比，sparse/fulltext/RRF 原始数字） |
