@@ -54,14 +54,6 @@
           <span v-else class="muted">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="90">
-        <template #default="{ row }">
-          <el-switch
-            :model-value="row.enabled"
-            @change="(v) => toggleEnabled(row, v)"
-          />
-        </template>
-      </el-table-column>
       <el-table-column prop="updated_at" label="更新时间" width="170">
         <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
       </el-table-column>
@@ -109,9 +101,6 @@
         <el-form-item label="分类">
           <el-input v-model="form.category" placeholder="自由文本，如：资质 / 公司 / 术语（可空）" />
         </el-form-item>
-        <el-form-item label="启用">
-          <el-switch v-model="form.enabled" />
-        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -156,7 +145,7 @@ const loading = ref(false)
 const dialogVisible = ref(false)
 const editingId = ref(null)
 const saving = ref(false)
-const form = ref({ term: '', aliases: [], category: '', enabled: true })
+const form = ref({ term: '', aliases: [], category: '' })
 
 const importVisible = ref(false)
 const importContent = ref('')
@@ -182,7 +171,7 @@ async function load() {
 }
 
 function resetForm() {
-  form.value = { term: '', aliases: [], category: '', enabled: true }
+  form.value = { term: '', aliases: [], category: '' }
   editingId.value = null
 }
 
@@ -197,7 +186,6 @@ function openEdit(row) {
     term: row.term,
     aliases: [...(row.aliases || [])],
     category: row.category || '',
-    enabled: row.enabled,
   }
   dialogVisible.value = true
 }
@@ -223,16 +211,6 @@ async function handleSave() {
     ElMessage.error(err?.response?.data?.detail || err?.message || '保存失败')
   } finally {
     saving.value = false
-  }
-}
-
-async function toggleEnabled(row, value) {
-  try {
-    await updateTerm(row.id, { enabled: value })
-    row.enabled = value
-    ElMessage.success(value ? '已启用（分词需同步并重启 ES 生效，查询扩展即时生效）' : '已停用')
-  } catch (err) {
-    ElMessage.error(err?.response?.data?.detail || err?.message || '操作失败')
   }
 }
 
