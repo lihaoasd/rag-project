@@ -1,0 +1,15 @@
+# 本地虚拟环境与缓存
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+
+# 密钥与本地配置（由 compose env_file 注入）
+.env
+
+# 运行时产物
+logs
+temp
+
+# 测试
+tests

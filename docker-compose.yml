@@ -1,77 +1,29 @@
-version: '3.8'
+# 部署说明（192.168.60.120）：
+# - Elasticsearch：已由本机 bid-es 容器（es-ik:8.13.4, :9200）提供，不在此编排
+# - PostgreSQL / Milvus / MinIO / Xinference Embedding：外部服务
+#   （192.168.61.222:5444 / 192.168.60.121），地址由 backend/.env 配置
+# - Langfuse：已由本机 langfuse-main 项目提供（:3000）
 
 services:
-  # === PostgreSQL ===
-  postgres:
-    image: postgres:16
-    container_name: bid_postgres
+  # === 后端 API（FastAPI） ===
+  backend:
+    build: ./backend
+    container_name: bid_backend
     ports:
-      - "5432:5432"
-    environment:
-      POSTGRES_DB: ai_bid_rag
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
     volumes:
-      - ./volumes/postgres:/var/lib/postgresql/data
+      - ./volumes/backend/temp:/app/temp
+      - ./volumes/backend/logs:/app/logs
+    restart: unless-stopped
 
-  # === Milvus 依赖 ===
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.5
-    container_name: bid_etcd
-    environment:
-      - ETCD_AUTO_COMPACTION_MODE=revision
-      - ETCD_AUTO_COMPACTION_RETENTION=1000
-      - ETCD_QUOTA_BACKEND_BYTES=4294967296
-    volumes:
-      - ./volumes/etcd:/etcd
-
-  minio:
-    image: minio/minio:latest
-    container_name: bid_minio
+  # === 前端（Vue 3 静态资源 + Nginx 反代） ===
+  frontend:
+    build: ./frontend
+    container_name: bid_frontend
     ports:
-      - "9000:9000"   # S3 API（Milvus + 文档存储）
-      - "9001:9001"   # Web Console
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    volumes:
-      - ./volumes/minio:/minio_data
-    command: minio server /minio_data --console-address ":9001"
-
-  standalone:
-    image: milvusdb/milvus:v3.0.0
-    container_name: bid_milvus
-    ports:
-      - "19530:19530"
-      - "9091:9091"
-    environment:
-      ETCD_ENDPOINTS: etcd:2379
-      MINIO_ADDRESS: minio:9000
-    volumes:
-      - ./volumes/milvus:/var/lib/milvus
+      - "80:80"
     depends_on:
-      - etcd
-      - minio
-
-  # === Elasticsearch（全文检索，IK 中文分词） ===
-  elasticsearch:
-    build: ./elasticsearch
-    container_name: bid_es
-    ports:
-      - "9200:9200"
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - ES_JAVA_OPTS=-Xms1g -Xmx1g
-      - bootstrap.memory_lock=false
-      - ingest.geoip.downloader.enabled=false
-    volumes:
-      - ./volumes/elasticsearch:/usr/share/elasticsearch/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"   # 后端跑在宿主机，IK 远程词典经此访问
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 20
+      - backend
     restart: unless-stopped
