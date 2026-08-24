@@ -1,5 +1,15 @@
 # 修改记录
 
+## 2026-08-22
+
+- 需求：`docs/09-graph-module-design.md`（知识图谱模块详细设计）评审，确认 11 项决策并修订至 v1.1。
+- 评审确认决策：
+  - 高优先级：① LLM 实体 chunk 归属——prompt 约束实体名与原文一致 + 回原文定位，失败降级该批第一个 chunk；② 词库缓存结构扩展为 `{标准词: {aliases, category}}`；③ 词库变更 → 已建文档 graph_status 置 none/stale 提示重建；④ 移除 `llama-index-graph-stores-neo4j`，后续实体向量检索用 Neo4j 原生 vector index + `create_embedding` 自建；
+  - 中优先级：⑤ 关系类型维持 12 种（09 文档为单一事实源，注明与 03 文档差异）；⑥ 空串/未知分类归 `other`，CHECK 约束不含空串；⑦ LLM 实体名在合并阶段词库归并（精确+包含匹配）；⑧ 联动清除 best-effort（先取 chunk_ids 再删 PG、失败不阻断、delete/reparse/rechunk 后置 none）；⑨ 纯 Cypher 去重，去掉 APOC 运行时依赖；⑩ 写入按 chunk 批次拆分事务；⑪ `mentioned_chunk_ids` 不设上限（接受现状）；
+  - 低优先级 8 项按默认处理（description 先到先得、GET /graph 按 degree 降序采样、entities 接口改 query 参数、中文关系类型反引号、检索侧补正则层、health 扩展、构建中提示、pytest 用真实 Neo4j 实例）。
+- 改动（仅文档）：`docs/09-graph-module-design.md` 修订 §1.4/§2.3/§3.2/§4.3/§4.4/§5.1/§5.2/§5.2.1/§5.3/§6.1/§6.3/§6.4/§7.1/§7.3/§9.1/§9.2/§9.3/§10.1/§10.3/§11.3/§12/§13。
+- 验证：章节结构完整（grep 确认）；纯文档改动，无代码。
+
 ## 2026-08-21
 
 - 需求：问答（chat）检索接入三路——稠密向量（dense）+ 稀疏向量（sparse）+ 全文检索（fulltext）。已确认：不加前端控件，后端固定三路混合、默认三路全开（推翻 08 设计文档 §1.3「chat 保持纯稠密」边界）。
