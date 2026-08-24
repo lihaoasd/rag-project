@@ -24,7 +24,7 @@ from core.observability import traced_span
 from core.prompt_renderer import render_prompt, extract_variables
 from core.retrieval import retrieve_and_rank
 from repositories.conversation_repository import ConversationRepository
-from services import prompt_service
+from services import lexicon_service, prompt_service
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -177,8 +177,12 @@ async def _run_rag(
     with propagate_attributes(session_id=conv_id, metadata={"kb_id": kb_id}):
         get_client().update_current_span(input=message)
 
-        # 检索（统一链路：召回 + 可选 rerank；span 由 retrieve/rerank 自身产出）
-        rerank_config = await resolve_model_config(kb_id, "rerank")  # None = 纯向量
+        # 检索（三路混合：dense/sparse/fulltext 召回 + RRF 融合 + 可选 rerank；span 由 retrieve/rerank 自身产出）
+        rerank_config = await resolve_model_config(kb_id, "rerank")  # None = 无重排
+        try:
+            await lexicon_service.ensure_cache()  # fulltext 路词库查询扩展缓存（失败不阻断问答）
+        except Exception as e:
+            logger.warning("词库缓存加载失败，问答跳过查询扩展: %s", e)
         retrieved = await retrieve_and_rank(
             query=message,
             kb_id=kb_id,
@@ -186,6 +190,8 @@ async def _run_rag(
             similarity_threshold=settings.retrieval_similarity_threshold,
             rerank_config=rerank_config,
             rerank_threshold=settings.retrieval_rerank_threshold,
+            retrieval_methods=settings.chat_retrieval_methods,
+            expand_query=lexicon_service.expand_query,
         )
         if not retrieved:
             logger.info("未检索到相关文档: kb_id=%s, query=%s", kb_id, message[:80])

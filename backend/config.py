@@ -63,6 +63,7 @@ class Settings(BaseSettings):
 
     # === 检索方式 ===
     retrieval_default_methods: list[str] = ["dense"]  # 未传 retrieval_methods 时默认勾选的策略（dense/sparse/fulltext）
+    chat_retrieval_methods: list[str] = ["dense", "sparse", "fulltext"]  # 问答（chat）固定三路混合检索策略
     retrieval_es_top_k_factor: int = 2          # fulltext 召回放大系数
     retrieval_rrf_k: int = 60                   # RRF 常数
 

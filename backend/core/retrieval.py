@@ -2,6 +2,7 @@
 检索引擎 — llama_index VectorStoreIndex + Retriever + SimilarityPostprocessor。
 """
 import time
+from collections.abc import Callable
 from typing import Any
 
 from llama_index.core import VectorStoreIndex
@@ -11,12 +12,37 @@ from llama_index.core.vector_stores.types import VectorStoreQueryMode
 from langfuse import get_client
 
 from config import settings
+from core import es_store
 from core.model_factory import create_embedding, create_reranker, resolve_model_config
 from core.observability import format_retrieval_observation, traced_span
 from core.vector_store import get_vector_store
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+RETRIEVAL_METHODS = ("dense", "sparse", "fulltext")
+
+
+def rrf_merge(ranked_lists: list[list[dict]], k: int = 60) -> list[dict]:
+    """RRF 融合多路召回（按 (doc_id, chunk_index) 对齐 rank 分数）。
+
+    与 search 页共用的融合实现；融合分数非 [0,1]，仅作排序依据。
+    """
+    scores: dict[tuple, float] = {}
+    hits_by_key: dict[tuple, dict] = {}
+    for ranked in ranked_lists:
+        for i, h in enumerate(ranked):
+            key = (h.get("doc_id", ""), h.get("chunk_index", -1))
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + i + 1)
+            hits_by_key[key] = h
+    merged = []
+    for key, score in sorted(scores.items(), key=lambda kv: kv[1], reverse=True):
+        h = dict(hits_by_key[key])
+        h["score"] = round(score, 4)
+        h.setdefault("highlight", None)
+        h.setdefault("kb_id", "")
+        merged.append(h)
+    return merged
 
 
 def _resolve_query_mode(retrieval_method: str | None) -> VectorStoreQueryMode:
@@ -235,19 +261,75 @@ async def retrieve_and_rank(
     similarity_threshold: float = 0.2,
     rerank_config: dict | None = None,
     rerank_threshold: float = 0.8,
+    retrieval_methods: list[str] | None = None,
+    expand_query: Callable[[str], str | list[str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """单知识库检索统一入口：向量召回 + 可选重排 + rerank 后阈值过滤。
+    """单知识库检索统一入口：多路召回（dense/sparse/fulltext）+ RRF 融合 + 可选重排 + 阈值过滤。
 
-    rerank_config 为 None 时退化为纯向量召回；问答与搜索共用同一检索链路。
-    rerank_threshold 仅在有 rerank 时生效，过滤掉 rerank 分数低于该阈值的命中。
+    Args:
+        query: 用户问题或检索词
+        kb_id: 目标知识库 ID
+        top_k: 每路召回候选数量（也是无重排时的返回条数上限）
+        similarity_threshold: 稠密路相似度阈值（IP 分数）；sparse/fulltext 无阈值语义
+        rerank_config: 重排模型配置，为 None 时跳过重排
+        rerank_threshold: 有重排时按重排分数过滤的阈值
+        retrieval_methods: 检索策略列表（dense/sparse/fulltext，可多选），为 None 时默认纯稠密 ["dense"]
+        expand_query: fulltext 路的查询扩展函数（词库同义词 OR 扩展），为 None 时原词直查
+
+    Returns:
+        RRF 融合（单选时直返）并按分数降序的结果列表:
+        [{score, text, doc_id, file_name, page_number, chunk_index, kb_id, ...}, ...]
+
+    单路召回失败（如 ES 未部署）降级为空并记日志，不阻断整体检索。
     """
-    hits = await retrieve(
-        query=query,
-        kb_id=kb_id,
-        top_k=top_k,
-        similarity_threshold=rerank_config and 0.2 or similarity_threshold,
-    )
-    if rerank_config and hits:
-        hits = await rerank(query, hits, rerank_config)
-        hits = [h for h in hits if h["score"] >= rerank_threshold]
-    return hits
+    methods = list(retrieval_methods) if retrieval_methods else ["dense"]
+    invalid = set(methods) - set(RETRIEVAL_METHODS)
+    if invalid:
+        raise ValueError(f"不支持的检索方式: {sorted(invalid)}")
+
+    # ===== 1. 各路独立召回（单路失败降级为空） =====
+    ranked_lists: list[list[dict]] = []
+    for m in methods:
+        if m in ("dense", "sparse"):
+            try:
+                if m == "dense":
+                    threshold = (0.2 if rerank_config else similarity_threshold)
+                    hits = await retrieve(
+                        query=query, kb_id=kb_id, top_k=top_k,
+                        similarity_threshold=threshold, retrieval_method=m,
+                    )
+                else:
+                    # sparse 分数非 [0,1]，无阈值语义
+                    hits = await retrieve(
+                        query=query, kb_id=kb_id, top_k=top_k, retrieval_method=m,
+                    )
+            except Exception as e:
+                logger.warning("问答 %s 路检索失败，降级为空: %s", m, e)
+                hits = []
+        else:  # fulltext（ES + IK 全文检索）
+            try:
+                expanded = expand_query(query) if expand_query else query
+                hits = await es_store.es_search(
+                    expanded, [kb_id],
+                    top_k=top_k * settings.retrieval_es_top_k_factor,
+                    highlight=False,
+                )
+            except Exception as e:
+                logger.warning("问答 fulltext 路检索失败，降级为空: %s", e)
+                hits = []
+        for h in hits:
+            h.setdefault("kb_id", kb_id)
+        ranked_lists.append(hits)
+
+    # ===== 2. 单选直返 / 多选 RRF 融合 =====
+    if len(ranked_lists) == 1:
+        all_hits = ranked_lists[0]
+        all_hits.sort(key=lambda x: x["score"], reverse=True)
+    else:
+        all_hits = rrf_merge(ranked_lists, k=settings.retrieval_rrf_k)
+
+    # ===== 3. 可选重排 + 阈值过滤 =====
+    if rerank_config and all_hits:
+        all_hits = await rerank(query, all_hits, rerank_config)
+        all_hits = [h for h in all_hits if h["score"] >= rerank_threshold]
+    return all_hits

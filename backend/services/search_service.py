@@ -19,7 +19,7 @@ from config import settings
 from core import es_store
 from core.database import async_session
 from core.observability import format_retrieval_observation, traced_span
-from core.retrieval import retrieve, rerank
+from core.retrieval import retrieve, rerank, rrf_merge
 from repositories.kb_repository import KnowledgeBaseRepository
 from services import lexicon_service, model_service
 from utils.logging import get_logger
@@ -27,25 +27,6 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 VALID_METHODS = ("dense", "sparse", "fulltext")
-
-
-def _rrf_merge(ranked_lists: list[list[dict]], k: int = 60) -> list[dict]:
-    """RRF 融合多路召回（按 (doc_id, chunk_index) 对齐 rank 分数）。"""
-    scores: dict[tuple, float] = {}
-    hits_by_key: dict[tuple, dict] = {}
-    for ranked in ranked_lists:
-        for i, h in enumerate(ranked):
-            key = (h.get("doc_id", ""), h.get("chunk_index", -1))
-            scores[key] = scores.get(key, 0.0) + 1.0 / (k + i + 1)
-            hits_by_key[key] = h
-    merged = []
-    for key, score in sorted(scores.items(), key=lambda kv: kv[1], reverse=True):
-        h = dict(hits_by_key[key])
-        h["score"] = round(score, 4)
-        h.setdefault("highlight", None)
-        h.setdefault("kb_id", "")
-        merged.append(h)
-    return merged
 
 
 @traced_span("rrf_merge")
@@ -62,7 +43,7 @@ def _rrf_merge_traced(
         input={"per_method_hits": method_hits or {}},
         metadata={"method": "rrf", "k": k},
     )
-    merged = _rrf_merge(ranked_lists, k)
+    merged = rrf_merge(ranked_lists, k)
     get_client().update_current_span(output=format_retrieval_observation(merged))
     return merged
 

@@ -8,6 +8,7 @@ import pytest
 from llama_index.core.vector_stores.types import VectorStoreQueryMode
 
 from core import retrieval
+from config import settings
 from tests.helpers import KB_ID, DOC_ID
 
 
@@ -202,3 +203,82 @@ class TestRetrieveAndRank:
             )
 
         assert result == [_hit(0.99, "文本1")]
+
+    # ============================================================
+    # 三路混合（dense + sparse + fulltext）— 问答链路检索
+    # ============================================================
+    @pytest.mark.asyncio
+    async def test_three_way_mixed_recalls_and_rrf_merges(self):
+        """三路混合：dense/sparse 走 retrieve，fulltext 走 es_search（含词库查询扩展），RRF 融合并补 kb_id。"""
+        dense_hits = [_hit(0.9, "dense文本")]
+        sparse_hits = [_hit(0.8, "sparse文本")]
+        es_hits = [dict(_hit(0.7, "es文本"), kb_id=KB_ID, highlight=None)]
+        dense_hits[0]["chunk_index"] = 0
+        sparse_hits[0]["chunk_index"] = 1
+        es_hits[0]["chunk_index"] = 2
+
+        with patch("core.retrieval.retrieve",
+                   new=AsyncMock(side_effect=[dense_hits, sparse_hits])) as mock_retrieve, \
+             patch("core.retrieval.es_store.es_search",
+                   new=AsyncMock(return_value=es_hits)) as mock_es:
+            result = await retrieval.retrieve_and_rank(
+                query="查询", kb_id=KB_ID, top_k=5, similarity_threshold=0.6,
+                retrieval_methods=["dense", "sparse", "fulltext"],
+                expand_query=lambda q: [q, "扩展词"],
+            )
+
+        # 三路均被召回：dense + sparse 各走一次 retrieve
+        assert mock_retrieve.await_count == 2
+        methods = [c.kwargs["retrieval_method"] for c in mock_retrieve.await_args_list]
+        assert methods == ["dense", "sparse"]
+        # fulltext 走 ES：查询扩展 + kb 过滤 + top_k 放大 + 不返回高亮
+        assert mock_es.await_count == 1
+        assert mock_es.await_args.args[0] == ["查询", "扩展词"]
+        assert mock_es.await_args.args[1] == [KB_ID]
+        assert mock_es.await_args.kwargs["top_k"] == 5 * settings.retrieval_es_top_k_factor
+        assert mock_es.await_args.kwargs["highlight"] is False
+        # RRF 融合后共 3 条（不同 chunk_index 不合并），且每路命中均补 kb_id
+        assert len(result) == 3
+        assert all(h["kb_id"] == KB_ID for h in result)
+
+    @pytest.mark.asyncio
+    async def test_fulltext_failure_degrades_to_dense_sparse(self):
+        """ES 检索异常时 fulltext 降级为空，dense+sparse 正常，整体不抛错。"""
+        dense_hits = [_hit(0.9, "dense文本")]
+        sparse_hits = [_hit(0.8, "sparse文本")]
+        dense_hits[0]["chunk_index"] = 0
+        sparse_hits[0]["chunk_index"] = 1
+
+        with patch("core.retrieval.retrieve",
+                   new=AsyncMock(side_effect=[dense_hits, sparse_hits])), \
+             patch("core.retrieval.es_store.es_search",
+                   new=AsyncMock(side_effect=RuntimeError("ES 不可用"))):
+            result = await retrieval.retrieve_and_rank(
+                query="查询", kb_id=KB_ID, top_k=5,
+                retrieval_methods=["dense", "sparse", "fulltext"],
+            )
+
+        assert len(result) == 2  # 仅 dense + sparse，无 fulltext 命中
+
+    @pytest.mark.asyncio
+    async def test_single_fulltext_returns_directly(self):
+        """单选 fulltext 直返，不做 RRF，保留 ES 原始分数并补 kb_id。"""
+        es_hits = [_hit(5.0, "es文本")]
+
+        with patch("core.retrieval.es_store.es_search",
+                   new=AsyncMock(return_value=es_hits)):
+            result = await retrieval.retrieve_and_rank(
+                query="查询", kb_id=KB_ID, top_k=5,
+                retrieval_methods=["fulltext"],
+            )
+
+        assert len(result) == 1
+        assert result[0]["score"] == 5.0
+        assert result[0]["kb_id"] == KB_ID
+
+    @pytest.mark.asyncio
+    async def test_invalid_method_raises(self):
+        with pytest.raises(ValueError):
+            await retrieval.retrieve_and_rank(
+                query="查询", kb_id=KB_ID, retrieval_methods=["graph"],
+            )

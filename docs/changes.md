@@ -1,5 +1,18 @@
 # 修改记录
 
+## 2026-08-21
+
+- 需求：问答（chat）检索接入三路——稠密向量（dense）+ 稀疏向量（sparse）+ 全文检索（fulltext）。已确认：不加前端控件，后端固定三路混合、默认三路全开（推翻 08 设计文档 §1.3「chat 保持纯稠密」边界）。
+- 方案：`docs/plan/32-chat-multi-retrieval-plan.md`。
+- 改动：
+  - `backend/config.py`：新增 `chat_retrieval_methods: list[str] = ["dense", "sparse", "fulltext"]`（问答固定三路混合检索策略，可经环境变量调整）；
+  - `backend/core/retrieval.py`：新增公共 `rrf_merge()`（从 search_service 迁移，search/chat 共用）；`retrieve_and_rank()` 扩展 `retrieval_methods` / `expand_query` 参数——多路独立召回（dense/sparse 走 `retrieve`，fulltext 走 `es_store.es_search` + 词库查询扩展 + top_k 放大 + 不高亮），单路失败降级为空不阻断问答，单选直返/多选 RRF 融合，再衔接可选 rerank + 阈值过滤；不传 `retrieval_methods` 时默认纯稠密（向后兼容）；
+  - `backend/services/search_service.py`：删除私有 `_rrf_merge`，改为从 `core.retrieval` 导入 `rrf_merge`（`_rrf_merge_traced` span 包装保留）；
+  - `backend/services/chat_service.py`：`_run_rag` 检索改传 `settings.chat_retrieval_methods` 三路 + `expand_query=lexicon_service.expand_query`（`ensure_cache` 失败仅记日志，不阻断问答）；
+  - 测试：`tests/test_retrieval.py` 新增 4 用例（三路混合召回与 RRF 融合、fulltext 异常降级、单选 fulltext 直返、非法方法校验）；`tests/test_search_es.py` 的 `_rrf_merge` 引用改为 `core.retrieval.rrf_merge`；
+  - 文档：`docs/08` §1.2/§1.3/§7.1/§13 更新 chat 边界为三路混合。
+- 验证：后端全量 479 测试通过；前端无改动。
+
 ## 2026-08-20
 
 - 需求：重新设计 Langfuse trace 点——span 类型分类（CHAIN/SPAN/GENERATION）、统一命名（小写蛇形）、统一 `traced_span` 装饰器（自动 elapsed_ms/error）。评审确认：不新增 prepare/config_resolve/kb_name_resolve 环节 span。

@@ -18,11 +18,11 @@
 1. 引入 **Elasticsearch + IK 中文分词** 作为全文检索引擎，提供精确关键词检索、短语匹配、后端高亮；
 2. **词库通过前端界面维护**，IK 本地词典文件承载词库（同步脚本写入 + 重启 ES 生效），查询扩展即时生效（见 §6.3/§6.4）；
 3. 检索页改为**三路独立策略可多选**：`dense`（Milvus 稠密）、`sparse`（Milvus BM25 稀疏）、`fulltext`（ES 纯关键词全文检索），多选按 RRF 融合，默认仅勾选 `dense`；
-4. 问答链路（chat）保持纯稠密检索**不受影响**。
+4. 问答链路（chat）检索升级为**后端固定三路混合**：`dense + sparse + fulltext` 独立召回 → RRF 融合 → 可选 rerank（见 [32-chat-multi-retrieval-plan.md](plan/32-chat-multi-retrieval-plan.md)），默认三路全开，可由 `chat_retrieval_methods` 配置调整。
 
 ### 1.3 边界（本期不做）
 
-- 不替代 Milvus 内置 BM25 在问答链路（chat）中的作用，chat 检索链路保持不变；
+- 不替代 Milvus 内置 BM25 在问答链路（chat）中的作用，chat 三路混合中 sparse 仍走 Milvus 内置 BM25；
 - 不做 ES 集群/多副本/冷热分层（单节点足够本项目量级）；
 - 不做同义词词典的 ES 端 reindex 方案（词库同义词走后端查询扩展，见 §6.3）。
 
@@ -316,7 +316,7 @@ expanded = expand(query, terms)
 
 - **单选**：直接返回该路结果，不做 RRF，分数保留原始语义（IP 相似度 / Milvus BM25 / ES BM25）；
 - **多选**：各路独立召回后 Python 端 RRF 融合（k=60），如 `dense+fulltext`（等价旧 `hybrid_es`）、`dense+sparse`（等价旧 `hybrid`）；
-- chat 链路（`retrieve_and_rank`）不感知多策略，`retrieve()` 默认 `dense` 纯稠密；
+- chat 链路（`retrieve_and_rank`）为**后端固定三路混合**（`settings.chat_retrieval_methods`，默认 `["dense","sparse","fulltext"]`）：dense/sparse 走 `retrieve()`，fulltext 走 `es_search()`（含词库查询扩展），多路 RRF 融合后衔接可选 rerank；单路失败降级为空，不阻断问答；
 - 请求未传 `retrieval_methods` 时沿用 `settings.retrieval_default_methods`（默认 `["dense"]`），前端默认勾选同。旧四值模式（`vector`/`hybrid`/`hybrid_es`）与 `weighted` 融合已移除。
 
 ### 7.2 ES 查询构造（core/es_store.py）
@@ -497,7 +497,7 @@ es_reconcile_interval_hours: int = 24       # 对账间隔（小时）
 | ES 内存占用 | 与 Milvus、PostgreSQL 叠加 | `ES_JAVA_OPTS=-Xms1g -Xmx1g`；数据量级小时单节点足够；监控堆使用 |
 | 双写一致性 | ES 写入/删除失败导致数据漂移 | best-effort + 日志 + `/api/es/status` 对账 + `/api/es/rebuild` 重建 |
 | 分数体系差异 | BM25/RRF 分数无 [0,1] 阈值；sparse/fulltext 无阈值语义 | 阈值仅对 dense/rerank 生效；前端按策略显示分数（dense/rerank 百分比，sparse/fulltext/RRF 原始数字） |
-| 两套关键词能力并存（Milvus BM25 vs ES）语义混淆 | chat 用纯稠密，search 页三策略可自由组合 | 明确边界：chat 不动；search 页 dense/sparse/fulltext 三复选 + RRF；文档与前端标注 |
+| 两套关键词能力并存（Milvus BM25 vs ES）语义混淆 | chat 与 search 页均为三路混合（dense/sparse/fulltext） | 检索策略统一为三路模型：search 页前端可多选，chat 后端固定 `chat_retrieval_methods`；文档与前端标注 |
 | 授权 | Elastic License（Basic 免费） | 单节点 Basic 功能足够；如需 Apache 2.0 可评估 OpenSearch+IK 移植版（本期不做） |
 
 ## 14. 开放问题（评审确认）

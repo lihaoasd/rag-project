@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from config import settings
+from core.retrieval import rrf_merge
 from services import lexicon_service, search_service
 from tests.helpers import KB_ID, DOC_ID
 
@@ -157,7 +158,7 @@ class TestRrfMerge:
     def test_merge_scores_and_order(self):
         a = [{"doc_id": "d", "chunk_index": 0}, {"doc_id": "d", "chunk_index": 1}]
         b = [{"doc_id": "d", "chunk_index": 1}, {"doc_id": "d", "chunk_index": 2}]
-        merged = search_service._rrf_merge([a, b], k=60)
+        merged = rrf_merge([a, b], k=60)
         assert merged[0]["chunk_index"] == 1
         # chunk1：a 列表 rank1(1/62) + b 列表 rank0(1/61)，保留 4 位小数
         assert abs(merged[0]["score"] - round(1.0 / 61 + 1.0 / 62, 4)) < 1e-6
