@@ -27,3 +27,19 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+  # === Neo4j（知识图谱存储，仅本地/部署机开发；生产可外部化由 .env 指向） ===
+  neo4j:
+    image: neo4j:5.21.0
+    container_name: bid_neo4j
+    ports:
+      - "7474:7474"   # Neo4j Browser（可选调试）
+      - "7687:7687"   # Bolt 协议（应用连接）
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-password123}
+      NEO4J_PLUGINS: '["apoc"]'                 # 可选：已改用纯 Cypher 去重（reduce），运行时不依赖 APOC
+      NEO4J_server_memory_heap_max__size: 1g
+    volumes:
+      - ./volumes/neo4j/data:/data
+      - ./volumes/neo4j/logs:/logs
+    restart: unless-stopped

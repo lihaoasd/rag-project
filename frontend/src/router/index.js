@@ -21,6 +21,11 @@ const routes = [
     component: () => import('@/views/ChunkListView.vue'),
   },
   {
+    path: '/knowledge-bases/:kbId/graph',
+    name: 'Graph',
+    component: () => import('@/views/GraphView.vue'),
+  },
+  {
     path: '/search',
     name: 'Search',
     component: () => import('@/views/SearchView.vue'),

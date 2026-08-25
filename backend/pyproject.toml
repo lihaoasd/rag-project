@@ -25,13 +25,10 @@ dependencies = [
     "minio>=7.2.0",
     "langfuse>=4,<5",
     "elasticsearch>=8.0,<9",
+    "neo4j>=5.18.0",
 ]
 
 [project.optional-dependencies]
-graph = [
-    "llama-index-graph-stores-neo4j>=0.2.0",
-    "neo4j>=5.18.0",
-]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",

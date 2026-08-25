@@ -12,10 +12,16 @@
       </div>
       <div class="header-row">
         <h1>{{ kbName || '文档管理' }}</h1>
-        <el-button type="primary" @click="showUploadDialog">
-          <el-icon><Upload /></el-icon>
-          上传文档
-        </el-button>
+        <div class="header-actions">
+          <el-button @click="$router.push(`/knowledge-bases/${kbId}/graph`)">
+            <el-icon><Share /></el-icon>
+            查看图谱
+          </el-button>
+          <el-button type="primary" @click="showUploadDialog">
+            <el-icon><Upload /></el-icon>
+            上传文档
+          </el-button>
+        </div>
       </div>
       <p class="desc">支持的格式：PDF（.pdf）、Word（.docx / .doc），单文件上限 500MB</p>
     </div>
@@ -47,6 +53,35 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="图谱" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag
+              v-if="row.graph_status === 'completed'"
+              type="success"
+              size="small"
+              effect="plain"
+            >
+              已建图
+            </el-tag>
+            <el-tag
+              v-else-if="row.graph_status === 'building'"
+              type="warning"
+              size="small"
+              effect="plain"
+            >
+              构建中
+            </el-tag>
+            <el-tag
+              v-else-if="row.graph_status === 'failed'"
+              type="danger"
+              size="small"
+              effect="plain"
+            >
+              建图失败
+            </el-tag>
+            <span v-else class="graph-none">未建</span>
+          </template>
+        </el-table-column>
         <el-table-column label="已入库" width="100" align="center">
           <template #default="{ row }">
             {{ row.processed_chunk_count ?? '-' }}
@@ -67,7 +102,7 @@
             {{ formatDate(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="220" align="center" fixed="right">
+        <el-table-column label="操作" width="300" align="center" fixed="right">
           <template #default="{ row }">
             <el-button
               v-if="row.status === 'uploaded' || row.status === 'failed'"
@@ -87,6 +122,26 @@
               @click="$router.push(`/knowledge-bases/${kbId}/documents/${row.id}/chunks`)"
             >
               切片
+            </el-button>
+            <el-button
+              v-if="row.status === 'completed'"
+              text
+              type="success"
+              size="small"
+              :loading="row._buildingGraph"
+              @click="handleBuildGraph(row)"
+            >
+              {{ row.graph_status === 'completed' ? '重建图' : '建图' }}
+            </el-button>
+            <el-button
+              v-if="row.status === 'completed' && (row.graph_status === 'completed' || row.graph_status === 'failed')"
+              text
+              type="warning"
+              size="small"
+              :loading="row._clearingGraph"
+              @click="handleClearGraph(row)"
+            >
+              清图
             </el-button>
             <el-button
               v-if="row.status === 'completed' || row.status === 'failed'"
@@ -167,9 +222,10 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage, ElNotification } from 'element-plus'
+import { ElMessage, ElNotification, ElMessageBox } from 'element-plus'
 import { getKnowledgeBase } from '@/api/knowledgeBase'
 import { listDocuments, deleteDocument, parseDocument, reparseDocument } from '@/api/document'
+import { buildDocGraph, clearDocGraph } from '@/api/graph'
 
 const route = useRoute()
 const kbId = route.params.kbId
@@ -305,6 +361,43 @@ async function handleReparse(row) {
   }
 }
 
+async function handleBuildGraph(row) {
+  row._buildingGraph = true
+  try {
+    await buildDocGraph(kbId, row.id)
+    ElMessage.success('图谱构建已触发，正在后台处理...')
+    await loadList()
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.error('图谱构建失败: ' + msg)
+  } finally {
+    row._buildingGraph = false
+  }
+}
+
+async function handleClearGraph(row) {
+  try {
+    await ElMessageBox.confirm('将清除该文件对知识图谱的全部贡献（其他文件贡献的实体不受影响），确定？', '清除单文件图谱', {
+      confirmButtonText: '确认清除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
+  row._clearingGraph = true
+  try {
+    await clearDocGraph(kbId, row.id)
+    ElMessage.success('该文件图谱已清除')
+    await loadList()
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.error('清除图谱失败: ' + msg)
+  } finally {
+    row._clearingGraph = false
+  }
+}
+
 async function handleDelete(docId) {
   try {
     await deleteDocument(kbId, docId)
@@ -315,9 +408,11 @@ async function handleDelete(docId) {
   }
 }
 
-// --- 轮询：存在 processing 状态的文档时自动刷新 ---
+// --- 轮询：存在 processing 状态的文档或图谱构建中时自动刷新 ---
 function hasProcessing() {
-  return docList.value.some((d) => d.status === 'processing' || d.status === 'queued')
+  return docList.value.some(
+    (d) => d.status === 'processing' || d.status === 'queued' || d.graph_status === 'building'
+  )
 }
 
 function managePolling() {
@@ -377,6 +472,12 @@ onBeforeUnmount(() => stopPolling())
   color: var(--color-text-primary);
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .desc {
   color: var(--color-text-secondary);
   font-size: 13px;
@@ -386,6 +487,11 @@ onBeforeUnmount(() => stopPolling())
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.graph-none {
+  color: var(--color-text-secondary);
+  font-size: 12px;
 }
 
 .upload-area { width: 100%; }

@@ -1,5 +1,81 @@
 # 修改记录
 
+## 2026-08-24
+
+- 需求：按 `docs/09-graph-module-design.md`（v1.1 已评审）实现知识图谱模块——每知识库一个图谱（Neo4j + kb_id 隔离）、全量/单文件增量构建、单文件清除、ECharts Web 可视化、图检索 API（chunk 级证据）、词库分类枚举化。
+- 方案：`docs/plan/33-graph-module-plan.md`。
+- 改动（后端）：
+  - 配置/部署：`config.py` 新增 Neo4j 图谱配置段（`graph_enabled`/`neo4j_*`/`graph_extraction_batch` 等，默认关闭优雅降级）；`.env`/`.env.example` 增加 `NEO4J_*`；`docker-compose.yml` 新增 neo4j 服务；`pyproject.toml` 移除 `graph` extra（llama-index-graph-stores-neo4j 全代码零引用），`neo4j>=5.18.0` 移入主依赖；
+  - 新增 `core/neo4j_store.py`（driver 单例、execute_read/write/write_many、health_check、ensure_indexes，同步调用走线程池）；`core/graph_queue.py`（build_file/build_kb/clear_file 独立 FIFO 队列，与解析队列解耦）；`core/graph_extractor.py`（词库匹配 + 金额/日期正则 + LLM 批量 Schema 约束抽取 + 合并去重 + **chunk 回原文归属** + **词库归并**）；`models/graph_schemas.py`（抽取输出校验 + 图检索请求/响应）；`services/graph_service.py`（构建/清除/查询编排 + 证据查询 + 关系类型白名单防注入）；`routers/graph.py`（图谱管理 + 图检索 API，未启用时 503）；
+  - 迁移 `0014_graph_status`：documents 加 `graph_status/graph_error_message/graph_built_at/graph_duration_ms` + `(kb_id, graph_status)` 索引；lexicon_terms 空分类统一归 `other`；
+  - `models/document.py`/`schemas.py`：Document 加 4 个图谱字段，DocumentResponse 补齐；`repositories/document_repository.py`：update_graph_status/list_chunks_for_graph/get_chunks_by_ids/get_by_ids/reset_stale_graph_status/invalidate_all_graphs；
+  - `services/lexicon_service.py`：缓存结构扩展为 `{标准词: {aliases, category}}`（expand_query 同步改造）+ 新增 `match_entities`/`normalize_category`（中文历史值映射、未知归 other）+ CSV 导入分类自动映射 + 词条变更后联动 `invalidate_all_graphs`（风险 10）；
+  - 联动清除（§4.3 调用契约）：`document_service.delete_document`/`reparse_document`/`rechunk_document` 在删 PG 前调用 `clear_file_graph_best_effort`（先取 chunk_ids 再清 Neo4j，失败不阻断主流程，状态置 none/failed）；
+  - `main.py`：注册 graph router、启动/停止 graph_queue（仅 graph_enabled 时）、Neo4j 索引初始化（best-effort）、启动时重置滞留 building → none、health 返回 neo4j 状态。
+- 改动（前端）：
+  - 新增 `src/api/graph.js`、`src/views/GraphView.vue`（ECharts 力导向图：类型着色/degree 大小、点击节点展开详情、chunk 证据高亮 + 跳转 ChunkListView、全量构建/清空/检索、构建中提示遮罩、自动轮询刷新）；`src/router/index.js` 加 `/knowledge-bases/:kbId/graph`；
+  - `DocumentListView.vue`：图谱状态列（已建图/构建中/建图失败/未建）+ 建图/重建图/清图按钮（二次确认）+ 查看图谱入口；
+  - `LexiconView.vue`：分类改为固定枚举下拉（公司/机构、项目、人员、地点、资质、其他/术语），列表/筛选/编辑/CSV 导入提示同步枚举化，旧中文分类编辑时自动映射；
+  - `npm install echarts`。
+- v1.1 评审决策落实：①LLM 实体 chunk 归属（回原文定位，失败降级首 chunk）②词库缓存结构扩展 ③词库变更联动置 none ④去 PropertyGraphIndex ⑤关系类型白名单 12+ 种（09 文档为单一事实源）⑥空串/未知分类归 other ⑦词库归并（精确+包含，同类型才合并）⑧联动清除 best-effort ⑨纯 Cypher 去重（reduce，去 APOC 运行时依赖）⑩写入按语句批拆事务（每批 100 条）⑪mentioned_chunk_ids 不设上限；低优先级项：description 先到先得、GET /graph 按 degree 降序采样、entities 接口改 query 参数、中文关系类型反引号、检索侧补正则层、health 扩展、构建中提示。
+- 验证：后端全量 **520 测试通过**（新增 55 个图模块/词库用例）；前端 `npm run build` 构建成功；GraphView/文档列表/词库枚举均编译通过。本机无 docker CLI，Neo4j 集成验证待部署机（192.168.60.120，GRAPH_ENABLED=true + compose neo4j）执行。
+
+## 2026-08-24
+
+- 需求：接入真实 Neo4j（192.168.60.121:7687，neo4j/111111_a），完成知识图谱模块真实环境端到端验证与修复。
+- 改动：
+  - `backend/.env`：`GRAPH_ENABLED=true`，NEO4J_URI/USERNAME/PASSWORD 指向 192.168.60.121；
+  - 执行 `alembic upgrade head`（0014）：documents 图谱状态列 + lexicon_terms 空分类归 other（env.py 用 os.getenv 不读 .env，命令前需注入 PG_* 环境变量）；
+  - 修复 4 个真实环境 Cypher/接口 bug：
+    1. `graph_extractor._llm_extract_batch`：dict 消息列表 → `ChatMessage`（llama-index achat 校验失败）；
+    2. Neo4j 5 兼容性：stats 查询去掉 `GROUP BY`（Cypher 隐式聚合）；所有 `MATCH (x:Entity {参数 map})` 改 WHERE 形式（42N32）；`size((n)--())` 改 `COUNT { (n)--() }`（42I52）；变量长度关系跳数 `[r*0..$hops]` 改字符串拼接（max_hops clamp 1..3，42N32）；
+    3. `$query` 参数名与 neo4j driver `tx.run(query=...)` 关键字冲突 → 改名 `$q`；
+    4. `get_graph_stats` 构建进度统计 bug：`completed` 状态未映射 `built`（被计入 none）；`main.py` health 误用模块级 `health_check`（应为 `Neo4jStore.health_check()`）；
+  - `tests/conftest.py`：新增 autouse fixture 隔离 `.env`（测试默认 graph_enabled=False，防 GRAPH_ENABLED=true 污染单测）。
+- 真实环境端到端验证（kb 98b88fd5，24-chunk 文档）：
+  - 构建：**122 实体 + 123 关系**（Project 35/Qualification 57/Organization 3/Location 3/Money 1/Event 23），graph_status=completed，built=1；
+  - 图检索：子图 32 节点 + 30 边 + **31 组 chunk 证据**（页码/文本正确，证据查 document_chunks 实时关联）；
+  - 实体详情：Project 类型、degree 31、30 邻居、3 条证据；
+  - 清除单文件（G-05）：122 → 0 实体精确剥离，graph_status → none；重建恢复 146 实体；
+  - 全图数据（ECharts）：按 degree 降序采样 100 节点 + 107 边。
+- 验证：后端全量 **520 测试通过**（pytest exit 0）；前端 `npm run build` 构建成功。
+
+## 2026-08-24
+
+- 需求：图谱可视化优化——大图卡顿、关系不显示、chunk 证据查看方式调整。
+- 改动：
+  - **关系不显示修复**：后端节点 id 为 `类型_名称` 而边 source/target 为 `_名称`（格式不一致，ECharts link 匹配不上）——边查询补两端类型，构造与节点一致的 id（`get_graph_data`/`search_subgraph`），真实数据验证 100 节点/105 边/0 不匹配；
+  - **chunk 证据改弹窗**：`GraphView.vue` 移除跳转 ChunkListView，"查看原文"改为 el-dialog 展示完整切片文本（文件名/页码/切片序号 + 实体全文高亮，`highlightFull`）；
+  - **图大卡顿优化**：
+    - 后端 `get_graph_data` 分页化（`limit` 默认 500→150 + `offset`/`exclude_names` + 返回 `total_nodes`/`has_more`；增量加载返回「已加载 ∪ 新节点」之间边，跨批边不断裂），router 传 `Query` 参数；
+    - 前端：默认只渲染核心子图（按 degree 降序前 150），"加载更多"按钮增量合并（节点/边按 id 去重）；ECharts 配置优化——`animation: false`（关动画）、标签默认隐藏（degree≥5 核心节点常显，悬停 emphasis 显示）、`labelLayout.hideOverlap`、force 物理参数调优（friction 0.6/repulsion 160/gravity 0.08）、节点 size 上限收紧、`lazyUpdate`；
+  - 附带修复：GraphView `detail` 初始 null 的 `detail.entity` 空指针（改可选链 `detail?.entity`）。
+- 验证：后端分页接口真实数据验证（311 节点分页、跨批边正确）；后端全量 520 测试通过；前端 `npm run build` 构建成功。
+
+## 2026-08-24
+
+- 需求：图谱可视化改为「**节点数分级、逐层展开**」浏览方式（可行性确认：以实体为中心的交互式局部探索，节点数始终可控，天然规避大图卡顿）。
+- 改动：
+  - 后端新增 `expand_node(kb_id, name, limit)`：以指定实体为中心返回 1-hop 邻居节点 + 「实体 ∪ 邻居」之间边（实体不存在返回 None）；router `POST /graph/expand`（`GraphExpandRequest` schema，limit ≤ 300）；
+  - 前端 `GraphView.vue`：详情面板新增「**展开邻居**」按钮——调 expand API 将 1-hop 邻居合并入画布（`mergeGraphData` 节点/边去重，loadMore 复用同一合并函数）；已展开节点以深色边框标记；展开/加载更多两条浏览路径并存；
+  - 真实数据验证：degree 36 的中心实体展开返回 35 邻居 + 35 边；不存在的实体返回 404。
+- 验证：后端 graph 相关 17 测试通过；前端 `npm run build` 构建成功。
+
+## 2026-08-24
+
+- 需求：实体/关系类型改为**通用本体**（9 类实体 + 12 种关系，不绑定投标场景），旧投标数据清空重建。
+- 设计确认：实体 9 类（Organization/Person/Place/Event/Time/Project/Product/Quantity/Concept，覆盖原 Money→Quantity、Qualification→Concept、Location→Place、Date→Time）；关系 12 种（属于/位于/发生在/参与/负责/合作/关联/包含/要求/拥有/数量/日期，含兜底"关联"）；旧数据清空重建。
+- 改动：
+  - `core/graph_extractor.py`：`ENTITY_TYPE_LABEL_MAP` 更新为 9 类通用映射；抽取 prompt 重写（通用实体/关系 + 方向类型约束 + 兜底"关联"）；正则 `_MONEY_RE` 扩为数量（含吨/kg/年等单位）、类型改 Quantity/Time；
+  - `services/graph_service.py`：`RELATION_TYPES` 更新为通用 12 种白名单（旧中标/招标/分包等自动丢弃）；
+  - `services/lexicon_service.py`：`LEXICON_CATEGORY_ENTITY_TYPES`（place/product/concept）+ `_CATEGORY_LEGACY_MAP`（location→place、qualification→concept、中文值映射）；
+  - `models/graph_schemas.py`：`ENTITY_TYPES` Literal 更新为 9 类；
+  - 迁移 `0015_lexicon_category_generic.py`：历史分类数据归一（中文值/旧枚举→通用枚举，无法识别归 other）；
+  - 前端 `LexiconView.vue`：分类下拉更新为 7 枚举（公司/机构、人员、地点、项目、产品、概念/资质、其他/术语）+ 历史映射；
+  - 文档 `docs/09`：§1.3 决策表、§3.1 类型标签、§5.2.1 词库分类表、§5.3 prompt（通用本体）、§6.1/§6.3 检索示例、§7.3 映射说明同步更新。
+- 真实环境验证（kb 98b88fd5 清空重建）：实体类型 **Quantity 56 / Concept 467 / Product 206 / Time 1 / Organization 4**，旧类型（Money/Qualification/Date/Location）**零残留**；关系全部为新白名单类型。
+- 验证：后端全量 **520 测试通过**（pytest exit 0）；前端 `npm run build` 构建成功。
+
 ## 2026-08-22
 
 - 需求：`docs/09-graph-module-design.md`（知识图谱模块详细设计）评审，确认 11 项决策并修订至 v1.1。

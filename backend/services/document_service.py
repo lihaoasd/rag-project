@@ -139,6 +139,10 @@ def _doc_to_dict(doc) -> dict:
         "chunk_count": doc.chunk_count,
         "processed_chunk_count": doc.processed_chunk_count,
         "parse_duration_ms": doc.parse_duration_ms,
+        "graph_status": doc.graph_status,
+        "graph_error_message": doc.graph_error_message,
+        "graph_built_at": doc.graph_built_at.isoformat() if doc.graph_built_at else None,
+        "graph_duration_ms": doc.graph_duration_ms,
         "created_at": doc.created_at.isoformat() if doc.created_at else "",
     }
 
@@ -349,7 +353,12 @@ async def get_document(kb_id: str, doc_id: str) -> dict | None:
 
 
 async def delete_document(kb_id: str, doc_id: str) -> bool:
-    """删除文档 — PG + Milvus + MinIO 三处清理。"""
+    """删除文档 — PG + Milvus + ES + MinIO + 图谱 多处清理。"""
+    # 0. 联动清除图谱（先取 chunk_ids 再删 PG，best-effort，失败不阻断，§4.3 调用契约）
+    from services.graph_service import clear_file_graph_best_effort
+
+    await clear_file_graph_best_effort(kb_id, doc_id)
+
     # 1. PG 删除
     async with async_session() as session:
         doc_repo = DocumentRepository(session)
@@ -649,6 +658,11 @@ async def rechunk_document(
             # 2. 更新状态 → processing
             await doc_repo.update_status(doc_id, "processing", error_message="")
 
+            # 2.5 联动清除图谱（先取 chunk_ids 再删 PG，best-effort，§4.3 调用契约）
+            from services.graph_service import clear_file_graph_best_effort
+
+            await clear_file_graph_best_effort(kb_id, doc_id)
+
             # 3. 删除旧切片（PG）
             await doc_repo.delete_chunks_by_doc_id(doc_id)
 
@@ -751,6 +765,11 @@ async def reparse_document(kb_id: str, doc_id: str) -> None:
 
             # 2. 更新状态 → processing
             await doc_repo.update_status(doc_id, "processing", error_message="")
+
+            # 2.5 联动清除图谱（先取 chunk_ids 再删 PG，best-effort，§4.3 调用契约）
+            from services.graph_service import clear_file_graph_best_effort
+
+            await clear_file_graph_best_effort(kb_id, doc_id)
 
             # 3. 删除旧切片（PG）
             await doc_repo.delete_chunks_by_doc_id(doc_id)

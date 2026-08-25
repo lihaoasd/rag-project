@@ -88,6 +88,17 @@ class Settings(BaseSettings):
     langfuse_base_url: str = ""
     langfuse_sample_rate: float = 1.0
 
+    # === Neo4j 图谱配置 ===
+    graph_enabled: bool = False          # 图谱功能总开关（未部署 Neo4j 时优雅降级）
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_username: str = "neo4j"
+    neo4j_password: str = "password123"
+    neo4j_database: str = "neo4j"
+    graph_extraction_batch: int = 4      # LLM 抽取合并 chunk 数
+    graph_max_hops: int = 2              # 图检索最大跳数
+    graph_query_limit: int = 200         # 子图返回上限
+    graph_min_chunk_chars: int = 20      # 短于此长度的 chunk 不参与抽取
+
     @property
     def database_url(self) -> str:
         """构建异步 PostgreSQL 连接字符串"""

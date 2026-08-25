@@ -10,15 +10,15 @@ from services import lexicon_service
 
 class TestExpandQuery:
     def test_no_match_returns_original(self):
-        lexicon_service._cache = {"甲公司": ["甲建设集团"]}
+        lexicon_service._cache = {"甲公司": {"aliases": ["甲建设集团"], "category": "organization"}}
         assert lexicon_service.expand_query("随便搜") == ["随便搜"]
 
     def test_alias_in_query_adds_standard(self):
-        lexicon_service._cache = {"甲公司": ["甲建设集团", "甲建设"]}
+        lexicon_service._cache = {"甲公司": {"aliases": ["甲建设集团", "甲建设"], "category": "organization"}}
         assert lexicon_service.expand_query("甲建设集团中标") == ["甲建设集团中标", "甲公司"]
 
     def test_term_in_query_adds_aliases(self):
-        lexicon_service._cache = {"甲公司": ["甲建设集团"]}
+        lexicon_service._cache = {"甲公司": {"aliases": ["甲建设集团"], "category": "organization"}}
         assert lexicon_service.expand_query("甲公司资质") == ["甲公司资质", "甲建设集团"]
 
     def test_empty_cache(self):
@@ -27,8 +27,8 @@ class TestExpandQuery:
 
     def test_multiple_matches_collect(self):
         lexicon_service._cache = {
-            "甲公司": ["甲建设集团"],
-            "市政总承包": ["市政公用工程施工总承包"],
+            "甲公司": {"aliases": ["甲建设集团"], "category": "organization"},
+            "市政总承包": {"aliases": ["市政公用工程施工总承包"], "category": "qualification"},
         }
         # 扩展词按 unicode 排序：市政总承包(市 U+5E02) < 甲公司(甲 U+7532)
         assert lexicon_service.expand_query("甲建设集团 市政公用工程施工总承包") == [
@@ -111,9 +111,9 @@ class TestImportExport:
             result = await lexicon_service.import_csv(content)
         assert result["imported"] == 2
         assert result["skipped"] == 1
-        # 别名以分号分隔解析为列表
-        assert repo.create.call_args_list[0].args == ("甲公司", ["甲建设集团"], "公司")
-        assert repo.create.call_args_list[1].args == ("乙公司", [], "建筑")
+        # 别名以分号分隔解析为列表；分类自动映射为枚举（公司→organization，未知→other）
+        assert repo.create.call_args_list[0].args == ("甲公司", ["甲建设集团"], "organization")
+        assert repo.create.call_args_list[1].args == ("乙公司", [], "other")
 
     @pytest.mark.asyncio
     async def test_export_ik_dict_one_per_line(self):

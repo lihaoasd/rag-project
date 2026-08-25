@@ -25,6 +25,20 @@ from tests.helpers import (
 
 
 # ============================================================
+# 隔离 .env：测试默认 graph_enabled=False（各测试按需 patch 开启）
+# ============================================================
+@pytest.fixture(autouse=True)
+def _reset_graph_enabled():
+    """防止本地 .env（GRAPH_ENABLED=true）污染单元测试。"""
+    from config import settings
+
+    original = settings.graph_enabled
+    settings.graph_enabled = False
+    yield
+    settings.graph_enabled = original
+
+
+# ============================================================
 # Mock AsyncSession
 # ============================================================
 @pytest.fixture
@@ -58,6 +72,7 @@ def mock_async_session(mock_session):
         "services.prompt_service.async_session",
         "services.lexicon_service.async_session",
         "services.es_admin_service.async_session",
+        "services.graph_service.async_session",
         "core.model_factory.async_session",
     ]
     active_patches = []

@@ -43,6 +43,10 @@ class DocumentResponse(BaseModel):
     chunk_count: int | None
     processed_chunk_count: int | None = None
     parse_duration_ms: int | None = None
+    graph_status: str = "none"
+    graph_error_message: str | None = None
+    graph_built_at: str | None = None
+    graph_duration_ms: int | None = None
     created_at: str
 
 

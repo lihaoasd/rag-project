@@ -26,7 +26,7 @@
 | ------ | ---------------------------------- | --------------------------------- |
 | 图存储引擎  | **Neo4j**（Community 版，Docker/外部服务） | 与 03 方案一致，Cypher 多跳查询与聚合能力强       |
 | 实体抽取方式 | **词库优先 + LLM 补充**（完全复用系统词库 `lexicon_terms`） | 高频实体零成本匹配，长尾实体与关系用 LLM，符合 04 词库策略 |
-| 词库分类   | **前端固定枚举下拉**（公司/项目/人员/地点/资质/其他） | 分类是词库→图谱实体类型的唯一桥梁，自由文本无法可靠映射    |
+| 词库分类   | **前端固定枚举下拉**（公司/机构、人员、地点、项目、产品、概念/资质、其他） | 分类是词库→图谱实体类型的唯一桥梁，自由文本无法可靠映射    |
 | 本阶段范围  | 图谱管理 + 可视化 + 图检索 API               | 问答双通道（query router）集成放下一阶段        |
 | 可视化    | **ECharts 力导向图**                   | 成熟、可定制，与 Element Plus 风格统一        |
 
@@ -106,7 +106,7 @@
 Neo4j **Community 版仅支持单 database**，因此"每个知识库一个图谱"通过**属性隔离 + 索引**实现，而非多 database：
 
 - 每个节点带 `kb_id` 属性；每个关系带 `kb_id` 属性；
-- 所有实体节点带通用标签 `Entity` + 类型标签（`Organization`/`Project`/`Person`/`Money`/`Date`/`Location`/`Qualification`/`Event`）；
+- 所有实体节点带通用标签 `Entity` + 类型标签（通用本体 9 类：`Organization`/`Person`/`Place`/`Event`/`Time`/`Project`/`Product`/`Quantity`/`Concept`）；
 - 建复合索引支撑隔离查询：`CREATE INDEX FOR (n:Entity) ON (n.kb_id, n.name)`；
 - **所有 Cypher 查询强制带** **`WHERE n.kb_id = $kb_id`** **过滤**，从查询层保证隔离；
 - 实体节点唯一键：`(kb_id, type, name)` —— 同名不同类型视为不同节点（去重逻辑见 §5.3）。
@@ -132,7 +132,7 @@ Neo4j **Community 版仅支持单 database**，因此"每个知识库一个图�
 
 | 关系类型                                        | 方向                | 属性                                                   | 说明                           |
 | ------------------------------------------- | ----------------- | ---------------------------------------------------- | ---------------------------- |
-| 业务关系（中标/合作/分包/合同金额/要求资质/…，沿用 03 文档 §4.2 清单） | 按语义               | `kb_id`, `type`, `description`, `source_doc_ids: []` | 实体间关系（**无 chunk 维度**，按文件级追踪来源） |
+| 业务关系（通用本体 12 种：属于/位于/发生在/参与/负责/合作/关联/包含/要求/拥有/数量/日期，§5.3） | 按语义               | `kb_id`, `type`, `description`, `source_doc_ids: []` | 实体间关系（**无 chunk 维度**，按文件级追踪来源） |
 | `提及`                                        | Document → Entity | `kb_id`                                                 | 文件到其贡献实体的锚点边，生命周期跟随 Document |
 
 关系唯一键：`(kb_id, type, 起点节点, 终点节点)` —— MERGE 模式匹配自动保证去重。
@@ -145,7 +145,7 @@ Neo4j **Community 版仅支持单 database**，因此"每个知识库一个图�
 Neo4j 图谱本体（节点量 = 文件数 + 实体数）：
 (文件A:Document) --[提及]--> (甲公司:Organization{name, mentioned_chunk_ids:[c3,c5]})
 (文件B:Document) --[提及]--> (甲公司)     ← 同实体多文件共享，节点唯一
-(甲公司) -[中标{source_doc_ids:[A]}]-> (XX项目:Project{...})
+(甲公司) -[参与{source_doc_ids:[A]}]-> (XX项目:Project{...})
 
 PostgreSQL（证据数据源，零冗余）：
 document_chunks 表：c3 → {doc_id:A, chunk_index:2, page_number:5, text:"…中标单位：甲公司…"}
@@ -242,8 +242,8 @@ ON MATCH  SET n.mentioned_chunk_ids =
 // 业务关系：先确保两端存在，再 MERGE 关系（按文件级 source_doc_ids 追踪）
 MATCH (a:Entity {kb_id: $kb_id, name: $a_name, type: $a_type}),
       (b:Entity {kb_id: $kb_id, name: $b_name, type: $b_type})
-MERGE (a)-[r:`中标` {kb_id: $kb_id}]->(b)
-ON CREATE SET r.type = '中标', r.source_doc_ids = [$doc_id]
+MERGE (a)-[r:`参与` {kb_id: $kb_id}]->(b)
+ON CREATE SET r.type = '参与', r.source_doc_ids = [$doc_id]
 ON MATCH  SET r.source_doc_ids =
               reduce(acc = r.source_doc_ids, d IN [$doc_id] |
                      CASE WHEN d IN acc THEN acc ELSE acc + d END)
@@ -271,7 +271,7 @@ chunk 文本
 ┌─────────────────────┐
 │ 1. 词库/规则匹配      │  零成本，毫秒级
 │  - lexicon 词库      │  标准词+别名 → 标准词，category → 实体类型
-│  - 内置正则          │  金额 / 日期 / 项目编号 / 资质编号 等
+│  - 内置正则          │  数量 / 时间 / 编号 等
 │  输出: 实体候选集     │  {name, type, 出现次数}
 └──────────┬──────────┘
            │（词库命中的实体直接入候选集，不调 LLM）
@@ -307,53 +307,62 @@ async def match_entities(text: str) -> list[dict]:
 
 #### 5.2.1 词库分类枚举化（前端 LexiconView 改造）
 
-`category` 由自由文本改为**固定枚举下拉**，存储英文枚举值、展示中文：
+`category` 由自由文本改为**固定枚举下拉**，存储英文枚举值、展示中文（通用本体，投标旧枚举 location/qualification 映射见 §7.3）：
 
 | 存储值（category） | 前端下拉文案 | 图谱实体类型标签 | 是否建图谱节点 |
 |------------------|------------|----------------|--------------|
 | `organization`   | 公司/机构    | `Organization` | ✅ |
-| `project`        | 项目        | `Project`      | ✅ |
 | `person`         | 人员        | `Person`       | ✅ |
-| `location`       | 地点        | `Location`     | ✅ |
-| `qualification`  | 资质        | `Qualification`| ✅ |
+| `place`          | 地点        | `Place`        | ✅ |
+| `project`        | 项目        | `Project`      | ✅ |
+| `product`        | 产品        | `Product`      | ✅ |
+| `concept`        | 概念/资质    | `Concept`      | ✅ |
 | `other`          | 其他/术语    | —              | ❌ 不进图（通用术语非实体，避免图谱噪声） |
 
-- **`other` 类词条不建图谱节点**：投标术语（如"招标文件""保证金"）不是实体，进图只会制造噪声；`match_entities` 直接跳过该类；
-- **空分类/未知分类一律归 `other`**：现有词条 `category` 默认空字符串（`server_default=""`），枚举化时由迁移脚本统一 `UPDATE` 为 `'other'`；CHECK 约束只含 6 个枚举值（不含空串），数据库层杜绝自由文本；
-- **旧数据一次性整理**：现有词条按映射表批量修正（`公司→organization`、`资质→qualification` 等），无法识别的归 `other`。整理可在 LexiconView 界面逐条修改，或提供批量 SQL 更新脚本（见 §7.3）；
+- **`other` 类词条不建图谱节点**：通用术语（如"招标文件""保证金"）不是实体，进图只会制造噪声；`match_entities` 直接跳过该类；
+- **空分类/未知分类一律归 `other`**：迁移脚本统一 `UPDATE` 为 `'other'`；CHECK 约束只含 7 个枚举值（不含空串），数据库层杜绝自由文本；
+- **旧数据一次性整理**：迁移 `0015` 将历史自由文本/旧投标枚举映射为通用枚举（`location→place`、`qualification→concept`、中文值→对应枚举，无法识别归 `other`）；
 - **CSV 导入校验**：导入时对已知中文分类自动映射为枚举值，未知值归 `other` 并在导入结果中提示。
 
-内置正则规则（金额、日期、编号）在 `core/graph_extractor.py` 中作为第二层匹配（不受词库分类影响）。
+内置正则规则（数量、时间、编号）在 `core/graph_extractor.py` 中作为第二层匹配（不受词库分类影响）。
 
-### 5.3 LLM 抽取 Prompt（Schema 约束）
+### 5.3 LLM 抽取 Prompt（Schema 约束，通用本体）
 
 ```text
-你是投标文档信息抽取系统。从文本中提取实体和关系，只提取明确提及的信息，不要编造。
+你是通用信息抽取系统。从文本中提取实体和关系，只提取明确提及的信息，不要编造。
 实体 name 必须与原文完全一致（禁止改写、合并或规范化），同一实体在原文中重复出现只需输出一次。
 
-实体类型: ORGANIZATION(公司/机构), PROJECT(项目), PERSON(人员), MONEY(金额,含币种),
-          DATE(日期), LOCATION(地点), QUALIFICATION(资质/证书), EVENT(事件)
+实体类型:
+ORGANIZATION(组织/机构/公司/团体), PERSON(人物), PLACE(地点/地理位置), EVENT(事件/活动),
+TIME(时间点/日期), PROJECT(项目/工程/任务), PRODUCT(产品/物品/资产/系统),
+QUANTITY(数量/金额/度量值,必须含单位,如 3000万元/50吨/2年), CONCEPT(概念/资质/标准/技能/制度/条款)
 
-关系类型(方向见括号):
-  (Organization)-[中标]->(Project)  (Organization)-[参与投标]->(Project)
-  (Organization)-[招标]->(Project)  (Organization)-[合作]->(Organization)
-  (Organization)-[分包]->(Organization)  (Project)-[合同金额]->(Money)
-  (Organization)-[缴纳保证金]->(Money)   (Project)-[要求资质]->(Qualification)
-  (Organization)-[拥有资质]->(Qualification)  (Project)-[位于]->(Location)
-  (Event)-[发生在]->(Date)  (Person)-[负责]->(Project)  (Person)-[隶属于]->(Organization)
+关系类型(方向见括号,源类型|目标类型):
+(Person|Organization)-[属于]->(Organization)
+(Organization|Project|Event|Product)-[位于]->(Place)
+(Event|Project)-[发生在]->(Time|Place)
+(Person|Organization)-[参与]->(Event|Project)
+(Person|Organization)-[负责]->(Project|Product|Event)
+(Organization|Person)-[合作]->(Organization|Person)
+(任意业务实体)-[关联]->(任意业务实体)   ← 语义不明确的通用关系用此类型
+(Project|Event|Product|Organization)-[包含]->(Project|Event|Product|Concept|Person)
+(Project|Product)-[要求]->(Concept|Product|Person)
+(Organization|Person)-[拥有]->(Product|Concept)
+(Project|Event|Product|Organization)-[数量]->(Quantity)
+(Project|Event|Document)-[日期]->(Time)
 
 输出严格 JSON（不要其他文字）:
 {"entities":[{"name":"...","type":"ORGANIZATION","description":"..."}],
- "relationships":[{"source":"...","target":"...","type":"中标","description":"..."}]}
+ "relationships":[{"source":"...","target":"...","type":"属于","description":"..."}]}
 ```
 
-> 关系类型清单为**本期单一事实源**（12 种）：相对 03 文档 §4.2（15 种）有意删减 `Project-[包含]->Event`（事件问答为下阶段场景，本期无消费方）；后续扩展关系先改此处，再同步 03 文档。
+> 关系类型清单为**本期单一事实源**（通用本体 12 种，含兜底"关联"）；扩展/调整先改此处，再同步实现白名单（`graph_service.RELATION_TYPES`）与 03 文档。
 
 实现要点：
 
-- 使用 `model_factory.create_llm(resolve_model_config(kb_id, "llm"))`，`OpenAILike` 异步接口（`acomplete`）并发调用；
+- 使用 `model_factory.create_llm(resolve_model_config(kb_id, "llm"))`，`OpenAILike` 异步接口（`achat`）并发调用；
 - LLM 输出经 Pydantic 模型校验（`models/graph_schemas.py`），解析失败的重试 1 次，仍失败丢弃该批（记日志）；
-- `MONEY`/`DATE` 类型实体**优先走正则匹配**，LLM 不重复抽取（降低幻觉与成本）；
+- `QUANTITY`/`TIME` 类型实体**优先走正则匹配**，LLM 不重复抽取（降低幻觉与成本）；
 - **chunk 归属（G-06 证据前提）**：在"实体名与原文一致"约束下，后端按实体名在该批各 chunk 原文中定位，命中哪个 chunk 即记入哪个 `mentioned_chunk_ids`；定位失败（改名/歧义）降级记入该批第一个 chunk；
 - **词库归并**：合并阶段将 LLM 实体名与词库标准词/别名做精确+包含匹配，命中则归一为标准词作为节点键（与词库抽取的实体天然合并，避免同实体双节点）。
 
@@ -374,8 +383,8 @@ async def match_entities(text: str) -> list[dict]:
 
 | 场景   | 实现                                      | 示例             |
 | ---- | --------------------------------------- | -------------- |
-| 实体定位 | 词库匹配 query 中的实体/别名 → 正则（金额/日期/编号）→ Neo4j name 精确/包含匹配 | "甲公司" / "3000万" |
-| 邻居展开 | 入口实体 1\~2 hop 展开，返回子图（ECharts 渲染）       | 甲公司 → 合作方/中标项目 |
+| 实体定位 | 词库匹配 query 中的实体/别名 → 正则（数量/时间/编号）→ Neo4j name 精确/包含匹配 | "甲公司" / "3000万" |
+| 邻居展开 | 入口实体 1\~2 hop 展开，返回子图（ECharts 渲染）       | 甲公司 → 合作方/参与项目 |
 | 关系查询 | 关键词映射关系类型 + 方向模板 Cypher                 | "甲公司的合作方"      |
 | **chunk 证据** | **实体节点 mentioned\_chunk\_ids → 查 document\_chunks 取切片** | 甲公司 → 第 5 页切片文本 |
 | 全局统计 | 聚合 Cypher（COUNT/DISTINCT/SUM）           | KB 图谱概要        |
@@ -400,7 +409,7 @@ body: {"query": "甲公司", "max_hops": 2, "limit": 200}
 ```json
 {
   "nodes": [{"id": "org_甲公司", "name": "甲公司", "type": "Organization", "degree": 28}],
-  "edges": [{"source": "org_甲公司", "target": "proj_XX项目", "type": "中标"}],
+  "edges": [{"source": "org_甲公司", "target": "proj_XX项目", "type": "参与"}],
   "evidence": [
     {
       "entity": "甲公司",
@@ -419,13 +428,13 @@ body: {"query": "甲公司", "max_hops": 2, "limit": 200}
 ### 6.3 关系查询模板
 
 ```cypher
-// 例："X 中标了哪些项目" → 方向 out，关系 中标
-MATCH (s:Entity {kb_id: $kb_id, name: $entity})-[r:`中标`]->(t)
+// 例："X 参与了哪些项目" → 方向 out，关系 参与
+MATCH (s:Entity {kb_id: $kb_id, name: $entity})-[r:`参与`]->(t)
 RETURN s.name AS source, type(r) AS relation, t.name AS target,
        r.description AS description, size(r.source_doc_ids) AS doc_count
 ```
 
-MVP 关系类型识别：query 与关系类型关键词表做包含匹配（"中标/合作/分包/招标/保证金/资质/位于/负责/隶属于"…），未命中则默认走实体邻居展开。
+MVP 关系类型识别：query 与关系类型关键词表做包含匹配（"参与/合作/包含/负责/位于/发生在/属于/拥有/要求/数量/日期/关联"…），未命中则默认走实体邻居展开。
 
 ### 6.4 统计查询
 
@@ -462,7 +471,7 @@ RETURN count(n) AS total_entities, count(DISTINCT n.type) AS entity_types
 
 `lexicon_terms.category` 字段**结构不变**（VARCHAR(50)），无需 alembic 迁移，需两类配套动作：
 
-1. **旧数据批量修正**：一次性 SQL 脚本，把自由文本分类映射为枚举值（`公司/企业/单位→organization`、`项目/工程→project`、`人员/人名→person`、`地点→location`、`资质/证书→qualification`，无法识别→`other`），**并把现有空字符串分类统一 `UPDATE` 为 `'other'`**；
+1. **旧数据批量修正**：迁移 `0015` 将自由文本/旧投标分类映射为通用枚举（`公司/企业/单位→organization`、`项目/工程→project`、`人员/人名→person`、`地点/位置→place`、`资质/证书/标准/技能→concept`、`location→place`、`qualification→concept`，无法识别→`other`），并把现有空字符串分类统一归 `other`；
 2. **（可选）新增 CHECK 约束**：枚举化稳定后加 `CHECK (category IN ('organization','project','person','location','qualification','other'))`，从数据库层杜绝自由文本。**约束集合不含空串**（空串已在上一步归一为 `other`）；需在数据修正完成后单独迁移，避免约束失败。
 
 ### 7.4 无新增证据表（设计取舍说明）
@@ -524,7 +533,7 @@ RETURN count(n) AS total_entities, count(DISTINCT n.type) AS entity_types
     "total_entities": 1250,
     "total_relations": 3420,
     "entity_types": {"Organization": 85, "Project": 230, "Person": 156},
-    "relation_types": {"中标": 95, "合作": 45}
+    "relation_types": {"包含": 536, "关联": 159, "要求": 15}
   },
   "build": {
     "doc_total": 12, "built": 8, "building": 1, "failed": 1, "none": 2
@@ -537,7 +546,7 @@ RETURN count(n) AS total_entities, count(DISTINCT n.type) AS entity_types
 ```json
 {
   "nodes": [{"id": "org_甲公司", "name": "甲公司", "type": "Organization", "degree": 28}],
-  "edges": [{"source": "org_甲公司", "target": "proj_XX项目", "type": "中标"}]
+  "edges": [{"source": "org_甲公司", "target": "proj_XX项目", "type": "参与"}]
 }
 ```
 
@@ -637,7 +646,7 @@ graph_query_limit: int = 200       # 子图返回上限
 
 | 改造点 | 内容 |
 |--------|------|
-| 分类输入 | `el-input` 自由文本 → `el-select` 固定下拉（公司/机构、项目、人员、地点、资质、其他/术语） |
+| 分类输入 | `el-input` 自由文本 → `el-select` 固定下拉（公司/机构、人员、地点、项目、产品、概念/资质、其他/术语） |
 | 列表展示 | 分类列按枚举映射显示中文 label（存储值为英文枚举） |
 | 分类筛选 | 筛选项同步改为枚举下拉 |
 | CSV 导入 | 中文分类自动映射为枚举值，未知值归 `other` 并在导入结果提示 |

@@ -14,14 +14,15 @@
         @keyup.enter="load"
         @clear="load"
       />
-      <el-input
+      <el-select
         v-model="categoryFilter"
         placeholder="分类过滤"
         clearable
         style="width: 160px"
-        @keyup.enter="load"
-        @clear="load"
-      />
+        @change="load"
+      >
+        <el-option v-for="opt in CATEGORY_OPTIONS" :key="opt.value" :label="opt.label" :value="opt.value" />
+      </el-select>
       <el-button type="primary" @click="load">
         <el-icon><Search /></el-icon>查询
       </el-button>
@@ -50,7 +51,7 @@
       </el-table-column>
       <el-table-column prop="category" label="分类" width="130">
         <template #default="{ row }">
-          <el-tag v-if="row.category" type="info" size="small">{{ row.category }}</el-tag>
+          <el-tag v-if="row.category" type="info" size="small">{{ categoryLabel(row.category) }}</el-tag>
           <span v-else class="muted">-</span>
         </template>
       </el-table-column>
@@ -99,7 +100,10 @@
           />
         </el-form-item>
         <el-form-item label="分类">
-          <el-input v-model="form.category" placeholder="自由文本，如：资质 / 公司 / 术语（可空）" />
+          <el-select v-model="form.category" placeholder="选择分类（决定图谱实体类型）" clearable style="width: 100%">
+            <el-option v-for="opt in CATEGORY_OPTIONS" :key="opt.value" :label="opt.label" :value="opt.value" />
+          </el-select>
+          <div class="category-hint">分类决定该词条在知识图谱中的实体类型（其他/术语类不进图谱）</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -111,13 +115,15 @@
     <!-- 批量导入对话框 -->
     <el-dialog v-model="importVisible" title="CSV 批量导入" width="560px">
       <p class="import-hint">
-        每行一个词条，格式：<code>词条,别名1;别名2,分类</code>（首行表头自动跳过）
+        每行一个词条，格式：<code>词条,别名1;别名2,分类</code>（首行表头自动跳过）。<br />
+        分类支持枚举值（organization/project/person/location/qualification/other）或常见中文
+        （公司/项目/人员/地点/资质），自动映射，未知分类归 other。
       </p>
       <el-input
         v-model="importContent"
         type="textarea"
         :rows="8"
-        placeholder="甲公司,甲建设集团;甲建设,公司&#10;乙公司,,建筑"
+        placeholder="甲公司,甲建设集团;甲建设,organization&#10;乙公司,,公司"
       />
       <template #footer>
         <el-button @click="importVisible = false">取消</el-button>
@@ -132,6 +138,37 @@ import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus, Upload, Download, Document } from '@element-plus/icons-vue'
 import { listTerms, createTerm, updateTerm, deleteTerm, importTerms, exportCsv, exportIkDict } from '@/api/lexicon'
+
+// 词库分类枚举（存储英文枚举，展示中文；决定图谱实体类型，通用本体，见 docs/09 设计 5.2.1）
+const CATEGORY_OPTIONS = [
+  { value: 'organization', label: '公司/机构' },
+  { value: 'person', label: '人员' },
+  { value: 'place', label: '地点' },
+  { value: 'project', label: '项目' },
+  { value: 'product', label: '产品' },
+  { value: 'concept', label: '概念/资质' },
+  { value: 'other', label: '其他/术语' },
+]
+
+function categoryLabel(value) {
+  const opt = CATEGORY_OPTIONS.find((o) => o.value === value)
+  return opt ? opt.label : value || ''
+}
+
+// 历史自由文本分类 → 枚举（编辑旧词条时兼容；location/qualification 为旧投标类型）
+const CATEGORY_LEGACY = {
+  '公司': 'organization', '企业': 'organization', '单位': 'organization', '机构': 'organization',
+  '项目': 'project', '工程': 'project',
+  '人员': 'person', '人名': 'person',
+  '地点': 'place', '位置': 'place',
+  '资质': 'concept', '证书': 'concept', '标准': 'concept', '技能': 'concept',
+}
+
+function normalizeCategory(cat) {
+  if (!cat) return ''
+  if (CATEGORY_OPTIONS.some((o) => o.value === cat)) return cat
+  return CATEGORY_LEGACY[cat.trim()] || 'other'
+}
 
 // --- State ---
 const items = ref([])
@@ -185,7 +222,7 @@ function openEdit(row) {
   form.value = {
     term: row.term,
     aliases: [...(row.aliases || [])],
-    category: row.category || '',
+    category: normalizeCategory(row.category),
   }
   dialogVisible.value = true
 }
@@ -351,5 +388,12 @@ onMounted(load)
   background: #f5f7fa;
   padding: 1px 5px;
   border-radius: 3px;
+}
+
+.category-hint {
+  font-size: 12px;
+  color: var(--color-text-secondary, #909399);
+  line-height: 1.5;
+  margin-top: 4px;
 }
 </style>

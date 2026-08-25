@@ -94,6 +94,17 @@ class DocumentRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_by_ids(self, doc_ids: list[str]) -> list[Document]:
+        """按 ID 列表批量获取文档（图谱证据文件名映射用）。"""
+        if not doc_ids:
+            return []
+        try:
+            ids = [str(uuid.UUID(d)) for d in doc_ids]
+        except ValueError:
+            return []
+        stmt = select(Document).where(Document.id.in_(ids))
+        return list((await self.session.scalars(stmt)).all())
+
     async def delete_chunks_by_doc_id(self, doc_id: str) -> None:
         """手动删除文档的所有切片（无 FK，需手动级联）。"""
         uuid.UUID(doc_id)  # 验证格式
@@ -221,6 +232,29 @@ class DocumentRepository:
         )
         return list((await self.session.scalars(stmt)).all())
 
+    async def list_chunks_for_graph(self, doc_id: str) -> list[DocumentChunk]:
+        """查询文档全部切片（图谱构建用，含 id/text_content/page_number，按 chunk_index 升序）。"""
+        try:
+            uuid.UUID(doc_id)  # 验证格式
+        except ValueError:
+            return []
+        stmt = (
+            select(DocumentChunk)
+            .where(DocumentChunk.doc_id == doc_id)
+            .order_by(DocumentChunk.chunk_index.asc())
+        )
+        return list((await self.session.scalars(stmt)).all())
+
+    async def get_chunks_by_ids(self, kb_id: str, chunk_ids: list[str]) -> list[DocumentChunk]:
+        """按 chunk ID 列表批量查询切片（图谱检索证据用，含文件名 join 需调用方补充）。"""
+        if not chunk_ids:
+            return []
+        stmt = (
+            select(DocumentChunk)
+            .where(DocumentChunk.kb_id == kb_id, DocumentChunk.id.in_(chunk_ids))
+        )
+        return list((await self.session.scalars(stmt)).all())
+
     async def count_chunks_by_kb(self) -> dict[str, int]:
         """按知识库统计切片数（ES 对账用）。"""
         rows = (
@@ -310,3 +344,72 @@ class DocumentRepository:
         await self.session.execute(stmt)
         await self.session.commit()
         logger.debug("文档切片计数更新: doc_id=%s, delta=%+d", doc_id, delta)
+
+    # ============================================================
+    # 图谱状态
+    # ============================================================
+
+    async def update_graph_status(
+        self,
+        doc_id: str,
+        graph_status: str,
+        error_message: str | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
+        """更新文档图谱构建状态。graph_status: none/building/completed/failed"""
+        uuid.UUID(doc_id)  # 验证格式
+        values: dict = {"graph_status": graph_status}
+        if error_message is not None:
+            values["graph_error_message"] = error_message
+        if duration_ms is not None:
+            values["graph_duration_ms"] = duration_ms
+        if graph_status == "completed":
+            from datetime import datetime, timezone
+
+            values["graph_built_at"] = datetime.now(timezone.utc)
+        stmt = update(Document).where(Document.id == doc_id).values(**values)
+        await self.session.execute(stmt)
+        await self.session.commit()
+        logger.info("图谱状态更新: doc_id=%s, graph_status=%s", doc_id, graph_status)
+
+    async def reset_graph_status_by_kb(self, kb_id: str, status: str = "none") -> int:
+        """批量重置知识库下文档的图谱状态（清空图谱后调用）。"""
+        try:
+            uid = uuid.UUID(kb_id)
+        except ValueError:
+            return 0
+        stmt = (
+            update(Document)
+            .where(Document.kb_id == str(uid))
+            .values(graph_status=status, graph_error_message=None)
+        )
+        result = await self.session.execute(stmt)
+        await self.session.commit()
+        logger.info("图谱状态批量重置: kb_id=%s, status=%s, count=%d", kb_id, status, result.rowcount)
+        return result.rowcount or 0
+
+    async def reset_stale_graph_status(self) -> int:
+        """启动时重置滞留 building 的图谱状态 → none（队列为内存队列，重启丢失任务）。"""
+        stmt = (
+            update(Document)
+            .where(Document.graph_status == "building")
+            .values(graph_status="none", graph_error_message=None)
+        )
+        result = await self.session.execute(stmt)
+        await self.session.commit()
+        if result.rowcount:
+            logger.warning("滞留 building 图谱状态已重置为 none: %d 条", result.rowcount)
+        return result.rowcount or 0
+
+    async def invalidate_all_graphs(self) -> int:
+        """词库变更联动（风险 10）：所有已构建文档图谱状态置 none（stale 标记，提示重建）。"""
+        stmt = (
+            update(Document)
+            .where(Document.graph_status == "completed")
+            .values(graph_status="none", graph_error_message=None)
+        )
+        result = await self.session.execute(stmt)
+        await self.session.commit()
+        if result.rowcount:
+            logger.info("词库变更联动：%d 个已建图文档状态置 none（提示重建）", result.rowcount)
+        return result.rowcount or 0
