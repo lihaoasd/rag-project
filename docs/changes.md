@@ -1,5 +1,76 @@
 # 修改记录
 
+## 2026-09-01
+
+- 需求：修复启动报错 `module 'core.neo4j_store' has no attribute 'ensure_indexes'`（`GRAPH_ENABLED=true` 时 lifespan 启动触发）。
+- 根因：`core/neo4j_store.py` 将 `ensure_indexes`/`close` 定义为 **`Neo4jStore` 类 classmethod**，而 `main.py` 以**模块级** `neo4j_store.ensure_indexes()`（启动）/`neo4j_store.close()`（关闭）调用，属性解析失败。同类问题 2026-08-24 修复过 health_check 一处，`ensure_indexes`（仅 graph_enabled=true 且被 try/except 吞为 warning）与 `close`（需优雅关闭）漏改。
+- 方案：`docs/plan/37-main-neo4j-module-call-fix-plan.md`。
+- 改动：`backend/main.py`——`from core import ... neo4j_store ...` 移除、新增 `from core.neo4j_store import Neo4jStore`；启动 `await neo4j_store.ensure_indexes()` → `await Neo4jStore.ensure_indexes()`；关闭 `await neo4j_store.close()` → `await Neo4jStore.close()`；health_check 删除冗余局部导入（复用顶部导入）。`core/neo4j_store.py` 不改（类 API 为统一用法）。
+- 测试：`tests/test_health.py` 新增 `test_main_neo4j_uses_class_api` 回归用例（修复前 `main` 无 `Neo4jStore` 属性 → 失败）。
+- 验证：`pytest tests/test_health.py tests/test_graph_service.py tests/test_graph_router.py tests/test_graph_queue.py` **40 passed**；后端全量测试通过（pytest exit 0）。
+
+## 2026-09-01
+
+- 需求：修复 Milvus 报错 `(code=1100, message=only IP is the supported metric type for sparse index)` —— 新知识库 collection 创建失败（上传/删除文档触发建库即报错）。
+- 根因：`backend/core/vector_store.py` 在 `retrieval_hybrid_enabled=True`（默认）时启用 `enable_sparse` + `BM25BuiltInFunction`；llama_index 建稀疏索引默认 `metric_type=BM25`，而部署的 **Milvus 2.4.x 稀疏索引仅支持 IP**（BM25 内置函数需 Milvus 2.5+）→ `create_index` 失败；且 2.4 上 BM25 函数本就不会持久化（实测 `functions: []`），sparse 检索实际从未生效。
+- 方案/改动（服务器 192.168.60.120，`/opt/bid-infra`）：
+  - 备份：`backup/bid-infra-volumes-20260901-172538.tar.gz`（etcd + milvus + minio-data）+ `docker-compose.yml.bak-20260901-172538`；
+  - `docker-compose.yml`：`milvusdb/milvus:v2.4.17` → `v2.5.27`（2.5 线最新），`docker compose up -d milvus` 重建，数据卷保留、etcd 元数据自动迁移；
+  - 升级后对现有 5 个 collection 补建 `sparse_embedding` 索引（SPARSE_INVERTED_INDEX / IP）：Milvus 2.5 加载校验要求所有向量字段均有索引，否则 `load_collection` 报 `there is no vector index on field: [sparse_embedding]`；
+- 代码：无改动（探针以项目同款配置验证：2.5.27 上 BM25 函数持久化、稀疏索引创建、插入自动生成稀疏向量、BM25 检索命中，探针库已清理）。
+- 验证：`get_server_version=v2.5.27`；现有 collection 全部可加载（均为空库 rows=0）；后端 `/api/health` healthy。
+- 备注：当前 PG 仅 1 个知识库（0594d85e）+ 1 个 `failed` 文档（旧建库失败所致），升级后重新上传/解析即可；5 个 collection 中 4 个为已删除知识库的孤儿（kb_98b88fd5 / kb_79789ec9 / kb_28116edc / kb_fa1f4a26），可后续清理；旧数据在旧 Milvus(121) 已丢失（见 2026-08-31 记录），需重新上传文档重建。
+
+## 2026-08-31
+
+- 需求：将系统 **PostgreSQL / MinIO / Milvus** 从外部地址更换为 **192.168.60.120** 服务器，120 上无对应实例的服务通过 Docker 部署。
+- 现状确认：120（developtest，root/developtest）已有 langfuse 专用 PG(:5432) / MinIO(:9090) / ClickHouse / ES(bid-es, :9200) / Langfuse(:3000)；投标系统所需 PG/MinIO/Milvus 均无可用实例 → 全部新部署。
+- 部署：新增 `/opt/bid-infra/docker-compose.yml`（独立于 langfuse，避免污染其自身实例）：
+  - `bid_pg`：postgres:16，宿主 `5444→5432`，库 `ai_bid_rag`（pgsql/pgsql）；
+  - `bid_minio`：minio/minio，宿主 `9100→9000`（API）/ `9101→9001`（console）——宿主 9000 已被 clickhouse 占用，故用 9100；凭据沿用 rag_flow/RagflowMinio2026!；
+  - `bid_etcd`：quay.io/coreos/etcd:v3.5.15；
+  - `bid_milvus`：milvusdb/milvus:v2.4.17（tag 无 `-standalone` 后缀，已修正），宿主 `19530→19530`，通过内部网络连 etcd:2379 / minio:9000，并注入 `MINIO_ACCESS_KEY_ID/SECRET_ACCESS_KEY`（默认 minioadmin 连不上会报 a-bucket 凭据错误）。
+- 配置切换（服务器 `/opt/ai_bid_rag/backend/.env` + 本地 `backend/.env` 同步）：
+  - `PG_HOST 192.168.61.222 → 192.168.60.120`（端口 5444 不变）；
+  - `MILVUS_HOST 192.168.60.121 → 192.168.60.120`（19530 不变）；
+  - `MINIO_ENDPOINT 192.168.60.121:9000 → 192.168.60.120:9100`；
+  - `docker compose up -d --force-recreate backend` 重启生效。
+- 数据迁移：旧 PG（192.168.61.222:5444）`pg_dump -Fc` → 新 PG `pg_restore --clean --if-exists`（容器需 `--network host` 访问宿主 5444），迁移 4 库 / 6 文档 / 1023 chunks / 8 对话 / 3 词条 / 10 模型 / 3 prompt；后端容器启动时 `alembic upgrade head` 幂等建表。
+- 验证：后端 `/api/health` healthy；`/api/knowledge-bases` 返回 4 库；ES 对账 3 库 pg=es 一致（84/84、24/24、915/915）；Milvus `get_server_version=v2.4.17`、`list_collections=[]`；MinIO 已建 `bid-documents` 桶（Milvus 自动建 `a-bucket`）。
+- 局限（无法迁移，需重建）：① 旧 Milvus（192.168.60.121:19530）已不可达，向量数据/索引丢失，需重新上传文档重建；② 旧 MinIO（121:9000）`bid-documents` 中系统文档对象全部缺失（仅有 Milvus `objects/` 数据），文档源文件需重新上传；③ 旧遗留差异：kb「标书ocr」PG 无 chunk（文档 failed）但 ES 残留 262 条，可对账重建清理。
+- 备注：`docs/changes.md` 追加本记录；`docker-compose.yml` 头部部署注释同步更新。
+- 方案：`docs/plan/36-graph-single-chunk-extraction-plan.md`。
+- 改动：
+  - `config.py`：`graph_extraction_batch: int = 4` → `1`（保留配置项，.env 设 `GRAPH_EXTRACTION_BATCH=4` 可恢复批量合并省成本）；
+  - `core/graph_extractor.py`：模块 docstring 措辞更新（逻辑不变，`batch_size=1` 时 `extract_from_chunks` 自然逐 chunk 触发 `_llm_extract_batch`，实体/关系 chunk 归属精确到当前 chunk）；
+  - `docs/09-graph-module-design.md`：§5.1 管线图示、§5.4 成本表（逐 chunk 幻觉最低/成本最高，可调 batch 权衡）、§10.2 配置注释同步更新；
+  - 新增单测 `test_single_chunk_extraction_when_batch_1`：3 个 chunk 各触发一次 LLM 调用、每次入参 1 个 chunk、实体 chunk 归属各自准确。
+- 验证：后端全量测试通过（pytest exit 0）。
+
+## 2026-08-24
+
+- 需求：知识图谱页面新增**实体详情分页列表**（行内编辑名称/类型/描述；列含关系数、chunk 数）、**实体名搜索**、**点击渲染到画布**（实体 + 1-hop 邻居）。
+- 方案：`docs/plan/35-graph-entity-list-plan.md`。
+- 改动（后端）：
+  - `models/graph_schemas.py` 新增 `EntityListItem`/`EntityListResponse`/`EntityUpdateRequest`；
+  - `services/graph_service.py` 新增 `list_entities`（分页 + CONTAINS 模糊搜索 + 关系数/chunk 数，按关系数降序）、`update_entity`（old_name/old_type 定位；类型 label 白名单校验，变化时 REMOVE 旧 label + SET 新 label；键冲突抛 `EntityConflictError` → 409；不存在返回 None → 404）；
+  - `routers/graph.py` 新增 `GET /graph/entities/list`、`PUT /graph/entities`（保留原 `GET /graph/entities?name=` 详情）；
+- 改动（前端）：
+  - `src/api/graph.js` 新增 `listGraphEntities`/`updateGraphEntity`；
+  - `src/views/GraphView.vue`：右侧详情卡片改为「**实体列表 / 详情**」双标签页；实体列表 Tab：搜索框 + 分页表格（名称可点击渲染、类型 tag、关系数、chunk 数可点击查看该实体全部证据原文弹窗、描述、编辑/渲染按钮）；编辑弹窗（名称/类型下拉 9 类/描述，保存后刷新列表，画布含旧节点则重拉第一页）；「渲染」= expand 1-hop 邻居并入画布 + 自动切详情 Tab；`TYPE_COLORS` 补齐通用本体 9 类配色；右侧卡片加宽至 400px；
+- 验证：后端新增 15 个测试（列表分页/搜索/空、更新描述/改名改类型/冲突/404/非法类型 + 路由 503/200/404/409/400），全量 **542 测试通过**（pytest exit 0）；真实 Neo4j 验证：kb 98b88fd5 列表 371 实体、搜索"甲"命中 16、临时实体改名/改类型成功且清理；前端 `npm run build` 构建成功。
+
+## 2026-08-24
+
+- 需求：实体抽取提示词接入提示词管理（场景 `entity_extraction`，DB 激活模板优先 + 内置 fallback 兜底）。
+- 方案：`docs/plan/34-graph-extraction-prompt-plan.md`。
+- 改动：
+  - 迁移 `0016_entity_extraction_default_prompt`：seed `entity_extraction` 默认模板（内容 = 原硬编码 `_EXTRACTION_SYSTEM_PROMPT`，is_active + is_default），downgrade 删除该默认模板；
+  - `core/graph_extractor.py`：`_EXTRACTION_SYSTEM_PROMPT` → `FALLBACK_ENTITY_EXTRACTION_PROMPT`（内置兜底常量，内容不变）；新增 `_get_extraction_prompt()`——优先读提示词管理 `entity_extraction` 激活模板并经 `render_prompt` 渲染（无变量），缺失/DB 异常回退常量；`_llm_extract_batch` 改用它作为 system 消息；
+  - `docs/09-graph-module-design.md`：§5.1 管线图示 + §5.3 标注"提示词由提示词管理维护"及加载要点；
+  - 前端无需改动（`PromptManagementView` 已支持 `entity_extraction` 场景筛选/下拉）。
+- 验证：新增 3 个提示词加载单测（激活模板生效 / 无激活回退 / DB 异常回退）；后端全量测试通过（pytest exit 0）。
+
 ## 2026-08-24
 
 - 需求：按 `docs/09-graph-module-design.md`（v1.1 已评审）实现知识图谱模块——每知识库一个图谱（Neo4j + kb_id 隔离）、全量/单文件增量构建、单文件清除、ECharts Web 可视化、图检索 API（chunk 级证据）、词库分类枚举化。
@@ -75,6 +146,17 @@
   - 文档 `docs/09`：§1.3 决策表、§3.1 类型标签、§5.2.1 词库分类表、§5.3 prompt（通用本体）、§6.1/§6.3 检索示例、§7.3 映射说明同步更新。
 - 真实环境验证（kb 98b88fd5 清空重建）：实体类型 **Quantity 56 / Concept 467 / Product 206 / Time 1 / Organization 4**，旧类型（Money/Qualification/Date/Location）**零残留**；关系全部为新白名单类型。
 - 验证：后端全量 **520 测试通过**（pytest exit 0）；前端 `npm run build` 构建成功。
+
+## 2026-08-24
+
+- 需求：检索页集成知识图谱检索（范围确认：仅检索页，不做 chat 双通道；图证据并入结果列表参与融合）。
+- 改动：
+  - `models/schemas.py`：`SearchRequest.retrieval_methods` 增加 `graph` 选项；`SearchResultItem` 增加 `graph_entity` 字段（图检索来源实体标记）；
+  - `services/search_service.py`：`VALID_METHODS` 增加 `graph`；新增 `_recall_graph`——逐 kb 调 `graph_service.search_subgraph`（1-hop），实体证据切片转结果项（score=1.0，RRF 只看排序位置），同一切片多实体去重合并 graph_entity，图谱未启用/检索失败降级为空不阻断；单选直返/多选 RRF 融合，与 dense/sparse/fulltext 完全同构；结果组装输出 `graph_entity`；
+  - 前端 `SearchView.vue`：检索策略多选增加「知识图谱」；结果项显示绿色「图谱·实体名」tag，点击新窗口跳转图谱页并自动检索该实体（`?entity=` 参数）；`GraphView.vue` onMounted 读取 `?entity` 自动执行实体检索；
+  - 测试：新增 `tests/test_search_graph.py`（单选返回证据/未启用降级/dense+graph RRF 融合/同切片去重）；既有 4 处 "graph 作为非法方法" 用例改为真正非法值（bm25）；
+  - 文档：`docs/09` §1.4 边界更新（检索页图检索已集成，chat 双通道仍为下阶段）。
+- 验证：真实环境 graph 通道检索返回 3 条图证据切片；后端全量 **524 测试通过**（pytest exit 0）；前端 `npm run build` 构建成功。
 
 ## 2026-08-22
 

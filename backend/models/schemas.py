@@ -69,9 +69,9 @@ class SearchRequest(BaseModel):
     top_k: int = Field(10, ge=1, le=50, description="向量检索候选数量（也是无重排时的返回条数上限）")
     similarity_threshold: float = Field(0.6, ge=0, le=1, description="相似度阈值")
     kb_ids: list[str] | None = Field(None, description="知识库 ID 列表，支持多知识库检索")
-    retrieval_methods: list[Literal["dense", "sparse", "fulltext"]] | None = Field(
+    retrieval_methods: list[Literal["dense", "sparse", "fulltext", "graph"]] | None = Field(
         None,
-        description="检索策略（可多选）：dense=稠密向量，sparse=稀疏向量(BM25)，fulltext=ES全文检索；多选时按 RRF 融合，单选直接返回该路结果；不传则沿用服务端默认（retrieval_default_methods）",
+        description="检索策略（可多选）：dense=稠密向量，sparse=稀疏向量(BM25)，fulltext=ES全文检索，graph=知识图谱证据；多选时按 RRF 融合，单选直接返回该路结果；不传则沿用服务端默认（retrieval_default_methods）",
     )
     highlight: bool = Field(True, description="是否返回高亮片段（fulltext 生效）")
     rerank_model_id: str | None = Field(None, description="排序模型配置 ID，为空则不做重排")
@@ -91,6 +91,7 @@ class SearchResultItem(BaseModel):
     kb_id: str = ""
     kb_name: str = ""
     highlight: str | None = Field(None, description="ES 高亮片段（含 <em> 标签），非 fulltext 为 null")
+    graph_entity: str | None = Field(None, description="图谱检索来源实体名（graph 通道返回，非图检索为 null）")
 
 
 class SearchResponse(BaseModel):

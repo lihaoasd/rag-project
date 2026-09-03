@@ -89,7 +89,7 @@ class TestSearch:
     def test_search_invalid_method_returns_422(self, client):
         response = client.post(
             f"/api/knowledge-bases/{KB_ID}/search",
-            json={"query": "测试查询", "retrieval_methods": ["graph"]},
+            json={"query": "测试查询", "retrieval_methods": ["bm25"]},
         )
         assert response.status_code == 422
 

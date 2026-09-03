@@ -173,7 +173,7 @@ class TestValidation:
     async def test_invalid_method_raises(self, mock_retrieve):
         with pytest.raises(ValueError):
             await search_service.search(
-                kb_ids=[KB_ID], query="x", retrieval_methods=["graph"]
+                kb_ids=[KB_ID], query="x", retrieval_methods=["bm25"]
             )
 
 

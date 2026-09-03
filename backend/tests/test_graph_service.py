@@ -139,3 +139,111 @@ class TestBuildKbGraph:
             await graph_service.build_kb_graph(KB_ID)
         # 仅 completed 的 2 个文件构建
         assert mock_build.await_count == 2
+
+
+class TestListEntities:
+    @pytest.mark.asyncio
+    async def test_pagination_and_search(self):
+        with _enable_graph(), \
+             patch("services.graph_service.Neo4jStore.execute_read", new_callable=AsyncMock,
+                   side_effect=[
+                       [{"c": 3}],  # total
+                       [
+                           {"name": "甲公司", "type": "Organization", "description": "建筑公司",
+                            "relation_count": 5, "chunk_count": 3},
+                           {"name": "乙公司", "type": "Organization", "description": "",
+                            "relation_count": 2, "chunk_count": 1},
+                       ],
+                   ]) as mock_read:
+            result = await graph_service.list_entities(KB_ID, page=1, page_size=2, q="公司")
+
+        assert result["total"] == 3
+        assert len(result["items"]) == 2
+        assert result["items"][0]["name"] == "甲公司"
+        assert result["items"][0]["relation_count"] == 5
+        assert result["items"][0]["chunk_count"] == 3
+        # 搜索词与分页参数传入 Neo4j
+        first_args = mock_read.await_args_list[0]
+        assert first_args.args[1]["q"] == "公司"
+        second_args = mock_read.await_args_list[1]
+        assert second_args.args[1]["skip"] == 0 and second_args.args[1]["limit"] == 2
+
+    @pytest.mark.asyncio
+    async def test_empty(self):
+        with _enable_graph(), \
+             patch("services.graph_service.Neo4jStore.execute_read", new_callable=AsyncMock,
+                   side_effect=[[{"c": 0}], []]) as mock_read:
+            result = await graph_service.list_entities(KB_ID, q="不存在")
+        assert result["total"] == 0 and result["items"] == []
+        assert mock_read.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_disabled_raises(self):
+        from core.neo4j_store import GraphDisabledError
+
+        with pytest.raises(GraphDisabledError):
+            await graph_service.list_entities(KB_ID)
+
+
+class TestUpdateEntity:
+    @pytest.mark.asyncio
+    async def test_update_description_only(self):
+        with _enable_graph(), \
+             patch("services.graph_service.Neo4jStore.execute_read", new_callable=AsyncMock,
+                   return_value=[{"c": 1}]) as mock_read, \
+             patch("services.graph_service.Neo4jStore.execute_write", new_callable=AsyncMock) as mock_write:
+            result = await graph_service.update_entity(
+                KB_ID, "甲公司", "Organization", "甲公司", "Organization", "新描述"
+            )
+        assert result == {"name": "甲公司", "type": "Organization", "description": "新描述"}
+        # 键未变化：只查一次（无冲突检测）
+        assert mock_read.await_count == 1
+        cypher = mock_write.await_args.args[0]
+        assert "SET n.type = $new_type, n.name = $new_name" in cypher
+        assert "REMOVE" not in cypher
+
+    @pytest.mark.asyncio
+    async def test_rename_with_type_change(self):
+        with _enable_graph(), \
+             patch("services.graph_service.Neo4jStore.execute_read", new_callable=AsyncMock,
+                   side_effect=[[{"c": 1}], [{"c": 0}]]) as mock_read, \
+             patch("services.graph_service.Neo4jStore.execute_write", new_callable=AsyncMock) as mock_write:
+            result = await graph_service.update_entity(
+                KB_ID, "甲公司", "Organization", "甲建设集团", "Project", ""
+            )
+        assert result["name"] == "甲建设集团" and result["type"] == "Project"
+        assert mock_read.await_count == 2  # 存在性 + 冲突检测
+        cypher = mock_write.await_args.args[0]
+        assert "REMOVE n:`Organization` SET n:`Project`" in cypher
+        assert "SET n.type = $new_type, n.name = $new_name" in cypher
+
+    @pytest.mark.asyncio
+    async def test_conflict_raises(self):
+        from services.graph_service import EntityConflictError
+
+        with _enable_graph(), \
+             patch("services.graph_service.Neo4jStore.execute_read", new_callable=AsyncMock,
+                   side_effect=[[{"c": 1}], [{"c": 1}]]) as mock_read:
+            with pytest.raises(EntityConflictError):
+                await graph_service.update_entity(
+                    KB_ID, "甲公司", "Organization", "乙公司", "Organization", ""
+                )
+
+    @pytest.mark.asyncio
+    async def test_not_found_returns_none(self):
+        with _enable_graph(), \
+             patch("services.graph_service.Neo4jStore.execute_read", new_callable=AsyncMock,
+                   return_value=[{"c": 0}]) as mock_read:
+            result = await graph_service.update_entity(
+                KB_ID, "不存在", "Organization", "甲公司", "Organization", ""
+            )
+        assert result is None
+        assert mock_read.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_illegal_type_raises(self):
+        with _enable_graph():
+            with pytest.raises(ValueError):
+                await graph_service.update_entity(
+                    KB_ID, "甲公司", "Organization", "甲公司", "Hacker", ""
+                )

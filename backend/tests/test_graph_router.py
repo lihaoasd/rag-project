@@ -1,8 +1,11 @@
 """
-图谱 API 路由测试 — 未启用时 503 / 文档校验 / 异步入队。
+图谱 API 路由测试 — 未启用时 503 / 文档校验 / 异步入队 / 实体列表与编辑。
 """
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
+from services.graph_service import EntityConflictError
 from tests.helpers import KB_ID, DOC_ID
 
 
@@ -23,6 +26,94 @@ class TestGraphDisabled:
             json={"query": "甲公司"},
         )
         assert resp.status_code == 503
+
+    def test_entity_list_returns_503(self, client):
+        resp = client.get(f"/api/knowledge-bases/{KB_ID}/graph/entities/list")
+        assert resp.status_code == 503
+
+    def test_entity_update_returns_503(self, client):
+        resp = client.put(
+            f"/api/knowledge-bases/{KB_ID}/graph/entities",
+            json={"old_name": "甲公司", "old_type": "Organization",
+                  "name": "甲公司", "type": "Organization", "description": ""},
+        )
+        assert resp.status_code == 503
+
+
+class TestEntityList:
+    def test_list_ok(self, client):
+        with patch(
+            "services.graph_service.list_entities",
+            new_callable=AsyncMock,
+            return_value={
+                "total": 2, "page": 1, "page_size": 50,
+                "items": [
+                    {"name": "甲公司", "type": "Organization", "description": "建筑公司",
+                     "relation_count": 5, "chunk_count": 3},
+                ],
+            },
+        ) as mock_list:
+            resp = client.get(f"/api/knowledge-bases/{KB_ID}/graph/entities/list?page=1&page_size=20&q=甲")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 2
+        assert body["items"][0]["relation_count"] == 5
+        mock_list.assert_awaited_once_with(KB_ID, 1, 20, "甲")
+
+
+class TestEntityUpdate:
+    def test_update_ok(self, client):
+        with patch(
+            "services.graph_service.update_entity",
+            new_callable=AsyncMock,
+            return_value={"name": "甲建设集团", "type": "Project", "description": "新描述"},
+        ) as mock_update:
+            resp = client.put(
+                f"/api/knowledge-bases/{KB_ID}/graph/entities",
+                json={"old_name": "甲公司", "old_type": "Organization",
+                      "name": "甲建设集团", "type": "Project", "description": "新描述"},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "甲建设集团"
+        mock_update.assert_awaited_once_with(
+            KB_ID, old_name="甲公司", old_type="Organization",
+            name="甲建设集团", type="Project", description="新描述",
+        )
+
+    def test_update_not_found_404(self, client):
+        with patch("services.graph_service.update_entity", new_callable=AsyncMock, return_value=None):
+            resp = client.put(
+                f"/api/knowledge-bases/{KB_ID}/graph/entities",
+                json={"old_name": "不存在", "old_type": "Organization",
+                      "name": "甲公司", "type": "Organization", "description": ""},
+            )
+        assert resp.status_code == 404
+
+    def test_update_conflict_409(self, client):
+        with patch(
+            "services.graph_service.update_entity",
+            new_callable=AsyncMock,
+            side_effect=EntityConflictError("实体已存在: Organization/乙公司"),
+        ):
+            resp = client.put(
+                f"/api/knowledge-bases/{KB_ID}/graph/entities",
+                json={"old_name": "甲公司", "old_type": "Organization",
+                      "name": "乙公司", "type": "Organization", "description": ""},
+            )
+        assert resp.status_code == 409
+
+    def test_update_illegal_type_400(self, client):
+        with patch(
+            "services.graph_service.update_entity",
+            new_callable=AsyncMock,
+            side_effect=ValueError("实体类型非法: Hacker"),
+        ):
+            resp = client.put(
+                f"/api/knowledge-bases/{KB_ID}/graph/entities",
+                json={"old_name": "甲公司", "old_type": "Organization",
+                      "name": "甲公司", "type": "Hacker", "description": ""},
+            )
+        assert resp.status_code == 400
 
 
 class TestBuildDocGraph:

@@ -51,6 +51,33 @@ class GraphExpandRequest(BaseModel):
     limit: int = Field(100, ge=1, le=300, description="邻居节点上限")
 
 
+class EntityListItem(BaseModel):
+    """实体分页列表行。"""
+
+    name: str = Field(..., description="实体名")
+    type: str = Field(..., description="实体类型（Organization/Project/…）")
+    description: str = Field("", description="实体描述")
+    relation_count: int = Field(0, description="业务关系数（不含 提及 边）")
+    chunk_count: int = Field(0, description="来源 chunk 数（mentioned_chunk_ids 长度）")
+
+
+class EntityListResponse(BaseModel):
+    total: int = Field(0, description="符合条件实体总数")
+    page: int = Field(1)
+    page_size: int = Field(50)
+    items: list[EntityListItem] = Field(default_factory=list)
+
+
+class EntityUpdateRequest(BaseModel):
+    """实体编辑：old_* 定位节点，name/type/description 为新值。"""
+
+    old_name: str = Field(..., min_length=1, description="编辑前实体名")
+    old_type: str = Field(..., min_length=1, description="编辑前实体类型")
+    name: str = Field(..., min_length=1, description="新实体名")
+    type: str = Field(..., min_length=1, description="新实体类型")
+    description: str = Field("", description="新描述")
+
+
 class GraphNode(BaseModel):
     id: str = Field(..., description="节点 ID（如 org_甲公司）")
     name: str = Field(..., description="实体名")

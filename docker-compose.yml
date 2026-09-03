@@ -1,7 +1,9 @@
 # 部署说明（192.168.60.120）：
 # - Elasticsearch：已由本机 bid-es 容器（es-ik:8.13.4, :9200）提供，不在此编排
-# - PostgreSQL / Milvus / MinIO / Xinference Embedding：外部服务
-#   （192.168.61.222:5444 / 192.168.60.121），地址由 backend/.env 配置
+# - PostgreSQL / Milvus / MinIO：由本机 bid-infra 项目（/opt/bid-infra）提供，
+#   PG 192.168.60.120:5444 / MinIO 192.168.60.120:9100 / Milvus 192.168.60.120:19530，
+#   地址由 backend/.env 配置
+# - Xinference Embedding：外部服务（192.168.60.121:9997），地址由 backend/.env 配置
 # - Langfuse：已由本机 langfuse-main 项目提供（:3000）
 
 services:

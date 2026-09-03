@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException, Query
 from core.neo4j_store import GraphDisabledError
 from models.graph_schemas import (
     EntityDetailResponse,
+    EntityListResponse,
+    EntityUpdateRequest,
     GraphBuildResponse,
     GraphExpandRequest,
     GraphSearchRequest,
@@ -15,6 +17,7 @@ from models.graph_schemas import (
     GraphStatsResponse,
 )
 from services import document_service, graph_service
+from services.graph_service import EntityConflictError
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -148,6 +151,44 @@ async def expand_entity(kb_id: str, req: GraphExpandRequest):
         raise _graph_disabled_handler(e)
     if result is None:
         raise HTTPException(status_code=404, detail=f"实体不存在: {req.name}")
+    return result
+
+
+@router.get("/graph/entities/list", response_model=EntityListResponse)
+async def entity_list(
+    kb_id: str,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(50, ge=1, le=200, description="每页数量"),
+    q: str = Query("", description="实体名模糊搜索（CONTAINS）"),
+):
+    """实体分页列表（实体管理）：名称搜索 + 关系数/chunk 数。"""
+    try:
+        return await graph_service.list_entities(kb_id, page, page_size, q)
+    except GraphDisabledError as e:
+        raise _graph_disabled_handler(e)
+
+
+@router.put("/graph/entities")
+async def entity_update(kb_id: str, body: EntityUpdateRequest):
+    """编辑实体：名称/类型/描述（类型/名称变更做键冲突检测）。"""
+    try:
+        result = await graph_service.update_entity(
+            kb_id,
+            old_name=body.old_name,
+            old_type=body.old_type,
+            name=body.name,
+            type=body.type,
+            description=body.description,
+        )
+    except GraphDisabledError as e:
+        raise _graph_disabled_handler(e)
+    except EntityConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"实体不存在: {body.old_type}/{body.old_name}")
+    logger.info("实体已更新: kb_id=%s, %s/%s → %s/%s", kb_id, body.old_type, body.old_name, body.type, body.name)
     return result
 
 

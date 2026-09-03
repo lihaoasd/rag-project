@@ -34,6 +34,10 @@ RELATION_TYPES = {
 _ENTITY_LABELS = set(ENTITY_TYPE_LABEL_MAP.values())
 
 
+class EntityConflictError(Exception):
+    """实体更新冲突：目标键 (kb_id, type, name) 已被其他实体占用。"""
+
+
 def _ensure_graph_enabled() -> None:
     """图谱未启用/Neo4j 不可达时抛 GraphDisabledError（router 转 503）。"""
     if not settings.graph_enabled:
@@ -664,6 +668,106 @@ async def get_entity_detail(kb_id: str, name: str) -> dict | None:
         ],
         "evidence": evidence,
     }
+
+
+async def list_entities(kb_id: str, page: int = 1, page_size: int = 50, q: str = "") -> dict:
+    """实体分页列表（实体管理）：名称模糊搜索（CONTAINS，大小写不敏感）+ 关系数/chunk 数。
+
+    排序：业务关系数降序、名称升序（核心实体优先，与画布 degree 排序一致风格）。
+    """
+    _ensure_graph_enabled()
+    page = max(1, page)
+    page_size = max(1, min(page_size, 200))
+    q = (q or "").strip()
+
+    total_rows = await Neo4jStore.execute_read(
+        "MATCH (n:Entity) WHERE n.kb_id = $kb_id "
+        "AND ($q = '' OR toLower(n.name) CONTAINS toLower($q)) "
+        "RETURN count(n) AS c",
+        {"kb_id": kb_id, "q": q},
+    )
+    total = total_rows[0]["c"] if total_rows else 0
+
+    items = await Neo4jStore.execute_read(
+        "MATCH (n:Entity) WHERE n.kb_id = $kb_id "
+        "AND ($q = '' OR toLower(n.name) CONTAINS toLower($q)) "
+        "RETURN n.name AS name, n.type AS type, n.description AS description, "
+        "COUNT { MATCH (n)-[r]-() WHERE type(r) <> '提及' } AS relation_count, "
+        "size(coalesce(n.mentioned_chunk_ids, [])) AS chunk_count "
+        "ORDER BY relation_count DESC, n.name SKIP $skip LIMIT $limit",
+        {"kb_id": kb_id, "q": q, "skip": (page - 1) * page_size, "limit": page_size},
+    )
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [
+            {
+                "name": row["name"],
+                "type": row["type"],
+                "description": row.get("description") or "",
+                "relation_count": row["relation_count"],
+                "chunk_count": row["chunk_count"],
+            }
+            for row in items
+        ],
+    }
+
+
+async def update_entity(
+    kb_id: str,
+    old_name: str,
+    old_type: str,
+    name: str,
+    type: str,
+    description: str = "",
+) -> dict | None:
+    """编辑实体：定位 old_(name,type) 节点，更新 name/type/description。
+
+    - type 必须过白名单（label 拼接安全）；变化时 REMOVE 旧 label + SET 新 label；
+    - name/type 变化时目标键 (kb_id, type, name) 与其他实体冲突 → EntityConflictError；
+    - 实体不存在返回 None（router 转 404）。
+    关系基于图结构引用，改名/改类型自动跟随，无需迁移边。
+    """
+    _ensure_graph_enabled()
+    if type not in _ENTITY_LABELS:
+        raise ValueError(f"实体类型非法: {type}")
+    old_name = (old_name or "").strip()
+    old_type = (old_type or "").strip()
+    name = (name or "").strip()
+    description = description or ""
+
+    exists = await Neo4jStore.execute_read(
+        "MATCH (n:Entity) WHERE n.kb_id = $kb_id AND n.name = $old_name AND n.type = $old_type "
+        "RETURN count(n) AS c",
+        {"kb_id": kb_id, "old_name": old_name, "old_type": old_type},
+    )
+    if not exists or exists[0]["c"] == 0:
+        return None
+
+    # 键变化时冲突检测（排除自身）
+    if (name, type) != (old_name, old_type):
+        dup = await Neo4jStore.execute_read(
+            "MATCH (o:Entity) WHERE o.kb_id = $kb_id AND o.name = $new_name AND o.type = $new_type "
+            "AND NOT (o.name = $old_name AND o.type = $old_type) RETURN count(o) AS c",
+            {"kb_id": kb_id, "new_name": name, "new_type": type,
+             "old_name": old_name, "old_type": old_type},
+        )
+        if dup and dup[0]["c"] > 0:
+            raise EntityConflictError(f"实体已存在: {type}/{name}")
+
+    clauses = []
+    if old_type != type:
+        clauses.append(f"REMOVE n:`{old_type}` SET n:`{type}`")
+    clauses.append("SET n.type = $new_type, n.name = $new_name, n.description = $new_description")
+    await Neo4jStore.execute_write(
+        "MATCH (n:Entity) WHERE n.kb_id = $kb_id AND n.name = $old_name AND n.type = $old_type "
+        + " ".join(clauses),
+        {"kb_id": kb_id, "old_name": old_name, "old_type": old_type,
+         "new_name": name, "new_type": type, "new_description": description},
+    )
+    return {"name": name, "type": type, "description": description}
 
 
 # ============================================================

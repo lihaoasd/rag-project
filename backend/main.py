@@ -9,7 +9,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
-from core import es_store, graph_queue, neo4j_store, parse_queue
+from core import es_store, graph_queue, parse_queue
+from core.neo4j_store import Neo4jStore
 from core.observability import setup_langfuse
 from core.database import async_session
 from repositories.document_repository import DocumentRepository
@@ -78,7 +79,7 @@ async def lifespan(app: FastAPI):
     # 图谱：Neo4j 索引（best-effort）+ 重置滞留构建状态 + 启动图谱队列
     if settings.graph_enabled:
         try:
-            await neo4j_store.ensure_indexes()
+            await Neo4jStore.ensure_indexes()
         except Exception as e:
             logger.warning("Neo4j 索引初始化失败（图谱功能暂不可用）: %s", e)
     await reset_stale_graph_status()
@@ -118,7 +119,7 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     await es_store.close_client()
-    await neo4j_store.close()
+    await Neo4jStore.close()
     logger.info("应用已关闭")
 
 
@@ -174,7 +175,5 @@ async def health_check():
     """健康检查端点"""
     body = {"status": "healthy", "version": "0.1.0"}
     if settings.graph_enabled:
-        from core.neo4j_store import Neo4jStore
-
         body["graph"] = "ok" if await Neo4jStore.health_check() else "unavailable"
     return body

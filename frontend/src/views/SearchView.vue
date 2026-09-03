@@ -44,6 +44,7 @@
             <el-checkbox value="dense">稠密向量</el-checkbox>
             <el-checkbox value="sparse">稀疏向量</el-checkbox>
             <el-checkbox value="fulltext">全文检索</el-checkbox>
+            <el-checkbox value="graph">知识图谱</el-checkbox>
           </el-checkbox-group>
         </div>
 
@@ -170,6 +171,9 @@
               <span><el-icon><Folder /></el-icon> {{ item.kb_name || '未知知识库' }}</span>
               <span><el-icon><Document /></el-icon> {{ item.file_name }}</span>
               <span><el-icon><Location /></el-icon> 第 {{ item.page_number }} 页</span>
+              <el-tag v-if="item.graph_entity" type="success" size="small" class="graph-tag" @click="goGraph(item)">
+                图谱·{{ item.graph_entity }}
+              </el-tag>
             </div>
           </div>
         </div>
@@ -204,7 +208,7 @@ const rerankModels = ref([])
 const rerankModelId = ref(null)
 const rerankTopN = ref(5)
 
-// 分数是否按百分比展示：rerank 或单选稠密向量时分数为 [0,1]；否则（稀疏/全文单选或 RRF 融合）显示原始数字
+// 分数是否按百分比展示：rerank 或单选稠密向量时分数为 [0,1]；否则（稀疏/全文/图谱单选或 RRF 融合）显示原始数字
 const showPercentScore = computed(() =>
   Boolean(rerankModelId.value) ||
   (retrievalMethods.value.length === 1 && retrievalMethods.value[0] === 'dense')
@@ -214,6 +218,17 @@ const showPercentScore = computed(() =>
 function handleKbChange() {
   results.value = []
   searched.value = false
+}
+
+/** 从图谱证据跳转到知识图谱页 */
+function goGraph(item) {
+  const kbId = item.kb_id
+  if (!kbId) return
+  const entity = (item.graph_entity || '').split('、')[0]
+  const url = entity
+    ? `/knowledge-bases/${kbId}/graph?entity=${encodeURIComponent(entity)}`
+    : `/knowledge-bases/${kbId}/graph`
+  window.open(url, '_blank')
 }
 
 async function handleSearch() {
@@ -508,5 +523,9 @@ onMounted(async () => {
   gap: 4px;
   font-size: 12px;
   color: var(--color-text-secondary);
+}
+
+.graph-tag {
+  cursor: pointer;
 }
 </style>

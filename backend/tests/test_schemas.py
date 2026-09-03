@@ -192,10 +192,10 @@ class TestSearchRequest:
 
     def test_invalid_retrieval_method_raises_error(self):
         with pytest.raises(ValidationError):
-            SearchRequest(query="测试查询", retrieval_methods=["graph"])
+            SearchRequest(query="测试查询", retrieval_methods=["bm25"])
 
         with pytest.raises(ValidationError):
-            SearchRequest(query="测试查询", retrieval_methods=["dense", "graph"])
+            SearchRequest(query="测试查询", retrieval_methods=["dense", "bm25"])
 
     def test_valid_custom_params(self):
         req = SearchRequest(

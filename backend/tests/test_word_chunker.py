@@ -123,8 +123,8 @@ class TestChunkBlocks:
         assert "设备A" in nodes[0].text
         assert "段落一" in nodes[0].text
 
-    def test_large_block_kept_intact(self):
-        """大块也不切分，段落和表格保持在一起"""
+    def test_large_block_kept_intact_without_chunk_size(self):
+        """chunk_blocks 未传 chunk_size（不启用二次切分）时大块保持整块"""
         long_text = "这是测试文本。" * 200
         block = LogicalBlock(
             heading="第二章 技术方案",
@@ -135,9 +135,66 @@ class TestChunkBlocks:
         )
         nodes = chunk_blocks([block])
 
-        # 不切分，就是一个节点
+        # 未启用切分，就是一个节点
         assert len(nodes) == 1
         assert "表格内容" in nodes[0].text
+
+    def test_large_block_split_when_chunk_size_set(self):
+        """传 chunk_size 后，超过阈值的逻辑块被切分为多个 TextNode"""
+        long_text = "这是用于超长逻辑块二次切分测试的文本内容。" * 300
+        block = LogicalBlock(
+            heading="第二章 技术方案",
+            heading_level=1,
+            heading_path=["第一章 商务", "第二章 技术方案"],
+            paragraphs=[long_text],
+            tables=["表格内容"],
+            images=[],
+        )
+        nodes = chunk_blocks([block], max_chars=1000, overlap_chars=100)
+
+        assert len(nodes) > 1
+        # 所有子块都继承了标题/路径/表格内容
+        for node in nodes:
+            assert node.metadata["heading"] == "第二章 技术方案"
+            assert node.metadata["heading_path"] == "第一章 商务 > 第二章 技术方案"
+            assert node.metadata["image_keys"] == []
+        # 拼接后不丢内容
+        joined = "".join(n.text for n in nodes)
+        assert "表格内容" in joined
+        assert "超长逻辑块" in joined
+
+    def test_small_block_kept_whole_when_chunk_size_set(self):
+        """逻辑块不超过阈值时，即使启用二次切分也保持整块"""
+        block = LogicalBlock(
+            heading="短章节",
+            heading_level=1,
+            heading_path=["短章节"],
+            paragraphs=["这是一段很短的正文。"],
+        )
+        nodes = chunk_blocks([block], max_chars=1000, overlap_chars=100)
+
+        assert len(nodes) == 1
+        assert "这是一段很短的正文。" in nodes[0].text
+
+    def test_overlap_between_splits(self):
+        """二次切分后相邻 chunk 之间存在重叠字符"""
+        sentences = [f"第{i}句这是用于测试重叠区域的文本内容。" for i in range(80)]
+        body = "".join(sentences)
+        block = LogicalBlock(
+            heading="重叠测试章节",
+            heading_level=1,
+            heading_path=["重叠测试章节"],
+            paragraphs=[body],
+        )
+        nodes = chunk_blocks([block], max_chars=300, overlap_chars=50)
+
+        assert len(nodes) >= 2
+        # 前一块末尾字符应出现在后一块中（overlap 生效）
+        first_tail = nodes[0].text[-40:]
+        assert first_tail in nodes[1].text
+        # 所有子块继承标题
+        for node in nodes:
+            assert node.metadata["heading"] == "重叠测试章节"
 
     def test_empty_block_skipped(self):
         """无内容的块跳过"""
@@ -186,8 +243,8 @@ class TestWordChunk:
             items,
             doc_id="test-doc-id",
             file_name="test.docx",
-            chunk_size=512,
-            chunk_overlap=64,
+            max_chars=512,
+            overlap_chars=64,
         )
 
         assert len(chunks) > 0
@@ -210,6 +267,26 @@ class TestWordChunk:
         assert chunks == []
         assert metadatas == []
         assert nodes == []
+
+    def test_large_block_auto_split_by_default(self):
+        """默认配置（settings.word_block_max_chars=1000）下超长逻辑块自动二次切分"""
+        long_text = "超长逻辑块会被自动切分为多个chunk以保持检索语义完整。" * 200
+        items = [
+            ParagraphItem(text="第一章 技术方案", is_heading=True, heading_level=1),
+            ParagraphItem(text=long_text),
+        ]
+
+        chunks, metadatas, _ = word_chunk(items, "doc-1", "test.docx")
+
+        assert len(chunks) > 1
+        # chunk_index 全局连续递增，metadata 继承标题
+        for i, meta in enumerate(metadatas):
+            assert meta["chunk_index"] == i
+            assert meta["heading"] == "第一章 技术方案"
+        # 拼接后内容不丢
+        joined = "".join(chunks)
+        assert "超长逻辑块" in joined
+        assert "检索语义完整" in joined
 
 
 class TestWordChunkImages:

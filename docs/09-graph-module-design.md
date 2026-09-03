@@ -32,7 +32,7 @@
 
 ### 1.4 边界（本期不做）
 
-- 不接入 chat 问答双通道（问题路由、图谱上下文组装进 LLM 回答）——下一阶段，接口预留；
+- **检索页已集成图检索**（`graph` 检索通道，证据并入结果列表参与 RRF 融合，§6.5）；**chat 问答双通道（问题路由、图谱上下文组装进 LLM 回答）仍为下阶段**，接口预留；
 - 不做实体向量索引（Neo4j vector index）——实体检索先用关键词/模糊匹配 + 邻居展开，量级足够；
 - 不做图谱手动编辑（增删节点/关系）——只做构建、查看、清除；
 - **图谱本体不建 chunk 节点，也不新增任何 PG 表**：实体节点用 `mentioned_chunk_ids` 属性记录来源切片 ID，检索时凭 chunk_id **直接查询现有 `document_chunks` 表**取证据文本/页码（§6.2）——证据永远与切片实时一致，零冗余；
@@ -277,9 +277,9 @@ chunk 文本
            │（词库命中的实体直接入候选集，不调 LLM）
            ▼
 ┌─────────────────────┐
-│ 2. LLM 补充抽取      │  批量（3~5 chunk/次），覆盖长尾实体 + 关系
+│ 2. LLM 补充抽取      │  逐 chunk（每 chunk 一次调用，`graph_extraction_batch=1` 默认，减少跨 chunk 幻觉），覆盖长尾实体 + 关系
 │  - create_llm       │  复用 model_factory 的 OpenAI 兼容 LLM
-│  - Schema 约束 prompt│  输出 JSON: entities[] + relationships[]
+│  - Schema 约束 prompt│  提示词管理 entity_extraction 激活模板（fallback 内置常量）；输出 JSON: entities[] + relationships[]
 │  - 小 chunk 跳过     │  < 20 字符不调 LLM
 └──────────┬──────────┘
            ▼
@@ -328,6 +328,8 @@ async def match_entities(text: str) -> list[dict]:
 
 ### 5.3 LLM 抽取 Prompt（Schema 约束，通用本体）
 
+> **提示词由提示词管理维护**（`prompt_templates`，场景 `entity_extraction`，迁移 0016 seed 默认模板）：抽取时优先读取该场景**激活模板**（支持 `{变量}` 渲染），缺失/异常回退代码内置 `FALLBACK_ENTITY_EXTRACTION_PROMPT` 常量（内容与本段一致，作为兜底）；在提示词管理界面修改并激活即可调整抽取行为，无需改代码。内置默认模板如下：
+
 ```text
 你是通用信息抽取系统。从文本中提取实体和关系，只提取明确提及的信息，不要编造。
 实体 name 必须与原文完全一致（禁止改写、合并或规范化），同一实体在原文中重复出现只需输出一次。
@@ -360,6 +362,7 @@ QUANTITY(数量/金额/度量值,必须含单位,如 3000万元/50吨/2年), CON
 
 实现要点：
 
+- 抽取系统提示词经 `prompt_service.get_active_prompt("entity_extraction")` 动态获取（渲染后使用），无激活模板或 DB 异常时使用内置 `FALLBACK_ENTITY_EXTRACTION_PROMPT` 常量（与 seed 模板一致）；
 - 使用 `model_factory.create_llm(resolve_model_config(kb_id, "llm"))`，`OpenAILike` 异步接口（`achat`）并发调用；
 - LLM 输出经 Pydantic 模型校验（`models/graph_schemas.py`），解析失败的重试 1 次，仍失败丢弃该批（记日志）；
 - `QUANTITY`/`TIME` 类型实体**优先走正则匹配**，LLM 不重复抽取（降低幻觉与成本）；
@@ -370,7 +373,7 @@ QUANTITY(数量/金额/度量值,必须含单位,如 3000万元/50吨/2年), CON
 
 | 策略         | 说明                                        |
 | ---------- | ----------------------------------------- |
-| 批量 LLM 调用  | 3\~5 个 chunk 合并一次请求，调用量减少 60%+            |
+| 逐 chunk 提取 | **每 chunk 一次 LLM 调用**（`graph_extraction_batch=1` 默认）：模型只看单 chunk 原文，无法跨 chunk 拼接编造，幻觉最低；成本最高（约 4 倍请求量）。可调大 `graph_extraction_batch` 合并请求省成本（幻觉风险上升） |
 | 小 chunk 跳过 | 文本 < 20 字符不抽                              |
 | 词库命中优先     | 词库/正则已识别的实体不要求 LLM 再报                     |
 | 异步并发       | asyncio 并发调用 LLM（受队列单 worker 串行约束，单文件内并发） |
@@ -521,6 +524,17 @@ RETURN count(n) AS total_entities, count(DISTINCT n.type) AS entity_types
 | POST | `/api/knowledge-bases/{kb_id}/graph/search`          | 子图检索（§6.2，返回 chunk 证据） |
 | GET  | `/api/knowledge-bases/{kb_id}/graph/entities?name={name}` | 实体详情 + 1-hop 邻居 + **chunk 证据**（name 用 query 参数，实体名含特殊字符不破坏 URL） |
 
+### 9.4 实体管理 API（实体列表 + 编辑）
+
+| 方法 | 路径 | 说明 |
+| ---- | ---------------------------------------------------- | ---------------------- |
+| GET  | `/api/knowledge-bases/{kb_id}/graph/entities/list?page=&page_size=&q=` | 实体分页列表：名称模糊搜索（CONTAINS，大小写不敏感）+ 关系数（不含 `提及`）/ chunk 数；按关系数降序、名称升序 |
+| PUT  | `/api/knowledge-bases/{kb_id}/graph/entities` | 编辑实体（名称/类型/描述）：`old_name`/`old_type` 定位；类型/名称键变化做冲突检测（409）；实体不存在 404；类型非法 400 |
+
+- 更新语义：类型变化时 `REMOVE n:旧label` + `SET n:新label`（label 过白名单）；名称/类型是节点键，冲突即拒绝；关系基于图结构引用自动跟随改名/改类型；description 覆盖先到先得约定（用户手动编辑优先级最高）；
+- 列表响应：`{total, page, page_size, items: [{name, type, description, relation_count, chunk_count}]}`；
+- 前端（GraphView 右侧卡片「实体列表/详情」双标签页）：列表搜索 + 分页；行内「编辑」（弹窗表单）；「渲染」= 实体 + 1-hop 邻居并入画布（复用 `expand_node`）；chunk 数可点击查看该实体全部证据原文。
+
 ### 9.3 关键响应示例
 
 `GET .../graph/stats`：
@@ -590,7 +604,7 @@ neo4j_uri: str = "bolt://localhost:7687"
 neo4j_username: str = "neo4j"
 neo4j_password: str = "password123"
 neo4j_database: str = "neo4j"
-graph_extraction_batch: int = 4    # LLM 抽取合并 chunk 数
+graph_extraction_batch: int = 1    # LLM 抽取：逐 chunk 提取（每 chunk 一次调用，减少跨 chunk 幻觉；可调大合并节省成本）
 graph_max_hops: int = 2            # 图检索最大跳数
 graph_query_limit: int = 200       # 子图返回上限
 ```

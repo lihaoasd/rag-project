@@ -1,7 +1,7 @@
 """
 图谱抽取管线单元测试 — 正则 / JSON 解析 / 合并去重 / 管线编排（mock LLM 与词库）。
 """
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -116,6 +116,76 @@ class TestMergeWithLexicon:
             lexicon_service._cache = None
 
 
+class TestExtractionPromptLoading:
+    """实体抽取提示词：提示词管理激活模板优先，缺失/异常回退内置 fallback。"""
+
+    @staticmethod
+    def _mock_llm_with_output():
+        """mock create_llm，achat 返回合法抽取 JSON。"""
+        llm = MagicMock()
+        resp = MagicMock()
+        resp.message.content = '{"entities": [], "relationships": []}'
+        llm.achat = AsyncMock(return_value=resp)
+        return llm
+
+    @staticmethod
+    def _patched_env(llm, active_result):
+        patches = [
+            patch("core.graph_extractor.resolve_model_config",
+                  new_callable=AsyncMock, return_value={"model": "mock"}),
+            patch("core.graph_extractor.create_llm", return_value=llm),
+            patch("core.graph_extractor.prompt_service.get_active_prompt",
+                  new_callable=AsyncMock, return_value=active_result),
+        ]
+        for p in patches:
+            p.start()
+        return patches
+
+    @pytest.mark.asyncio
+    async def test_uses_active_template(self):
+        llm = self._mock_llm_with_output()
+        patches = self._patched_env(llm, {"system_prompt": "自定义抽取提示词模板", "variables": None})
+        try:
+            await graph_extractor._llm_extract_batch(KB_ID, [{"text": "测试文本"}])
+        finally:
+            for p in patches:
+                p.stop()
+        args, _ = llm.achat.await_args
+        assert args[0][0].content == "自定义抽取提示词模板"
+
+    @pytest.mark.asyncio
+    async def test_fallback_when_no_active(self):
+        llm = self._mock_llm_with_output()
+        patches = self._patched_env(llm, None)
+        try:
+            await graph_extractor._llm_extract_batch(KB_ID, [{"text": "测试文本"}])
+        finally:
+            for p in patches:
+                p.stop()
+        args, _ = llm.achat.await_args
+        assert args[0][0].content == graph_extractor.FALLBACK_ENTITY_EXTRACTION_PROMPT
+
+    @pytest.mark.asyncio
+    async def test_fallback_on_error(self):
+        llm = self._mock_llm_with_output()
+        patches = [
+            patch("core.graph_extractor.resolve_model_config",
+                  new_callable=AsyncMock, return_value={"model": "mock"}),
+            patch("core.graph_extractor.create_llm", return_value=llm),
+            patch("core.graph_extractor.prompt_service.get_active_prompt",
+                  new_callable=AsyncMock, side_effect=RuntimeError("db down")),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            await graph_extractor._llm_extract_batch(KB_ID, [{"text": "测试文本"}])
+        finally:
+            for p in patches:
+                p.stop()
+        args, _ = llm.achat.await_args
+        assert args[0][0].content == graph_extractor.FALLBACK_ENTITY_EXTRACTION_PROMPT
+
+
 class TestExtractFromChunks:
     @pytest.mark.asyncio
     async def test_lexicon_and_llm_merge(self, mock_async_session, mock_session):
@@ -140,7 +210,8 @@ class TestExtractFromChunks:
             with patch(
                 "core.graph_extractor._llm_extract_batch",
                 new_callable=AsyncMock,
-                return_value=llm_output,
+                # 逐 chunk（默认 batch=1）：c1 报实体，c2 无实体 → 实体仅归属 c1
+                side_effect=[llm_output, ExtractionOutput(entities=[], relationships=[])],
             ) as mock_llm:
                 result = await graph_extractor.extract_from_chunks(KB_ID, chunks)
         finally:
@@ -178,3 +249,40 @@ class TestExtractFromChunks:
             lexicon_service._cache = None
         assert result["entities"] == []
         assert result["relationships"] == []
+
+    @pytest.mark.asyncio
+    async def test_single_chunk_extraction_when_batch_1(self, mock_async_session, mock_session):
+        """逐 chunk 提取（graph_extraction_batch=1）：每个 chunk 各触发一次 LLM 调用，chunk 归属准确。"""
+        lexicon_service._cache = {}
+        chunks = [
+            {"id": "c1", "text": "甲公司中标 XX项目。"},
+            {"id": "c2", "text": "乙公司负责 YY工程。"},
+            {"id": "c3", "text": "丙公司参与 ZZ活动。"},
+        ]
+        outputs = [
+            ExtractionOutput(entities=[{"name": "甲公司", "type": "ORGANIZATION"}], relationships=[]),
+            ExtractionOutput(entities=[{"name": "乙公司", "type": "ORGANIZATION"}], relationships=[]),
+            ExtractionOutput(entities=[{"name": "丙公司", "type": "ORGANIZATION"}], relationships=[]),
+        ]
+        original_batch = graph_extractor.settings.graph_extraction_batch
+        graph_extractor.settings.graph_extraction_batch = 1
+        try:
+            with patch(
+                "core.graph_extractor._llm_extract_batch",
+                new_callable=AsyncMock,
+                side_effect=outputs,
+            ) as mock_llm:
+                result = await graph_extractor.extract_from_chunks(KB_ID, chunks)
+        finally:
+            graph_extractor.settings.graph_extraction_batch = original_batch
+            lexicon_service._cache = None
+
+        assert mock_llm.await_count == 3
+        # 每次调用仅传入 1 个 chunk
+        for call in mock_llm.await_args_list:
+            assert len(call.args[1]) == 1
+        # 实体 chunk 归属：各自落在当前 chunk
+        names = {e["name"]: e["chunk_ids"] for e in result["entities"]}
+        assert names["甲公司"] == ["c1"]
+        assert names["乙公司"] == ["c2"]
+        assert names["丙公司"] == ["c3"]

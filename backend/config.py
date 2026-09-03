@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     # === 文档处理配置 ===
     chunk_size: int = 512
     chunk_overlap: int = 64
+    # Word 逻辑块（标题聚合）超长二次切分参数（字符数）
+    word_block_max_chars: int = 1000
+    word_block_overlap_chars: int = 100
     parse_batch_size: int = 16
     retrieval_top_k: int = 5
     retrieval_similarity_threshold: float = 0.6
@@ -94,7 +97,7 @@ class Settings(BaseSettings):
     neo4j_username: str = "neo4j"
     neo4j_password: str = "password123"
     neo4j_database: str = "neo4j"
-    graph_extraction_batch: int = 4      # LLM 抽取合并 chunk 数
+    graph_extraction_batch: int = 1      # LLM 抽取：逐 chunk 提取（每 chunk 一次调用，减少跨 chunk 幻觉；可调大合并节省成本）
     graph_max_hops: int = 2              # 图检索最大跳数
     graph_query_limit: int = 200         # 子图返回上限
     graph_min_chunk_chars: int = 20      # 短于此长度的 chunk 不参与抽取

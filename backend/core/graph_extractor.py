@@ -4,7 +4,7 @@
 流程（设计文档 §5.1）：
 1. 词库匹配（lexicon_service.match_entities，零成本）→ 高频实体
 2. 内置正则（金额/日期）→ 确定性实体
-3. LLM 批量补充（graph_extraction_batch 个 chunk 一批）→ 长尾实体 + 关系
+3. LLM 逐 chunk 补充（graph_extraction_batch 默认 1，每 chunk 一次调用，减少跨 chunk 幻觉）→ 长尾实体 + 关系
 4. 合并去重：全半角/空白归一化，同 (type, name) 合并来源 chunk_ids
 
 返回结构：
@@ -17,8 +17,9 @@ import unicodedata
 
 from config import settings
 from core.model_factory import create_llm, resolve_model_config
+from core.prompt_renderer import render_prompt
 from models.graph_schemas import ExtractionOutput
-from services import lexicon_service
+from services import lexicon_service, prompt_service
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -44,7 +45,8 @@ _DATE_RE = re.compile(
     r"(\d{4})\s*[年./-]\s*(\d{1,2})\s*[月./-]\s*(\d{1,2})\s*日?"
 )
 
-_EXTRACTION_SYSTEM_PROMPT = """你是通用信息抽取系统。从文本中提取实体和关系，只提取明确提及的信息，不要编造。
+# 实体抽取系统提示词内置兜底（优先使用提示词管理 entity_extraction 激活模板，见 _get_extraction_prompt）
+FALLBACK_ENTITY_EXTRACTION_PROMPT = """你是通用信息抽取系统。从文本中提取实体和关系，只提取明确提及的信息，不要编造。
 实体 name 必须与原文完全一致（禁止改写、合并或规范化），同一实体在原文中重复出现只需输出一次。
 
 实体类型:
@@ -150,6 +152,18 @@ def _parse_llm_output(text: str) -> ExtractionOutput | None:
         return None
 
 
+async def _get_extraction_prompt() -> str:
+    """获取实体抽取系统提示词：优先提示词管理 entity_extraction 激活模板，缺失/异常用内置 fallback。"""
+    try:
+        active = await prompt_service.get_active_prompt("entity_extraction")
+        if active:
+            variable_defs = active.get("variables") or []
+            return render_prompt(active["system_prompt"], {}, variable_defs)
+    except Exception as e:
+        logger.warning("获取实体抽取提示词失败，使用内置默认值: %s", e)
+    return FALLBACK_ENTITY_EXTRACTION_PROMPT
+
+
 async def _llm_extract_batch(kb_id: str, batch_chunks: list[dict]) -> ExtractionOutput | None:
     """对一批 chunk 调用 LLM 抽取实体/关系。失败重试 1 次。"""
     from llama_index.core.llms import ChatMessage
@@ -160,8 +174,9 @@ async def _llm_extract_batch(kb_id: str, batch_chunks: list[dict]) -> Extraction
     # 过长截断，防止超上下文（单次抽取输入上限）
     user_text = user_text[:8000]
 
+    system_prompt = await _get_extraction_prompt()
     messages = [
-        ChatMessage(role="system", content=_EXTRACTION_SYSTEM_PROMPT),
+        ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=user_text),
     ]
     for attempt in range(2):

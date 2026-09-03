@@ -26,7 +26,78 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-VALID_METHODS = ("dense", "sparse", "fulltext")
+VALID_METHODS = ("dense", "sparse", "fulltext", "graph")
+
+
+@traced_span("recall_graph")
+async def _recall_graph(query: str, kb_ids: list[str], top_k: int) -> list[dict]:
+    """知识图谱证据召回（graph 通道）：逐 kb 子图检索，实体证据切片转结果项。
+
+    图证据无向量相似度：score 取固定 1.0（RRF 只看排序位置；展示时以 graph_entity 标记来源）。
+    图谱未启用/检索失败时降级为空列表，不阻断整体检索。
+    """
+    t0 = time.perf_counter()
+    if not settings.graph_enabled:
+        get_client().update_current_span(
+            input=query,
+            metadata={"method": "graph", "kb_ids": kb_ids, "hit_count": 0, "skipped": "graph_disabled"},
+        )
+        return []
+
+    from services import graph_service
+
+    async def _one(kb_id: str):
+        try:
+            result = await graph_service.search_subgraph(
+                kb_id, query, max_hops=1, limit=max(top_k * 2, 20)
+            )
+            hits: list[dict] = []
+            for evg in result.get("evidence", []):
+                entity = evg.get("entity", "")
+                for chunk in evg.get("chunks", []):
+                    hits.append({
+                        "score": 1.0,
+                        "text": chunk.get("text", ""),
+                        "doc_id": chunk.get("doc_id", ""),
+                        "file_name": chunk.get("file_name", ""),
+                        "page_number": chunk.get("page_number", 1),
+                        "chunk_index": chunk.get("chunk_index", 0),
+                        "chunk_type": "text",
+                        "source_chunk_index": -1,
+                        "kb_id": kb_id,
+                        "graph_entity": entity,
+                    })
+            return hits
+        except Exception as e:
+            logger.warning("知识库 %s graph 检索失败（降级为空）: %s", kb_id, e)
+            return []
+
+    per_kb = await asyncio.gather(*[_one(kid) for kid in kb_ids])
+    all_hits = [h for hits in per_kb for h in hits]
+
+    # 去重：同一切片被多个实体提到时保留一条，graph_entity 合并
+    merged: dict[tuple, dict] = {}
+    for h in all_hits:
+        key = (h["doc_id"], h["chunk_index"])
+        if key not in merged:
+            merged[key] = h
+        else:
+            prev = merged[key]["graph_entity"]
+            if h["graph_entity"] and h["graph_entity"] not in prev:
+                merged[key]["graph_entity"] = f"{prev}、{h['graph_entity']}"
+    all_hits = list(merged.values())
+
+    get_client().update_current_span(
+        input=query,
+        metadata={
+            "method": "graph",
+            "kb_ids": kb_ids,
+            "hit_count": len(all_hits),
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
+        },
+        output=format_retrieval_observation(all_hits),
+    )
+    return all_hits
 
 
 @traced_span("rrf_merge")
@@ -221,6 +292,10 @@ async def search(
         )
         per_method_hits["fulltext"] = len(hits)
         ranked_lists.append(hits)
+    if "graph" in methods:
+        hits = await _recall_graph(query, kb_ids, fetch_top_k)
+        per_method_hits["graph"] = len(hits)
+        ranked_lists.append(hits)
     get_client().update_current_span(metadata={"per_method_hits": per_method_hits})
 
     # ===== 2. 单选直返 / 多选 RRF 融合 =====
@@ -267,6 +342,7 @@ async def search(
             "kb_id": kid,
             "kb_name": kb_names.get(kid, kid),
             "highlight": hit.get("highlight"),
+            "graph_entity": hit.get("graph_entity"),
         })
 
     get_client().update_current_span(output={"total": len(results)})

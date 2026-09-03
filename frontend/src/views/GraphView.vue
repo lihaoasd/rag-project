@@ -90,54 +90,122 @@
       </el-card>
 
       <el-card shadow="never" class="detail-card">
-        <template #header>
-          <div class="detail-header">
-            <span>实体详情</span>
-            <el-button v-if="detail?.entity" text type="primary" size="small" @click="detail = null">关闭</el-button>
-          </div>
-        </template>
-        <template v-if="detail?.entity">
-          <div class="entity-title">
-            <el-tag :color="typeColor(detail.entity.type)" effect="dark" size="small" class="type-badge">
-              {{ detail.entity.type }}
-            </el-tag>
-            <span class="entity-name">{{ detail.entity.name }}</span>
-            <el-button
-              type="primary"
-              plain
-              size="small"
-              :loading="expanding"
-              @click="handleExpand(detail.entity.name)"
-            >
-              <el-icon><Share /></el-icon>展开邻居
-            </el-button>
-          </div>
-          <p class="entity-desc">{{ detail.entity.description || '（无描述）' }}</p>
-          <el-divider content-position="left">邻居（{{ detail.neighbors.length }}）</el-divider>
-          <div v-if="detail.neighbors.length" class="neighbor-list">
-            <div v-for="(nb, i) in detail.neighbors" :key="i" class="neighbor-item" @click="handleEntityClick(nb.name)">
-              <el-tag size="small" effect="plain" class="nb-type">{{ nb.type }}</el-tag>
-              <span class="nb-name">{{ nb.name }}</span>
-              <span class="nb-rel">{{ nb.direction === 'out' ? '→' : '←' }} {{ nb.relation }}</span>
+        <el-tabs v-model="rightTab" class="right-tabs">
+          <!-- 实体列表：分页 + 搜索 + 编辑 + 点击渲染画布 -->
+          <el-tab-pane label="实体列表" name="entity-list">
+            <div class="entity-list-pane">
+              <el-input
+                v-model="listQuery"
+                placeholder="搜索实体名"
+                clearable
+                size="small"
+                class="list-search"
+                @keyup.enter="loadEntityList"
+                @clear="loadEntityList"
+              >
+                <template #append>
+                  <el-button :loading="listLoading" @click="loadEntityList">
+                    <el-icon><Search /></el-icon>
+                  </el-button>
+                </template>
+              </el-input>
+              <el-table :data="entityList.items" size="small" v-loading="listLoading" stripe>
+                <el-table-column label="名称" min-width="110" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <el-link type="primary" :underline="false" @click="renderEntityToCanvas(row.name)">
+                      {{ row.name }}
+                    </el-link>
+                  </template>
+                </el-table-column>
+                <el-table-column label="类型" width="104">
+                  <template #default="{ row }">
+                    <el-tag :color="typeColor(row.type)" effect="dark" size="small" class="type-badge">
+                      {{ row.type }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="relation_count" label="关系数" width="66" align="center" />
+                <el-table-column label="chunk数" width="70" align="center">
+                  <template #default="{ row }">
+                    <el-link
+                      v-if="row.chunk_count > 0"
+                      type="primary"
+                      :underline="false"
+                      @click="showEntityEvidence(row.name)"
+                    >{{ row.chunk_count }}</el-link>
+                    <span v-else class="muted">0</span>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="description" label="描述" min-width="90" show-overflow-tooltip>
+                  <template #default="{ row }">{{ row.description || '—' }}</template>
+                </el-table-column>
+                <el-table-column label="操作" width="112" align="center">
+                  <template #default="{ row }">
+                    <el-button text type="primary" size="small" @click="openEditDialog(row)">编辑</el-button>
+                    <el-button text type="success" size="small" @click="renderEntityToCanvas(row.name)">渲染</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+              <div class="list-footer">
+                <el-pagination
+                  small
+                  background
+                  layout="total, prev, pager, next"
+                  :total="entityList.total"
+                  :page-size="entityListPageSize"
+                  :current-page="entityListPage"
+                  @current-change="onListPageChange"
+                />
+              </div>
             </div>
-          </div>
-          <div v-else class="muted">无邻居</div>
-          <el-divider content-position="left">chunk 证据（{{ detail.evidence.length }}）</el-divider>
-          <div v-if="detail.evidence.length" class="evidence-list">
-            <div v-for="(ev, i) in detail.evidence" :key="i" class="evidence-item">
-              <div class="evidence-meta">
-                <span>{{ ev.file_name }}</span>
-                <el-tag size="small" type="info" effect="plain">第 {{ ev.page_number }} 页</el-tag>
-                <el-button text type="primary" size="small" @click="openChunk(ev, detail.entity.name)">
-                  查看原文
+          </el-tab-pane>
+
+          <!-- 详情：选中实体的属性 / 邻居 / 证据 -->
+          <el-tab-pane label="详情" name="detail">
+            <template v-if="detail?.entity">
+              <div class="entity-title">
+                <el-tag :color="typeColor(detail.entity.type)" effect="dark" size="small" class="type-badge">
+                  {{ detail.entity.type }}
+                </el-tag>
+                <span class="entity-name">{{ detail.entity.name }}</span>
+                <el-button
+                  type="primary"
+                  plain
+                  size="small"
+                  :loading="expanding"
+                  @click="handleExpand(detail.entity.name)"
+                >
+                  <el-icon><Share /></el-icon>展开邻居
                 </el-button>
               </div>
-              <p class="evidence-text" v-html="highlight(ev.text, detail.entity.name)"></p>
-            </div>
-          </div>
-          <div v-else class="muted">无证据</div>
-        </template>
-        <el-empty v-else description="点击图谱节点查看实体详情与证据" :image-size="80" />
+              <p class="entity-desc">{{ detail.entity.description || '（无描述）' }}</p>
+              <el-divider content-position="left">邻居（{{ detail.neighbors.length }}）</el-divider>
+              <div v-if="detail.neighbors.length" class="neighbor-list">
+                <div v-for="(nb, i) in detail.neighbors" :key="i" class="neighbor-item" @click="handleEntityClick(nb.name)">
+                  <el-tag size="small" effect="plain" class="nb-type">{{ nb.type }}</el-tag>
+                  <span class="nb-name">{{ nb.name }}</span>
+                  <span class="nb-rel">{{ nb.direction === 'out' ? '→' : '←' }} {{ nb.relation }}</span>
+                </div>
+              </div>
+              <div v-else class="muted">无邻居</div>
+              <el-divider content-position="left">chunk 证据（{{ detail.evidence.length }}）</el-divider>
+              <div v-if="detail.evidence.length" class="evidence-list">
+                <div v-for="(ev, i) in detail.evidence" :key="i" class="evidence-item">
+                  <div class="evidence-meta">
+                    <span>{{ ev.file_name }}</span>
+                    <el-tag size="small" type="info" effect="plain">第 {{ ev.page_number }} 页</el-tag>
+                    <el-button text type="primary" size="small" @click="openChunk(ev, detail.entity.name)">
+                      查看原文
+                    </el-button>
+                  </div>
+                  <p class="evidence-text" v-html="highlight(ev.text, detail.entity.name)"></p>
+                </div>
+              </div>
+              <div v-else class="muted">无证据</div>
+            </template>
+            <el-empty v-else description="点击图谱节点或列表实体查看详情与证据" :image-size="80" />
+          </el-tab-pane>
+        </el-tabs>
       </el-card>
     </div>
 
@@ -176,6 +244,60 @@
         <el-button @click="chunkDialog.visible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <!-- 实体编辑弹窗（名称/类型/描述） -->
+    <el-dialog
+      v-model="editDialog.visible"
+      title="编辑实体"
+      width="520px"
+      :close-on-click-modal="false"
+      destroy-on-close
+    >
+      <el-form ref="editFormRef" :model="editDialog.form" :rules="editRules" label-width="72px">
+        <el-form-item label="名称" prop="name">
+          <el-input v-model="editDialog.form.name" maxlength="100" placeholder="实体名" />
+        </el-form-item>
+        <el-form-item label="类型" prop="type">
+          <el-select v-model="editDialog.form.type" style="width: 100%">
+            <el-option v-for="t in ENTITY_TYPE_OPTIONS" :key="t" :label="t" :value="t" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="描述" prop="description">
+          <el-input
+            v-model="editDialog.form.description"
+            type="textarea"
+            :rows="4"
+            maxlength="500"
+            show-word-limit
+            placeholder="实体描述（可选）"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="editDialog.saving" @click="saveEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 实体 chunk 证据弹窗（列表 chunk 数点击查看原文） -->
+    <el-dialog
+      v-model="evidenceDialog.visible"
+      :title="`chunk 证据 — ${evidenceDialog.entity}`"
+      width="720px"
+      top="6vh"
+    >
+      <div v-if="evidenceDialog.items.length" class="evidence-dialog-list">
+        <div v-for="(ev, i) in evidenceDialog.items" :key="i" class="evidence-dialog-item">
+          <div class="evidence-meta">
+            <span>{{ ev.file_name }}</span>
+            <el-tag size="small" type="info" effect="plain">第 {{ ev.page_number }} 页</el-tag>
+            <el-tag size="small" type="info" effect="plain">切片 #{{ ev.chunk_index }}</el-tag>
+          </div>
+          <p class="evidence-dialog-text" v-html="highlightFull(ev.text, evidenceDialog.entity)"></p>
+        </div>
+      </div>
+      <el-empty v-else description="暂无 chunk 证据" :image-size="80" />
+    </el-dialog>
   </div>
 </template>
 
@@ -185,7 +307,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
 import { getKnowledgeBase } from '@/api/knowledgeBase'
-import { getGraphStats, getGraphData, buildKbGraph, clearKbGraph, searchGraph, getEntityDetail, expandGraphNode } from '@/api/graph'
+import { getGraphStats, getGraphData, buildKbGraph, clearKbGraph, searchGraph, getEntityDetail, expandGraphNode, listGraphEntities, updateGraphEntity } from '@/api/graph'
 
 const route = useRoute()
 const router = useRouter()
@@ -211,6 +333,25 @@ const expandedNames = ref([])
 const expanding = ref(false)
 // chunk 原文弹窗（点击"查看原文"在当前页打开，不跳转）
 const chunkDialog = ref({ visible: false, ev: null, entity: '', title: '' })
+// 右侧卡片标签页：entity-list（实体列表） / detail（详情）
+const rightTab = ref('entity-list')
+// 实体分页列表
+const listQuery = ref('')
+const listLoading = ref(false)
+const entityList = ref({ total: 0, items: [] })
+const entityListPage = ref(1)
+const entityListPageSize = ref(50)
+// 实体编辑弹窗
+const editDialog = ref({ visible: false, saving: false, form: null })
+const editFormRef = ref(null)
+const editRules = {
+  name: [{ required: true, message: '请输入实体名', trigger: 'blur' }],
+  type: [{ required: true, message: '请选择实体类型', trigger: 'change' }],
+}
+// 通用本体 9 类（docs/09 §3.1，编辑弹窗类型下拉）
+const ENTITY_TYPE_OPTIONS = ['Organization', 'Person', 'Place', 'Event', 'Time', 'Project', 'Product', 'Quantity', 'Concept']
+// 实体 chunk 证据弹窗（列表 chunk 数点击）
+const evidenceDialog = ref({ visible: false, entity: '', items: [] })
 let chart = null
 
 // 类型配色
@@ -218,11 +359,16 @@ const TYPE_COLORS = {
   Organization: '#409EFF',
   Project: '#67C23A',
   Person: '#E6A23C',
+  Event: '#FF7043',
+  Place: '#00BFA5',
+  Time: '#909399',
+  Product: '#F56C6C',
+  Quantity: '#B37FEB',
+  Concept: '#9C27B0',
   Money: '#F56C6C',
   Date: '#909399',
   Location: '#00BFA5',
   Qualification: '#9C27B0',
-  Event: '#FF7043',
 }
 
 function typeColor(type) {
@@ -446,6 +592,96 @@ async function handleEntityClick(name) {
   }
 }
 
+// --- 实体列表（分页 + 搜索） ---
+async function loadEntityList() {
+  listLoading.value = true
+  try {
+    entityList.value = await listGraphEntities(kbId, {
+      page: entityListPage.value,
+      pageSize: entityListPageSize.value,
+      q: listQuery.value.trim(),
+    })
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.warning(msg)
+  } finally {
+    listLoading.value = false
+  }
+}
+
+function onListPageChange(page) {
+  entityListPage.value = page
+  loadEntityList()
+}
+
+/** 点击实体：1-hop 邻居并入画布 + 切到详情 Tab 展示该实体 */
+async function renderEntityToCanvas(name) {
+  try {
+    const data = await expandGraphNode(kbId, name, 100)
+    mergeGraphData(data.nodes, data.edges)
+    if (!expandedNames.value.includes(name)) expandedNames.value.push(name)
+    renderChart(graphData.value.nodes, graphData.value.edges)
+    rightTab.value = 'detail'
+    await handleEntityClick(name)
+    ElMessage.success(`已渲染「${name}」及其 ${data.nodes.length} 个邻居`)
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.error('渲染失败: ' + msg)
+  }
+}
+
+/** 列表 chunk 数点击：拉取该实体全部证据原文弹窗 */
+async function showEntityEvidence(name) {
+  try {
+    const detail = await getEntityDetail(kbId, name)
+    evidenceDialog.value = { visible: true, entity: name, items: detail.evidence || [] }
+    if (!evidenceDialog.value.items.length) ElMessage.info('该实体暂无 chunk 证据')
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.warning(msg)
+  }
+}
+
+// --- 实体编辑（名称/类型/描述） ---
+function openEditDialog(row) {
+  editDialog.value = {
+    visible: true,
+    saving: false,
+    form: {
+      old_name: row.name,
+      old_type: row.type,
+      name: row.name,
+      type: row.type,
+      description: row.description || '',
+    },
+  }
+}
+
+async function saveEdit() {
+  if (!editFormRef.value) return
+  try {
+    await editFormRef.value.validate()
+  } catch {
+    return
+  }
+  const form = editDialog.value.form
+  editDialog.value.saving = true
+  try {
+    await updateGraphEntity(kbId, form)
+    ElMessage.success('实体已更新')
+    editDialog.value.visible = false
+    await loadEntityList()
+    // 画布含旧节点（id 变更后失效）→ 重拉第一页保持一致
+    const oldId = `${form.old_type}_${form.old_name}`
+    if (graphData.value.nodes.some((n) => n.id === oldId)) await loadGraph()
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.error('更新失败: ' + msg)
+  } finally {
+    editDialog.value.saving = false
+  }
+}
+
 async function handleBuildKb() {
   try {
     await ElMessageBox.confirm('将清空当前知识库图谱并重新构建全部已解析文件，耗时较长，确定？', '全量构建', {
@@ -527,6 +763,13 @@ onMounted(async () => {
     kbName.value = data?.name || ''
   } catch { /* ignore */ }
   await loadGraph()
+  await loadEntityList()
+  // 从检索页跳转而来：自动检索目标实体
+  const entity = route.query.entity
+  if (entity) {
+    searchText.value = String(entity)
+    await handleSearch()
+  }
 })
 
 onBeforeUnmount(() => {
@@ -582,7 +825,7 @@ onBeforeUnmount(() => {
 
 .main-area {
   display: grid;
-  grid-template-columns: 1fr 340px;
+  grid-template-columns: 1fr 400px;
   gap: 12px;
 }
 .chart-card { min-height: 520px; }
@@ -597,7 +840,30 @@ onBeforeUnmount(() => {
 }
 .load-more-hint { font-size: 12px; color: var(--color-text-secondary); }
 .detail-card { min-height: 520px; max-height: 600px; overflow-y: auto; }
-.detail-header { display: flex; justify-content: space-between; align-items: center; }
+.detail-card :deep(.el-tabs__content) { overflow: visible; }
+
+/* 实体列表 Tab */
+.entity-list-pane { display: flex; flex-direction: column; gap: 8px; }
+.list-search { width: 100%; }
+.list-footer { display: flex; justify-content: flex-end; margin-top: 4px; }
+
+/* 实体证据弹窗 */
+.evidence-dialog-list { max-height: 60vh; overflow-y: auto; }
+.evidence-dialog-item { margin-bottom: 12px; }
+.evidence-dialog-text {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--color-text-primary);
+  max-height: 180px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--color-fill-light);
+  padding: 8px 10px;
+  border-radius: 4px;
+  margin: 4px 0 0;
+}
+.evidence-dialog-text :deep(mark) { background: #ffe58f; padding: 0 2px; border-radius: 2px; }
 
 .entity-title { display: flex; align-items: center; gap: 8px; }
 .entity-name { font-size: 16px; font-weight: 600; }

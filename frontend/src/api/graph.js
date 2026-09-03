@@ -77,3 +77,21 @@ export function expandGraphNode(kbId, name, limit = 100) {
 export function getEntityDetail(kbId, name) {
   return apiClient.get(`/knowledge-bases/${kbId}/graph/entities`, { params: { name } }).then((res) => res.data)
 }
+
+/**
+ * 实体分页列表（实体管理）：名称模糊搜索 + 关系数/chunk 数
+ */
+export function listGraphEntities(kbId, { page = 1, pageSize = 50, q = '' } = {}) {
+  return apiClient
+    .get(`/knowledge-bases/${kbId}/graph/entities/list`, {
+      params: { page, page_size: pageSize, q },
+    })
+    .then((res) => res.data)
+}
+
+/**
+ * 编辑实体（名称/类型/描述；键冲突返回 409）
+ */
+export function updateGraphEntity(kbId, payload) {
+  return apiClient.put(`/knowledge-bases/${kbId}/graph/entities`, payload).then((res) => res.data)
+}
