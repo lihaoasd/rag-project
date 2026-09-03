@@ -54,6 +54,32 @@ def _config_to_dict(mc: ModelConfig) -> dict:
     }
 
 
+async def _query_default_config(session, model_type: str) -> dict | None:
+    """在给定 session 上查询全局默认启用配置（is_default 且 is_active），无则 None。"""
+    default_result = await session.execute(
+        select(ModelConfig).where(
+            ModelConfig.model_type == model_type,
+            ModelConfig.is_default == True,  # noqa: E712
+            ModelConfig.is_active == True,  # noqa: E712
+        )
+    )
+    mc = default_result.scalar_one_or_none()
+    if mc is not None and mc.is_active:
+        logger.debug("resolve 命中默认: type=%s, config=%s", model_type, mc.name)
+        return _config_to_dict(mc)
+    return None
+
+
+async def resolve_default_model_config(model_type: str) -> dict | None:
+    """解析全局默认模型配置（仅 is_default 且 is_active 的启用模型）。
+
+    无可用默认配置时返回 None（不抛错），供不依赖知识库绑定的场景使用
+    （如检索页 Query 改写跨多知识库取默认 LLM）。
+    """
+    async with async_session() as session:
+        return await _query_default_config(session, model_type)
+
+
 async def resolve_model_config(kb_id: str, model_type: str) -> dict | None:
     """解析知识库最终生效的模型配置。
 
@@ -79,18 +105,10 @@ async def resolve_model_config(kb_id: str, model_type: str) -> dict | None:
                 logger.debug("resolve 命中绑定: kb_id=%s, type=%s, config=%s", kb_id, model_type, mc.name)
                 return _config_to_dict(mc)
 
-        # 2. 全局默认兜底（仅启用模型）
-        default_result = await session.execute(
-            select(ModelConfig).where(
-                ModelConfig.model_type == model_type,
-                ModelConfig.is_default == True,  # noqa: E712
-                ModelConfig.is_active == True,  # noqa: E712
-            )
-        )
-        mc = default_result.scalar_one_or_none()
-        if mc is not None and mc.is_active:
-            logger.debug("resolve 命中默认: type=%s, config=%s", model_type, mc.name)
-            return _config_to_dict(mc)
+        # 2. 全局默认兜底（仅启用模型，同一 session 内查询）
+        cfg = await _query_default_config(session, model_type)
+        if cfg is not None:
+            return cfg
 
     if model_type in REQUIRED_MODEL_TYPES:
         raise RuntimeError(f"未配置 {model_type} 类型模型（知识库 {kb_id} 无绑定且无启用默认）")

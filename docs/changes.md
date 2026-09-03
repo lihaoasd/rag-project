@@ -1,5 +1,53 @@
 # 修改记录
 
+## 2026-09-03
+
+- 需求：Query 改写需处理**自我纠正/改口型否定**输入（如"我要查询 XXX，不了，还是查询 AA"），改写结果只保留最终意图 AA，**不得带出被否定的 XXX**；同时保留真实排除条件（"不含/没有 XXX 的招标文件"属于最终筛选意图）。
+- 口径（用户确认）：只剔"自我纠正/改口"中被放弃的目标；含否定词的**真实筛选条件原样保留**。同步范围（用户指定）：**仅更新运行库提示词管理 `query_rewrite` 默认模板文案**，代码兜底常量与迁移 0017 seed 不随本次改动（保持原文案；仅在无激活模板时兜底使用，与新 DB 文案允许不一致）。
+- 改动（运行库 192.168.60.120:5444/ai_bid_rag，仅数据）：`prompt_templates` 中 scenario=`query_rewrite` 且 is_default/is_active 的默认模板（id b6788103-…）`system_prompt` 更新，新增两条规则：改口型否定以最终意图为准且被否定内容不得出现；"不/别/不含/不要"作真实筛选条件时必须保留。其余字段（name/description/variables/is_active/is_default/sort_order）不变。
+- 验证：真实 LLM 语义实测 7 例全部通过——改口剔除（"…不了/算了/不不不/别查了…还是查 AA" 5 例均只输出 AA，无 XXX）；排除条件保留（"不含联合体投标方式""近三年没有重大违法记录" 均保留否定语义）；无代码改动、无迁移。
+- 备注：如需新环境/重新 seed 也与新文案一致（代码兜底 + 迁移 0017 seed 同步），可另开任务处理。
+
+## 2026-09-03
+
+- 需求：LLM（及模型类）调用统一以 **langfuse generation** 记录（model/input/output/usage），覆盖 Query 改写、图谱实体抽取；并修正观测类型大小写缺陷。方案：`docs/plan/39-langfuse-llm-generation-plan.md`（已评审）。
+- 根因：① langfuse v4 `observe(as_type=...)` 仅接受小写类型，历史代码传 `"GENERATION"/"CHAIN"` 等大写会被 SDK 打 warning 并**静默降级为普通 span**；② Query 改写虽名义 generation 却只写 input/output、无 model/usage；③ 图谱实体抽取 LLM（`graph_extractor._llm_extract_batch`）完全未接入观测；聊天回答 `_call_llm_stream` 已达标（参照标准）。usage 取数：llama_index openai 系 LLM 把 token 计数写入 `response.additional_kwargs`。
+- 改动（后端）：
+  - `core/observability.py`：`traced_span` 新增旧大写→SDK 小写映射（GENERATION→generation、EMBEDDING→embedding、CHAIN→chain…，未知值透传），杜绝静默降级；新增 `extract_usage(resp)` 统一提取 token 用量；
+  - `core/query_rewrite.py`：`rewrite_query` 类型改 `generation`，每次实际 LLM 调用记录 `update_current_generation(model/input=提示词/output=改写词/usage)`，空输出/未变化**先记录后回退**（顺带修复空输出 `splitlines()[0]` 越界走异常分支的问题）；失败记 `level="ERROR"`；
+  - `core/graph_extractor.py`：`extract_from_chunks` 加 `@traced_span("entity_extraction", "chain")` 并记录 kb/chunk 输入；`_llm_extract_batch` 加 `@traced_span("entity_extract_llm", "generation")`，成功记 model/input/output/usage，两次尝试均失败补记 ERROR 级；
+  - 类型小写显式化：`retrieval.py` embedding→`"embedding"`、rerank→`"generation"`；`search_service.py` search→`"chain"`；`chat_service.py` rag_qa→`"chain"`。
+- 测试：`test_observability.py` 增 `traced_span` 类型映射（7 组参数化）与 `extract_usage`（4 例）；`test_query_rewrite.py` 增成功（含 usage）/空输出/LLM 异常三条 generation 记录断言；`test_graph_extractor.py` 增 autouse get_client mock + `_llm_extract_batch` 成功/全失败两条记录断言。
+- 验证：后端全量测试通过（pytest exit 0，**606 passed**）；不涉及 DB/前端改动，无迁移。部署提醒：服务器（192.168.60.120）需重新部署 backend 后，langfuse 中改写/抽取/embedding/rerank/chain 层级方以正确类型展示。
+
+## 2026-09-03
+
+- 需求：修复提示词管理「预览」对含 JSON 花括号模板报错（实体抽取默认提示词预览 500：`ValueError: Invalid format specifier '"...","type":"ORGANIZATION"...'`，前端表现为弹窗空白/无渲染结果）。
+- 根因：`core/prompt_renderer.py` 用 `str.format`（`_SafeFormatter`）渲染模板，模板中的 JSON 示例大括号（如 `{"entities":[...]}`）被当作占位符/格式说明符解析 → `format(value, spec)` 抛 ValueError。该渲染器同时被 `prompt_service.preview`（预览）、`chat_service`（RAG 提示词）、`graph_extractor`（实体抽取）、`query_rewrite`（改写提示词）复用，含 JSON 花括号的模板在运行期同样会崩溃。
+- 改动（后端）：`core/prompt_renderer.py` 重写 `render_prompt()`——按 `{变量名}` 正则仅替换占位符，其余花括号（JSON 示例等）原样保留、变量值原样插入不二次解析；必填缺失保留占位符、非必填缺失置空（与原行为一致）；删除已无用的 `_SafeFormatter` 与 `import string`。`extract_variables` / `validate_template` 不变。
+- 改动（前端）：`PromptManagementView.vue` 预览弹窗打开即自动渲染一次（`showPreviewDialog` 末尾触发 `doPreview()`），不再需要手动点「刷新渲染」才见内容。
+- 测试：新增 `tests/test_prompt_renderer.py`（15 例：普通替换 / 必填缺失保留 / 非必填缺失置空 / JSON 花括号原样保留 / 占位符与 JSON 并存 / 变量值含花括号 / `extract_variables` 去重与忽略带引号 JSON 键 / `validate_template`）；修复前该文件 4 例失败（含 ValueError 复现）。
+- 验证：后端全量测试 **590 passed**（pytest exit 0）；前端 `npm run build` 构建成功；不涉及数据迁移。部署提醒：服务器（192.168.60.120）需重新部署修复后的 backend/frontend 并重启后端，线上预览方生效。
+
+## 2026-09-01
+
+- 需求：文档检索加入 **Query 改写（LLM 单查询改写）**，作为可开关选项——检索页前端开关 + 问答后端配置开关，均默认关闭；改写提示词纳入提示词管理（新场景 `query_rewrite`）。
+- 方案：`docs/plan/38-query-rewrite-plan.md`（v1.1，已评审）。
+- 行为规则：改写只服务召回（dense/sparse/fulltext/graph 与 fulltext 词库扩展使用改写词）；**rerank 与响应 `query` 仍用原查询**；改写失败/无默认 LLM/输出为空静默回退原词；问答改写附带最近 4 轮历史（变量 `{history}`）。
+- 改动（后端）：
+  - `config.py`：新增 `query_rewrite_enabled=False`、`chat_query_rewrite_enabled=False`；
+  - 新增 `core/query_rewrite.py`：`FALLBACK_QUERY_REWRITE_PROMPT` + `_get_rewrite_prompt()`（提示词管理 `query_rewrite` 激活模板优先，缺失/DB 异常回退内置常量）+ `rewrite_query()`（`traced_span("query_rewrite","GENERATION")`，失败回退原词）；
+  - `core/model_factory.py`：新增 `resolve_default_model_config()`（全局默认启用模型，无则 None）；`resolve_model_config` 默认兜底分支改走同 session 的 `_query_default_config()`（行为不变）；
+  - `core/retrieval.py`：`retrieve_and_rank` 新增 `query_rewrite_config`/`query_rewrite_history` 参数，改写后 rerank 用原查询；
+  - `services/search_service.py`：`search()` 新增 `query_rewrite: bool|None`；开启时取全局默认 LLM 改写（召回用改写词、rerank 用原词、响应 `query` 为原词、span metadata 记 `query_rewritten`）；
+  - `services/chat_service.py`：`_run_rag` 按 `chat_query_rewrite_enabled` 解析 LLM 配置（失败仅 warning 跳过）并传最近 4 轮历史给 `retrieve_and_rank`；
+  - `models/schemas.py`：`SearchRequest` 新增 `query_rewrite: bool|None`；Prompt 场景注释补 `query_rewrite`；`routers/search.py` 两端点透传；
+  - 迁移 `0017_query_rewrite_default_prompt.py`：重建 `chk_prompt_templates_scenario`（加入 `query_rewrite`）+ seed 默认模板（变量 query 必填 / history 可选）；
+  - `.env.example`：检索段追加 `QUERY_REWRITE_ENABLED` / `CHAT_QUERY_REWRITE_ENABLED`。
+- 改动（前端）：`api/search.js` 透传 `query_rewrite`；`SearchView.vue` 参数面板新增「Query 改写（LLM）」开关（默认关）；`PromptManagementView.vue` 场景新增「Query 改写」（radio/下拉/标签）。
+- 测试：新增 `test_query_rewrite.py`（提示词加载 3 例 + 改写行为 6 例）；`test_model_factory.py` 增 `resolve_default_model_config` 3 例；`test_retrieval.py` 增改写召回/rerank 原词/默认不改写 4 例；`test_search_service.py` 增改写开关 6 例；`test_schemas.py`/`test_search_router.py` 增 `query_rewrite` 字段与透传用例；`test_chat_service.py` 增 `_run_rag` 开关接线 2 例。
+- 验证：后端全量测试 **575 passed**（pytest exit 0）；前端 `npm run build` 构建成功；改动前行为（开关默认关）由回归用例覆盖。
+
 ## 2026-09-01
 
 - 需求：修复启动报错 `module 'core.neo4j_store' has no attribute 'ensure_indexes'`（`GRAPH_ENABLED=true` 时 lifespan 启动触发）。

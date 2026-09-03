@@ -76,6 +76,10 @@ class SearchRequest(BaseModel):
     highlight: bool = Field(True, description="是否返回高亮片段（fulltext 生效）")
     rerank_model_id: str | None = Field(None, description="排序模型配置 ID，为空则不做重排")
     rerank_top_n: int = Field(5, ge=0, le=30, description="进入排序模型的向量候选数量")
+    query_rewrite: bool | None = Field(
+        None,
+        description="是否启用 LLM Query 改写（改写只服务召回，失败自动回退原词）；不传则沿用服务端默认 query_rewrite_enabled",
+    )
 
 
 class SearchResultItem(BaseModel):
@@ -192,7 +196,7 @@ class PromptTemplateCreate(BaseModel):
     """创建提示词模板请求"""
     name: str = Field(..., min_length=1, max_length=255, description="模板名称")
     description: str | None = Field(None, description="模板描述")
-    scenario: str = Field(..., description="场景类型: rag_qa / entity_extraction / document_summary / custom")
+    scenario: str = Field(..., description="场景类型: rag_qa / entity_extraction / document_summary / custom / image_recognition / query_rewrite")
     system_prompt: str = Field(..., min_length=1, description="系统提示词（含变量占位符）")
     user_prompt: str | None = Field(None, description="用户提示词模板（可选）")
     variables: list[PromptVariableDef] | None = Field(None, description="变量定义列表")

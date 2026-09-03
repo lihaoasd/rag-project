@@ -12,6 +12,7 @@ export function search({
   rerank_model_id,
   rerank_top_n,
   highlight = true,
+  query_rewrite = null,
 }) {
   return apiClient
     .post('/search', {
@@ -23,6 +24,7 @@ export function search({
       rerank_model_id: rerank_model_id || null,
       rerank_top_n: rerank_top_n ?? 5,
       highlight,
+      query_rewrite: query_rewrite ?? null,
     })
     .then((res) => res.data)
 }
@@ -36,6 +38,7 @@ export function searchSingle(kbId, {
   similarity_threshold,
   retrieval_methods,
   highlight = true,
+  query_rewrite = null,
 }) {
   return apiClient
     .post(`/knowledge-bases/${kbId}/search`, {
@@ -44,6 +47,7 @@ export function searchSingle(kbId, {
       similarity_threshold: similarity_threshold || 0.6,
       retrieval_methods: retrieval_methods ?? null,
       highlight,
+      query_rewrite: query_rewrite ?? null,
     })
     .then((res) => res.data)
 }

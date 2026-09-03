@@ -160,7 +160,7 @@ async def _call_llm_stream(llm, messages: list, model: str) -> AsyncGenerator[st
         raise
 
 
-@traced_span("rag_qa", "CHAIN")
+@traced_span("rag_qa", "chain")
 async def _run_rag(
     kb_id: str,
     message: str,
@@ -183,6 +183,19 @@ async def _run_rag(
             await lexicon_service.ensure_cache()  # fulltext 路词库查询扩展缓存（失败不阻断问答）
         except Exception as e:
             logger.warning("词库缓存加载失败，问答跳过查询扩展: %s", e)
+
+        # Query 改写（可选，后端配置开关，默认关；改写只服务召回，rerank 用原问题）
+        rewrite_config = None
+        if settings.chat_query_rewrite_enabled:
+            try:
+                rewrite_config = await resolve_model_config(kb_id, "llm")
+            except Exception as e:
+                logger.warning("Query 改写配置解析失败，跳过改写: %s", e)
+        rewrite_history = [
+            {"role": m.role, "content": m.content}
+            for m in history[-4:]
+        ]
+
         retrieved = await retrieve_and_rank(
             query=message,
             kb_id=kb_id,
@@ -192,6 +205,8 @@ async def _run_rag(
             rerank_threshold=settings.retrieval_rerank_threshold,
             retrieval_methods=settings.chat_retrieval_methods,
             expand_query=lexicon_service.expand_query,
+            query_rewrite_config=rewrite_config,
+            query_rewrite_history=rewrite_history,
         )
         if not retrieved:
             logger.info("未检索到相关文档: kb_id=%s, query=%s", kb_id, message[:80])

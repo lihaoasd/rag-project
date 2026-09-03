@@ -334,3 +334,113 @@ class TestSearchWithRerank:
 
         # 应为 max(5, 20)=20
         assert mock_retrieve.call_args.kwargs["top_k"] == 20
+
+
+class TestSearchWithQueryRewrite:
+    """Query 改写开关：默认关、显式开、服务端默认跟随、rerank 用原查询。"""
+
+    @pytest.mark.asyncio
+    async def test_disabled_does_not_rewrite(self, mock_retrieve):
+        """显式关闭（或默认关）时不解析改写 LLM、不调用改写。"""
+        mock_retrieve.return_value = []
+        with patch("services.search_service.rewrite_query",
+                   new=AsyncMock(return_value="改写词")) as mock_rewrite, \
+             patch("services.search_service.resolve_default_model_config",
+                   new=AsyncMock(return_value={"model": "m"})) as mock_resolve:
+            result = await search_service.search(
+                kb_ids=[KB_ID], query="原词", retrieval_methods=["dense"],
+                query_rewrite=False,
+            )
+
+        mock_resolve.assert_not_awaited()
+        mock_rewrite.assert_not_awaited()
+        assert mock_retrieve.call_args.kwargs["query"] == "原词"
+        assert result["query"] == "原词"
+
+    @pytest.mark.asyncio
+    async def test_enabled_without_default_llm_skips(self, mock_retrieve):
+        """开启但无全局默认 LLM 时跳过改写，等同关闭。"""
+        mock_retrieve.return_value = []
+        with patch("services.search_service.rewrite_query",
+                   new=AsyncMock(return_value="改写词")) as mock_rewrite, \
+             patch("services.search_service.resolve_default_model_config",
+                   new=AsyncMock(return_value=None)) as mock_resolve:
+            result = await search_service.search(
+                kb_ids=[KB_ID], query="原词", retrieval_methods=["dense"],
+                query_rewrite=True,
+            )
+
+        mock_resolve.assert_awaited_once()
+        mock_rewrite.assert_not_awaited()
+        assert mock_retrieve.call_args.kwargs["query"] == "原词"
+        assert result["query"] == "原词"
+
+    @pytest.mark.asyncio
+    async def test_enabled_rewrites_recall_keeps_original_response(self, mock_retrieve):
+        """开启且有默认 LLM：召回路用改写词，响应 query 仍是原词。"""
+        mock_retrieve.return_value = []
+        with patch("services.search_service.rewrite_query",
+                   new=AsyncMock(return_value="改写词")) as mock_rewrite, \
+             patch("services.search_service.resolve_default_model_config",
+                   new=AsyncMock(return_value={"model": "deepseek-chat"})) as mock_resolve:
+            result = await search_service.search(
+                kb_ids=[KB_ID], query="原词", retrieval_methods=["dense"],
+                query_rewrite=True,
+            )
+
+        mock_resolve.assert_awaited_once()
+        mock_rewrite.assert_awaited_once()
+        assert mock_rewrite.await_args.args[0] == "原词"
+        assert mock_rewrite.await_args.args[1]["model"] == "deepseek-chat"
+        assert mock_retrieve.call_args.kwargs["query"] == "改写词"
+        assert result["query"] == "原词"
+
+    @pytest.mark.asyncio
+    async def test_none_follows_server_default(self, mock_retrieve):
+        """query_rewrite=None 时跟随 settings.query_rewrite_enabled。"""
+        from config import settings
+
+        original = settings.query_rewrite_enabled
+        settings.query_rewrite_enabled = True
+        mock_retrieve.return_value = []
+        try:
+            with patch("services.search_service.rewrite_query",
+                       new=AsyncMock(return_value="改写词")) as mock_rewrite, \
+                 patch("services.search_service.resolve_default_model_config",
+                       new=AsyncMock(return_value={"model": "m"})):
+                await search_service.search(
+                    kb_ids=[KB_ID], query="原词", retrieval_methods=["dense"],
+                    query_rewrite=None,
+                )
+            mock_rewrite.assert_awaited_once()
+        finally:
+            settings.query_rewrite_enabled = original
+
+    @pytest.mark.asyncio
+    async def test_rerank_uses_original_query_when_rewritten(self, mock_retrieve):
+        """开启改写 + rerank 时：召回用改写词，rerank 收到原查询。"""
+        hits = [
+            {"score": 0.9, "text": "文本0", "doc_id": DOC_ID,
+             "file_name": "test.pdf", "page_number": 1, "chunk_index": 0},
+        ]
+        mock_retrieve.return_value = hits
+        reranker = MagicMock()
+        reranker.arerank = AsyncMock(return_value=[(0, 0.99)])
+
+        with patch("services.search_service.rewrite_query",
+                   new=AsyncMock(return_value="改写词")), \
+             patch("services.search_service.resolve_default_model_config",
+                   new=AsyncMock(return_value={"model": "m"})), \
+             patch("core.retrieval.create_reranker", return_value=reranker), \
+             patch("services.search_service.model_service.get_model",
+                   new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
+                                               "model": "bge-reranker", "api_base": "http://x",
+                                               "api_key": None, "params": {}})):
+            result = await search_service.search(
+                kb_ids=[KB_ID], query="测试", top_k=10, rerank_model_id="r1",
+                query_rewrite=True,
+            )
+
+        assert mock_retrieve.call_args.kwargs["query"] == "改写词"
+        assert reranker.arerank.await_args.args[0] == "测试"  # rerank 用原查询
+        assert result["query"] == "测试"

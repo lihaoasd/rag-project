@@ -15,6 +15,7 @@ from config import settings
 from core import es_store
 from core.model_factory import create_embedding, create_reranker, resolve_model_config
 from core.observability import format_retrieval_observation, traced_span
+from core.query_rewrite import rewrite_query
 from core.vector_store import get_vector_store
 from utils.logging import get_logger
 
@@ -54,14 +55,14 @@ def _resolve_query_mode(retrieval_method: str | None) -> VectorStoreQueryMode:
     raise ValueError(f"不支持的检索方式: {retrieval_method}")
 
 
-@traced_span("embedding", "GENERATION")
+@traced_span("embedding", "embedding")
 async def _embed_query(
     query: str,
     embed_model: Any,
     dim: int,
     embed_config: dict,
 ) -> list[float]:
-    """Query 向量化（embedding 子 span，GENERATION）：调用外部 embedding API。"""
+    """Query 向量化（embedding 子观测，SDK embedding 类型）：调用外部 embedding API。"""
     query_embedding = await embed_model.aget_query_embedding(query)
     get_client().update_current_span(
         input=query,
@@ -225,7 +226,7 @@ async def retrieve(
     return hits
 
 
-@traced_span("rerank", "GENERATION")
+@traced_span("rerank", "generation")
 async def rerank(
     query: str,
     hits: list[dict[str, Any]],
@@ -263,6 +264,8 @@ async def retrieve_and_rank(
     rerank_threshold: float = 0.8,
     retrieval_methods: list[str] | None = None,
     expand_query: Callable[[str], str | list[str]] | None = None,
+    query_rewrite_config: dict | None = None,
+    query_rewrite_history: list[dict] | None = None,
 ) -> list[dict[str, Any]]:
     """单知识库检索统一入口：多路召回（dense/sparse/fulltext）+ RRF 融合 + 可选重排 + 阈值过滤。
 
@@ -275,6 +278,9 @@ async def retrieve_and_rank(
         rerank_threshold: 有重排时按重排分数过滤的阈值
         retrieval_methods: 检索策略列表（dense/sparse/fulltext，可多选），为 None 时默认纯稠密 ["dense"]
         expand_query: fulltext 路的查询扩展函数（词库同义词 OR 扩展），为 None 时原词直查
+        query_rewrite_config: LLM 改写配置，为 None 时不改写；有配置时先改写 query 再召回
+            （改写只服务召回，重排仍用原 query 判断相关性）
+        query_rewrite_history: 改写时携带的最近对话轮次 [{"role", "content"}, ...]（仅问答传入）
 
     Returns:
         RRF 融合（单选时直返）并按分数降序的结果列表:
@@ -286,6 +292,11 @@ async def retrieve_and_rank(
     invalid = set(methods) - set(RETRIEVAL_METHODS)
     if invalid:
         raise ValueError(f"不支持的检索方式: {sorted(invalid)}")
+
+    # ===== 0. 可选 Query 改写（失败/空输出由 rewrite_query 内部回退原词） =====
+    original_query = query
+    if query_rewrite_config:
+        query = await rewrite_query(query, query_rewrite_config, history=query_rewrite_history)
 
     # ===== 1. 各路独立召回（单路失败降级为空） =====
     ranked_lists: list[list[dict]] = []
@@ -328,8 +339,8 @@ async def retrieve_and_rank(
     else:
         all_hits = rrf_merge(ranked_lists, k=settings.retrieval_rrf_k)
 
-    # ===== 3. 可选重排 + 阈值过滤 =====
+    # ===== 3. 可选重排 + 阈值过滤（重排用改写前的原查询判断相关性） =====
     if rerank_config and all_hits:
-        all_hits = await rerank(query, all_hits, rerank_config)
+        all_hits = await rerank(original_query, all_hits, rerank_config)
         all_hits = [h for h in all_hits if h["score"] >= rerank_threshold]
     return all_hits

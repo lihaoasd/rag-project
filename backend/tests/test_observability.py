@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.observability import (
+    extract_usage,
     format_retrieval_observation,
     setup_langfuse,
     traced_span,
@@ -143,3 +144,68 @@ class TestTracedSpan:
         _, kwargs = self._collect(mock_lf)[0]
         assert kwargs["metadata"]["error"] == "boom"
         assert kwargs["metadata"]["elapsed_ms"] >= 0
+
+
+class TestSpanTypeNormalization:
+    """traced_span 把旧大写类型映射为 SDK 小写（generation/chain/…），避免 observe 静默降级为 span。"""
+
+    def _capture_as_type(self, span_type: str) -> str | None:
+        captured: dict = {}
+
+        def fake_observe(*args, **kwargs):
+            captured["as_type"] = kwargs.get("as_type")
+
+            def passthrough(fn):
+                return fn
+
+            return passthrough
+
+        with patch("core.observability.observe", side_effect=fake_observe):
+            @traced_span("t", span_type)
+            def fn():
+                return 1
+
+            fn()
+        return captured["as_type"]
+
+    @pytest.mark.parametrize(
+        "span_type,expected",
+        [
+            ("SPAN", "span"),
+            ("CHAIN", "chain"),
+            ("GENERATION", "generation"),
+            ("EMBEDDING", "embedding"),
+            # 已是小写 → 原样透传
+            ("span", "span"),
+            ("chain", "chain"),
+            ("generation", "generation"),
+        ],
+    )
+    def test_legacy_uppercase_mapped_to_sdk_lowercase(self, span_type, expected):
+        assert self._capture_as_type(span_type) == expected
+
+
+class TestExtractUsage:
+    """extract_usage：从 llama_index LLM 响应 additional_kwargs 提取 token 用量。"""
+
+    def test_returns_usage_from_additional_kwargs(self):
+        resp = MagicMock()
+        resp.additional_kwargs = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        assert extract_usage(resp) == {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+        }
+
+    def test_partial_keys_returned(self):
+        resp = MagicMock()
+        resp.additional_kwargs = {"prompt_tokens": 7, "completion_tokens": 3}
+        assert extract_usage(resp) == {"prompt_tokens": 7, "completion_tokens": 3}
+
+    def test_empty_kwargs_returns_none(self):
+        resp = MagicMock()
+        resp.additional_kwargs = {}
+        assert extract_usage(resp) is None
+
+    def test_no_attribute_returns_none(self):
+        assert extract_usage(object()) is None

@@ -1,8 +1,10 @@
 """
 提示词变量渲染引擎 — 解析模板中的变量占位符并替换为实际值。
+
+只识别 `{变量名}` 形式的占位符；模板中的其它花括号（如 JSON 示例、
+输出格式说明）原样保留，不会被 str.format 之类的解析器误处理。
 """
 import re
-import string
 from typing import Any
 
 # 变量占位符模式: {variable_name}
@@ -49,6 +51,9 @@ def render_prompt(
 ) -> str:
     """渲染模板，将变量占位符替换为实际值。
 
+    只替换 `{变量名}` 形式的占位符；模板中其它花括号（JSON 示例等）
+    原样保留。变量值原样插入，不二次解析。
+
     对于模板中声明但未提供值的变量：
         - 必填变量：保留占位符原文（调用方应提前校验）
         - 非必填变量：替换为空字符串
@@ -63,41 +68,21 @@ def render_prompt(
     """
     if variable_defs is None:
         variable_defs = []
+    variables = variables or {}
 
-    # 构建 required 集合
+    # 必填变量集合（未提供时保留占位符原文）
     required_vars = {
         vd["name"] for vd in variable_defs if vd.get("required", True)
     }
 
-    # 补充缺失的非必填变量为默认值
-    template_vars = extract_variables(template)
-    safe_vars: dict[str, str] = {}
-    for var_name in template_vars:
-        if var_name in variables:
-            safe_vars[var_name] = variables[var_name]
-        elif var_name in required_vars:
-            # 必填变量未提供 → 保留占位符
-            safe_vars[var_name] = f"{{{var_name}}}"
-        else:
-            # 非必填变量 → 空字符串
-            safe_vars[var_name] = ""
+    def _replace(match: re.Match) -> str:
+        name = match.group(1)
+        if name in variables:
+            return variables[name]
+        if name in required_vars:
+            # 必填变量未提供 → 保留占位符原文
+            return match.group(0)
+        # 非必填变量未提供 → 替换为空字符串
+        return ""
 
-    # 使用 SafeFormatter 避免缺失 key 时抛异常
-    formatter = _SafeFormatter()
-    return formatter.format(template, **safe_vars)
-
-
-class _SafeFormatter(string.Formatter):
-    """安全的 str.format，对缺失的 key 保留原文。"""
-
-    def __init__(self):
-        super().__init__()
-        self.missing_keys: list[str] = []
-
-    def get_value(self, key, args, kwds):
-        if isinstance(key, str):
-            if key in kwds:
-                return kwds[key]
-            self.missing_keys.append(key)
-            return f"{{{key}}}"
-        return super().get_value(key, args, kwds)
+    return VARIABLE_PATTERN.sub(_replace, template)

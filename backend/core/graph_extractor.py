@@ -15,8 +15,11 @@ import json
 import re
 import unicodedata
 
+from langfuse import get_client
+
 from config import settings
 from core.model_factory import create_llm, resolve_model_config
+from core.observability import extract_usage, traced_span
 from core.prompt_renderer import render_prompt
 from models.graph_schemas import ExtractionOutput
 from services import lexicon_service, prompt_service
@@ -164,8 +167,13 @@ async def _get_extraction_prompt() -> str:
     return FALLBACK_ENTITY_EXTRACTION_PROMPT
 
 
+@traced_span("entity_extract_llm", "generation")
 async def _llm_extract_batch(kb_id: str, batch_chunks: list[dict]) -> ExtractionOutput | None:
-    """对一批 chunk 调用 LLM 抽取实体/关系。失败重试 1 次。"""
+    """对一批 chunk 调用 LLM 抽取实体/关系。失败重试 1 次。
+
+    每次实际 LLM 调用记录为 langfuse generation（model/input/output/usage）；
+    两次尝试均失败/输出解析失败时补记 ERROR 级。
+    """
     from llama_index.core.llms import ChatMessage
 
     llm_config = await resolve_model_config(kb_id, "llm")
@@ -182,16 +190,31 @@ async def _llm_extract_batch(kb_id: str, batch_chunks: list[dict]) -> Extraction
     for attempt in range(2):
         try:
             resp = await llm.achat(messages)
-            output = _parse_llm_output(resp.message.content)
+            text = resp.message.content or ""
+            get_client().update_current_generation(
+                model=llm_config.get("model"),
+                input=[m.content for m in messages],
+                output=text,
+                usage_details=extract_usage(resp),
+            )
+            output = _parse_llm_output(text)
             if output is not None:
                 return output
         except Exception as e:
             logger.warning("LLM 抽取调用失败(第 %d 次): %s", attempt + 1, e)
+    # 两次尝试均失败或输出解析失败 → 记录错误级 generation，便于 Langfuse 回溯
+    get_client().update_current_generation(
+        model=llm_config.get("model"),
+        input=[m.content for m in messages],
+        level="ERROR",
+        status_message="LLM 实体抽取失败或输出解析失败",
+    )
     return None
 
 
+@traced_span("entity_extraction", "chain")
 async def extract_from_chunks(kb_id: str, chunks: list[dict]) -> dict:
-    """对文档切片执行完整抽取管线。
+    """对文档切片执行完整抽取管线（每份文档一条 chain，批次 LLM 调用为其子 generation）。
 
     Args:
         kb_id: 知识库 ID（用于解析 LLM 配置）
@@ -204,6 +227,7 @@ async def extract_from_chunks(kb_id: str, chunks: list[dict]) -> dict:
         }
     """
     await lexicon_service.ensure_cache()
+    get_client().update_current_span(input={"kb_id": kb_id, "chunk_count": len(chunks)})
 
     # 实体合并桶：key=(type, name) → {name, type, description, chunk_ids}
     entity_bucket: dict[tuple[str, str], dict] = {}

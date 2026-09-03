@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     retrieval_es_top_k_factor: int = 2          # fulltext 召回放大系数
     retrieval_rrf_k: int = 60                   # RRF 常数
 
+    # === Query 改写 ===
+    query_rewrite_enabled: bool = False          # 检索页服务端默认开关（请求未显式传 query_rewrite 时生效；默认关）
+    chat_query_rewrite_enabled: bool = False     # 问答（chat）Query 改写开关（聊天页无前端控件，后端配置；默认关）
+
     # === ES 对账 ===
     es_reconcile_enabled: bool = True           # 每日定时对账开关
     es_reconcile_interval_hours: int = 24       # 对账间隔（小时）

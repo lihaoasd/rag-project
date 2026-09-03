@@ -15,6 +15,7 @@
           <el-radio-button value="document_summary">文档总结</el-radio-button>
           <el-radio-button value="custom">自定义</el-radio-button>
           <el-radio-button value="image_recognition">图片识别</el-radio-button>
+          <el-radio-button value="query_rewrite">Query 改写</el-radio-button>
         </el-radio-group>
       </div>
       <div class="toolbar-right">
@@ -115,6 +116,7 @@
                 <el-option label="文档总结" value="document_summary" />
                 <el-option label="自定义" value="custom" />
                 <el-option label="图片识别" value="image_recognition" />
+                <el-option label="Query 改写" value="query_rewrite" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -273,6 +275,7 @@ const SCENARIO_LABELS = {
   document_summary: '文档总结',
   custom: '自定义',
   image_recognition: '图片识别',
+  query_rewrite: 'Query 改写',
 }
 
 const SCENARIO_TAG_TYPES = {
@@ -281,6 +284,7 @@ const SCENARIO_TAG_TYPES = {
   document_summary: 'success',
   custom: 'info',
   image_recognition: 'danger',
+  query_rewrite: 'primary',
 }
 
 // --- State ---
@@ -475,6 +479,8 @@ function showPreviewDialog(row) {
   renderedResult.value = ''
   missingVars.value = []
   previewVisible.value = true
+  // 打开即渲染一次，避免弹窗空白（填完变量后可再点「刷新渲染」）
+  doPreview()
 }
 
 async function doPreview() {

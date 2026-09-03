@@ -18,6 +18,35 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# langfuse v4 observe(as_type=...) 仅接受小写类型；历史代码曾传大写
+# （"GENERATION"/"CHAIN"…），会被 SDK 打 warning 并静默降级为普通 span。
+# 此处统一映射，杜绝降级（未知值原样透传）。
+_SPAN_TYPE_MAP = {
+    "SPAN": "span",
+    "CHAIN": "chain",
+    "GENERATION": "generation",
+    "EMBEDDING": "embedding",
+    "RETRIEVER": "retriever",
+    "AGENT": "agent",
+    "TOOL": "tool",
+    "EVALUATOR": "evaluator",
+    "GUARDRAIL": "guardrail",
+}
+
+
+def extract_usage(resp: Any) -> dict[str, int] | None:
+    """从 llama_index LLM 响应提取 token 用量。
+
+    openai 系 LLM（含 OpenAILike，流式/非流式一致）会把 token 计数写入
+    response.additional_kwargs（键 prompt_tokens/completion_tokens/total_tokens）；
+    无用量信息返回 None。
+    """
+    ak = getattr(resp, "additional_kwargs", None)
+    if isinstance(ak, dict) and "prompt_tokens" in ak:
+        keys = ("prompt_tokens", "completion_tokens", "total_tokens")
+        return {k: ak[k] for k in keys if k in ak}
+    return None
+
 
 def setup_langfuse() -> None:
     """应用启动时初始化 Langfuse client（非致命）。
@@ -82,18 +111,22 @@ def traced_span(name: str | Callable[..., str], span_type: str = "SPAN"):
     Args:
         name: span 名；可为字符串，或接收被装饰函数实参并返回 span 名的可调用对象
               （如 recall 按 method 动态命名：lambda query, kb_ids, method, ...: f"recall_{method}"）。
-        span_type: CHAIN / SPAN / GENERATION（外部模型调用用 GENERATION）。
+        span_type: 观测类型，SDK 小写规范值（chain/span/generation/embedding/…）；
+                   LLM/模型调用用 generation。旧大写（CHAIN/SPAN/GENERATION）自动映射，防降级。
 
     支持 async 与 sync 函数；业务函数只负责组装自己的 input/output/metadata，
     由装饰器统一补 elapsed_ms 与异常 error，消除手写计时与遗漏。
     """
     def deco(fn: Callable):
+        # 旧大写类型（GENERATION/CHAIN…）映射为 SDK 小写类型，避免静默降级为普通 span
+        normalized_type = _SPAN_TYPE_MAP.get(span_type or "span", span_type or "span")
+
         @functools.wraps(fn)
         def _resolve_name(*args, **kwargs) -> str:
             return name(*args, **kwargs) if callable(name) else name
 
         if asyncio.iscoroutinefunction(fn):
-            @observe(as_type=span_type, capture_input=False, capture_output=False)
+            @observe(as_type=normalized_type, capture_input=False, capture_output=False)
             @functools.wraps(fn)
             async def async_wrapper(*args, **kwargs):
                 span_name = _resolve_name(*args, **kwargs)
@@ -107,7 +140,7 @@ def traced_span(name: str | Callable[..., str], span_type: str = "SPAN"):
                     raise
             return async_wrapper
 
-        @observe(as_type=span_type, capture_input=False, capture_output=False)
+        @observe(as_type=normalized_type, capture_input=False, capture_output=False)
         @functools.wraps(fn)
         def sync_wrapper(*args, **kwargs):
             span_name = _resolve_name(*args, **kwargs)

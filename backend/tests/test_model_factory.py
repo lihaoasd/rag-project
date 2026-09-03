@@ -84,3 +84,34 @@ class TestResolveModelConfig:
 
         config = await model_factory.resolve_model_config(KB_ID, "rerank")
         assert config is None
+
+
+class TestResolveDefaultModelConfig:
+    """resolve_default_model_config — 仅全局默认启用模型，无则不抛错。"""
+
+    @pytest.mark.asyncio
+    async def test_returns_default_active(self, mock_session):
+        default = _mc(id="mc_d", name="Default")
+        default_result = MagicMock()
+        default_result.scalar_one_or_none.return_value = default
+        mock_session.execute = AsyncMock(return_value=default_result)
+
+        config = await model_factory.resolve_default_model_config("llm")
+        assert config["id"] == "mc_d"
+        assert config["name"] == "Default"
+
+    @pytest.mark.asyncio
+    async def test_inactive_default_returns_none(self, mock_session):
+        default_result = MagicMock()
+        default_result.scalar_one_or_none.return_value = _mc(id="mc_d", is_active=False)
+        mock_session.execute = AsyncMock(return_value=default_result)
+
+        assert await model_factory.resolve_default_model_config("llm") is None
+
+    @pytest.mark.asyncio
+    async def test_no_default_returns_none(self, mock_session):
+        default_result = MagicMock()
+        default_result.scalar_one_or_none.return_value = None
+        mock_session.execute = AsyncMock(return_value=default_result)
+
+        assert await model_factory.resolve_default_model_config("llm") is None

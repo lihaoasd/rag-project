@@ -86,6 +86,36 @@ class TestSearch:
             assert response.status_code == 200
             assert mock_search.call_args.kwargs["highlight"] is False
 
+    def test_search_passes_query_rewrite(self, client):
+        with patch("routers.search.search_service.search",
+                   new_callable=AsyncMock) as mock_search:
+            mock_search.return_value = {
+                "query": "测试查询",
+                "total": 0,
+                "results": [],
+            }
+            response = client.post(
+                f"/api/knowledge-bases/{KB_ID}/search",
+                json={"query": "测试查询", "query_rewrite": True},
+            )
+            assert response.status_code == 200
+            assert mock_search.call_args.kwargs["query_rewrite"] is True
+
+    def test_search_query_rewrite_defaults_none(self, client):
+        with patch("routers.search.search_service.search",
+                   new_callable=AsyncMock) as mock_search:
+            mock_search.return_value = {
+                "query": "测试查询",
+                "total": 0,
+                "results": [],
+            }
+            response = client.post(
+                f"/api/knowledge-bases/{KB_ID}/search",
+                json={"query": "测试查询"},
+            )
+            assert response.status_code == 200
+            assert mock_search.call_args.kwargs["query_rewrite"] is None
+
     def test_search_invalid_method_returns_422(self, client):
         response = client.post(
             f"/api/knowledge-bases/{KB_ID}/search",

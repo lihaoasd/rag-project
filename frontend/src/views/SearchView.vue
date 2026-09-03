@@ -113,6 +113,17 @@
           </div>
         </template>
 
+        <div class="param-group">
+          <label class="param-label">Query 改写（LLM）</label>
+          <el-switch
+            v-model="queryRewrite"
+            active-text="开启"
+            inactive-text="关闭"
+            style="--el-switch-on-color: var(--color-primary)"
+          />
+          <span class="param-hint-sub">开启后用全局默认 LLM 改写检索词以提升召回，改写失败自动回退原词</span>
+        </div>
+
         <el-button
           type="primary"
           :loading="searching"
@@ -207,6 +218,7 @@ const retrievalMethods = ref(['dense'])
 const rerankModels = ref([])
 const rerankModelId = ref(null)
 const rerankTopN = ref(5)
+const queryRewrite = ref(false)
 
 // 分数是否按百分比展示：rerank 或单选稠密向量时分数为 [0,1]；否则（稀疏/全文/图谱单选或 RRF 融合）显示原始数字
 const showPercentScore = computed(() =>
@@ -260,6 +272,7 @@ async function handleSearch() {
       rerank_model_id: rerankModelId.value || null,
       rerank_top_n: rerankTopN.value,
       highlight: true,
+      query_rewrite: queryRewrite.value,
     })
     results.value = (data?.results || []).map((r, i) => ({ ...r, rank: i + 1, expanded: false }))
     total.value = data?.total || 0

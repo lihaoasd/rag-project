@@ -239,6 +239,15 @@ class TestSearchRequest:
         with pytest.raises(ValidationError):
             SearchRequest(query="test", rerank_top_n=31)
 
+    def test_query_rewrite_default_none(self):
+        """query_rewrite 默认 None（跟随服务端默认开关）。"""
+        req = SearchRequest(query="测试查询")
+        assert req.query_rewrite is None
+
+    def test_query_rewrite_accepts_bool(self):
+        assert SearchRequest(query="测试查询", query_rewrite=True).query_rewrite is True
+        assert SearchRequest(query="测试查询", query_rewrite=False).query_rewrite is False
+
 
 # ============================================================
 # SearchResultItem

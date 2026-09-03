@@ -11,6 +11,13 @@ from services import lexicon_service
 from tests.helpers import KB_ID
 
 
+@pytest.fixture(autouse=True)
+def _mock_graph_langfuse_client():
+    """统一隔离 graph_extractor 的 langfuse client（本模块用例不触达真实 Langfuse）。"""
+    with patch("core.graph_extractor.get_client", return_value=MagicMock()):
+        yield
+
+
 class TestNormalizeName:
     def test_fullwidth_to_halfwidth(self):
         assert graph_extractor._normalize_name("ＡＢＣ 公司 ") == "ABC 公司"
@@ -286,3 +293,77 @@ class TestExtractFromChunks:
         assert names["甲公司"] == ["c1"]
         assert names["乙公司"] == ["c2"]
         assert names["丙公司"] == ["c3"]
+
+
+class TestExtractionLangfuseRecording:
+    """_llm_extract_batch：每次实际 LLM 调用记录 langfuse generation（model/input/output/usage）。"""
+
+    @staticmethod
+    def _patched_env(llm):
+        return [
+            patch("core.graph_extractor.resolve_model_config",
+                  new_callable=AsyncMock, return_value={"model": "mock-model"}),
+            patch("core.graph_extractor.create_llm", return_value=llm),
+            patch("core.graph_extractor.prompt_service.get_active_prompt",
+                  new_callable=AsyncMock, return_value=None),
+        ]
+
+    def _start(self, patches):
+        for p in patches:
+            p.start()
+        return patches
+
+    @pytest.mark.asyncio
+    async def test_success_records_generation_with_usage(self):
+        llm = MagicMock()
+        resp = MagicMock()
+        resp.message.content = '{"entities": [], "relationships": []}'
+        resp.additional_kwargs = {"prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60}
+        llm.achat = AsyncMock(return_value=resp)
+
+        mock_lf = MagicMock()
+        patches = self._patched_env(llm) + [
+            patch("core.graph_extractor.get_client", return_value=mock_lf),
+        ]
+        self._start(patches)
+        try:
+            out = await graph_extractor._llm_extract_batch(KB_ID, [{"text": "测试文本"}])
+        finally:
+            for p in patches:
+                p.stop()
+
+        assert out is not None
+        mock_lf.update_current_generation.assert_called_once()
+        kwargs = mock_lf.update_current_generation.call_args.kwargs
+        assert kwargs["model"] == "mock-model"
+        assert len(kwargs["input"]) == 2  # system + user
+        assert kwargs["output"].startswith("{")
+        assert kwargs["usage_details"] == {
+            "prompt_tokens": 50,
+            "completion_tokens": 10,
+            "total_tokens": 60,
+        }
+
+    @pytest.mark.asyncio
+    async def test_all_attempts_fail_records_error_generation(self):
+        llm = MagicMock()
+        llm.achat = AsyncMock(side_effect=RuntimeError("llm down"))
+
+        mock_lf = MagicMock()
+        patches = self._patched_env(llm) + [
+            patch("core.graph_extractor.get_client", return_value=mock_lf),
+        ]
+        self._start(patches)
+        try:
+            out = await graph_extractor._llm_extract_batch(KB_ID, [{"text": "x"}])
+        finally:
+            for p in patches:
+                p.stop()
+
+        assert out is None
+        # 两次尝试均异常：循环内不入账，结束后统一记一条 ERROR 级 generation
+        mock_lf.update_current_generation.assert_called_once()
+        kwargs = mock_lf.update_current_generation.call_args.kwargs
+        assert kwargs["level"] == "ERROR"
+        assert kwargs["model"] == "mock-model"
+        assert "失败" in kwargs["status_message"]

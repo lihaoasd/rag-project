@@ -18,7 +18,9 @@ from langfuse import get_client
 from config import settings
 from core import es_store
 from core.database import async_session
+from core.model_factory import resolve_default_model_config
 from core.observability import format_retrieval_observation, traced_span
+from core.query_rewrite import rewrite_query
 from core.retrieval import retrieve, rerank, rrf_merge
 from repositories.kb_repository import KnowledgeBaseRepository
 from services import lexicon_service, model_service
@@ -216,7 +218,7 @@ async def _recall_fulltext(
     return all_hits
 
 
-@traced_span("search", "CHAIN")
+@traced_span("search", "chain")
 async def search(
     query: str,
     kb_ids: list[str],
@@ -226,6 +228,7 @@ async def search(
     rerank_model_id: str | None = None,
     rerank_top_n: int = 5,
     highlight: bool = True,
+    query_rewrite: bool | None = None,
 ) -> dict[str, Any]:
     """在多个知识库中执行检索：单选直返，多选 RRF 融合，可再重排。
 
@@ -238,11 +241,14 @@ async def search(
         rerank_model_id: 排序模型配置 ID，为空则跳过重排
         rerank_top_n: 进入排序模型的候选数量
         highlight: 是否返回 ES 高亮片段（fulltext 生效）
+        query_rewrite: 是否启用 LLM Query 改写；为空则沿用服务端默认 query_rewrite_enabled
+            （改写只服务召回，rerank 与响应仍用原查询；无全局默认 LLM 或改写失败自动回退原词）
 
     Returns:
         {query, total, results: [{rank, score, text, doc_id, file_name, page_number,
                                   chunk_index, kb_id, kb_name, highlight}, ...]}
     """
+    original_query = query
     if retrieval_methods is None:
         methods = list(settings.retrieval_default_methods)
     else:
@@ -253,8 +259,21 @@ async def search(
     if invalid:
         raise ValueError(f"不支持的检索方式: {sorted(invalid)}")
 
+    if not kb_ids:
+        get_client().update_current_span(output={"total": 0})
+        return {"query": original_query, "total": 0, "results": []}
+
+    # ===== 0. 可选 Query 改写（只服务召回；失败/无默认 LLM 回退原词） =====
+    query_rewritten = False
+    rewrite_on = settings.query_rewrite_enabled if query_rewrite is None else query_rewrite
+    if rewrite_on:
+        rewrite_config = await resolve_default_model_config("llm")  # 无全局默认 LLM → None → 跳过
+        if rewrite_config:
+            query = await rewrite_query(original_query, rewrite_config)
+            query_rewritten = query != original_query
+
     get_client().update_current_span(
-        input=query,
+        input=original_query,
         metadata={
             "kb_ids": kb_ids,
             "top_k": top_k,
@@ -262,12 +281,9 @@ async def search(
             "retrieval_methods": methods,
             "rerank_model_id": rerank_model_id,
             "highlight": highlight,
+            "query_rewritten": query_rewritten,
         },
     )
-
-    if not kb_ids:
-        get_client().update_current_span(output={"total": 0})
-        return {"query": query, "total": 0, "results": []}
 
     # 向量门槛：有排序模型时默认 0.0（全召回交给 rerank）；否则 similarity_threshold
     vector_gate = 0.0 if rerank_model_id else similarity_threshold
@@ -308,11 +324,11 @@ async def search(
             ranked_lists, k=settings.retrieval_rrf_k, method_hits=per_method_hits
         )
 
-    # ===== 3. 可选 rerank（只取前 rerank_top_n 个候选，失败回退原排序） =====
+    # ===== 3. 可选 rerank（只取前 rerank_top_n 个候选，失败回退原排序；重排用原查询判断相关性） =====
     if rerank_model_id:
         candidates = all_hits[:rerank_top_n]
         try:
-            all_hits = await _apply_rerank(query, candidates, rerank_model_id)
+            all_hits = await _apply_rerank(original_query, candidates, rerank_model_id)
         except Exception as e:
             logger.warning("rerank 失败，回退原排序: %s", e)
         # 最终阈值：rerank 成功按 rerank 分数过滤，失败按原分数过滤
@@ -347,7 +363,7 @@ async def search(
 
     get_client().update_current_span(output={"total": len(results)})
     return {
-        "query": query,
+        "query": original_query,
         "total": len(results),
         "results": results,
     }

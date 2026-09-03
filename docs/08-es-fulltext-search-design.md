@@ -317,7 +317,8 @@ expanded = expand(query, terms)
 - **单选**：直接返回该路结果，不做 RRF，分数保留原始语义（IP 相似度 / Milvus BM25 / ES BM25）；
 - **多选**：各路独立召回后 Python 端 RRF 融合（k=60），如 `dense+fulltext`（等价旧 `hybrid_es`）、`dense+sparse`（等价旧 `hybrid`）；
 - chat 链路（`retrieve_and_rank`）为**后端固定三路混合**（`settings.chat_retrieval_methods`，默认 `["dense","sparse","fulltext"]`）：dense/sparse 走 `retrieve()`，fulltext 走 `es_search()`（含词库查询扩展），多路 RRF 融合后衔接可选 rerank；单路失败降级为空，不阻断问答；
-- 请求未传 `retrieval_methods` 时沿用 `settings.retrieval_default_methods`（默认 `["dense"]`），前端默认勾选同。旧四值模式（`vector`/`hybrid`/`hybrid_es`）与 `weighted` 融合已移除。
+- 请求未传 `retrieval_methods` 时沿用 `settings.retrieval_default_methods`（默认 `["dense"]`），前端默认勾选同。旧四值模式（`vector`/`hybrid`/`hybrid_es`）与 `weighted` 融合已移除；
+- **可选 Query 改写（LLM，默认关）**：检索页经 `SearchRequest.query_rewrite`（前端开关）、问答经 `settings.chat_query_rewrite_enabled` 开启后，**召回之前**先由 LLM 把用户输入改写为更适合检索的查询——dense/sparse/fulltext/graph 各路与 fulltext 词库 OR 扩展均使用改写词；**rerank 相关性判断与响应 `query` 仍用原查询**；改写失败/无默认 LLM/输出为空自动回退原词。提示词来源：提示词管理 `query_rewrite` 场景激活模板（变量 `{query}`/`{history}`，问答附带最近 4 轮历史），内置 fallback 兜底（详见 `docs/plan/38-query-rewrite-plan.md`）。
 
 ### 7.2 ES 查询构造（core/es_store.py）
 
@@ -377,6 +378,8 @@ all_hits = ranked_lists[0] if len(ranked_lists) == 1 else rrf_merge(ranked_lists
 | `rrf_k` | 60 | RRF 常数 |
 | `es_highlight_enabled` | True | 是否返回高亮片段 |
 | `retrieval_hybrid_enabled` | True | Milvus 稀疏字段开关（sparse 策略依赖，默认开启） |
+| `query_rewrite_enabled` | False | 检索页服务端默认开关（请求未显式传 `query_rewrite` 时生效） |
+| `chat_query_rewrite_enabled` | False | 问答（chat）Query 改写开关（聊天页无前端控件） |
 
 ### 7.6 Langfuse 检索追踪
 
@@ -390,6 +393,7 @@ all_hits = ranked_lists[0] if len(ranked_lists) == 1 else rrf_merge(ranked_lists
 
   ```
   search (CHAIN)
+  ├── query_rewrite (GENERATION)        # 开启改写时：input=原查询 output=改写后（模型记录在 metadata）
   ├── recall_dense (SPAN)            # 逐 kb 并发，失败记 error
   │   └── retrieve (SPAN)            # 逐 kb：kb_id/collection/dim + embed_ms/search_ms/filter_ms
   │       ├── embedding (GENERATION) # 仅 dense：query 向量化（model/dim/api_base/向量维度）
@@ -397,10 +401,10 @@ all_hits = ranked_lists[0] if len(ranked_lists) == 1 else rrf_merge(ranked_lists
   ├── recall_fulltext (SPAN)
   │   └── es_query (SPAN)            # ES 查询（index/top_k/highlight/hit_count）
   ├── rrf_merge (SPAN)               # 多选时：k/per_method_hits/融合结果；单选无此 span
-  └── rerank (GENERATION)            # 有排序模型时：model/top_n/hit_count
+  └── rerank (GENERATION)            # 有排序模型时：model/top_n/hit_count（用原查询判断相关性）
   ```
 
-- **search 总 span**：metadata 记录 kb_ids/retrieval_methods/top_k/`per_method_hits`（每路命中数汇总）。
+- **search 总 span**：metadata 记录 kb_ids/retrieval_methods/top_k/`per_method_hits`（每路命中数汇总）+ `query_rewritten`（本次是否改写）；问答 `rag_qa` CHAIN 下同样挂 `query_rewrite` GENERATION span（改写发生在 `retrieve_and_rank` 内，rerank 用原问题）。
 - **环节耗时口径**：`retrieve` span 的 `embed_ms`（向量化）/`search_ms`（Milvus 查询）/`filter_ms`（阈值过滤）字段区分各环节耗时；span 通用 `elapsed_ms` 由装饰器自动补齐。
 - 实现约束：`es_store.py` 已有 `get_client()`（ES 客户端），langfuse 的 `get_client` 以别名 `lf_get_client` 导入，避免命名冲突；`langfuse_enabled=False` 时 `update_current_span` 为 no-op，零开销。**子 span 用 `@observe` 嵌套函数实现**（`traced_span` 内部基于 observe），因为 langfuse v4 客户端没有手动 `start_span` API，嵌套函数被 observe 自动挂为父 span 的子级；`traced_span` 的 name 支持可调用对象（如 `recall_{method}` 动态命名）。
 
@@ -409,8 +413,9 @@ all_hits = ranked_lists[0] if len(ranked_lists) == 1 else rrf_merge(ranked_lists
 ### 8.1 SearchRequest（models/schemas.py）
 
 ```python
-retrieval_methods: list[Literal["dense", "sparse", "fulltext"]] | None = None
+retrieval_methods: list[Literal["dense", "sparse", "fulltext", "graph"]] | None = None
 highlight: bool = True
+query_rewrite: bool | None = None   # LLM Query 改写开关；None 沿用服务端默认 query_rewrite_enabled
 ```
 
 ### 8.2 SearchResultItem（响应）
@@ -444,6 +449,10 @@ es_password: str = ""
 retrieval_default_methods: list[str] = ["dense"]  # 未传 retrieval_methods 时的默认策略列表
 retrieval_es_top_k_factor: int = 2          # fulltext 召回放大系数
 retrieval_rrf_k: int = 60                   # RRF 常数
+
+# === Query 改写 ===
+query_rewrite_enabled: bool = False          # 检索页服务端默认开关（请求未显式传 query_rewrite 时生效）
+chat_query_rewrite_enabled: bool = False     # 问答（chat）Query 改写开关（无前端控件）
 
 # === ES 对账 ===
 es_reconcile_enabled: bool = True           # 每日定时对账开关

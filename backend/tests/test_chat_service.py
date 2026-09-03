@@ -1,7 +1,9 @@
 """
 Chat Service 业务逻辑单元测试。
 """
-from unittest.mock import MagicMock
+from contextlib import nullcontext
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -12,7 +14,7 @@ from services.chat_service import (
     _extract_sources,
     FALLBACK_RAG_PROMPT,
 )
-from tests.helpers import MockMessage
+from tests.helpers import KB_ID, MockMessage
 
 
 # ============================================================
@@ -196,3 +198,110 @@ class TestChatStreamBehavior:
         assert "TEST_CONTEXT" in prompt
         assert "TEST_QUERY" in prompt
         assert "投标文档分析助手" in prompt
+
+
+# ============================================================
+# _run_rag Query 改写接线：开关开启时解析 LLM 配置并传给 retrieve_and_rank
+# ============================================================
+class TestRunRagRewriteWiring:
+    """验证 _run_rag 按 chat_query_rewrite_enabled 决定是否传 query_rewrite_config。"""
+
+    def _stream_llm(self):
+        """构造 astream_chat 返回流式响应的 mock LLM（含 usage 尾部 chunk）。"""
+        llm = MagicMock()
+
+        async def _astream_chat(**kwargs):
+            async def _gen():
+                yield SimpleNamespace(delta="你好", additional_kwargs={})
+                yield SimpleNamespace(delta="", additional_kwargs={
+                    "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2,
+                })
+
+            return _gen()
+
+        llm.astream_chat = _astream_chat
+        return llm
+
+    async def _run(self, history_objs):
+        """带全套 mock 执行 _run_rag，返回 (收集文本, retrieve_and_rank mock, result)。"""
+        from services import chat_service
+
+        llm = self._stream_llm()
+        llm_config = {
+            "model": "deepseek-chat", "platform": "deepseek",
+            "api_base": "http://x", "api_key": None, "params": {},
+        }
+
+        async def _resolve(kb, model_type):
+            if model_type == "rerank":
+                return None
+            return llm_config
+
+        with patch("services.chat_service.resolve_model_config",
+                   new=AsyncMock(side_effect=_resolve)), \
+             patch("services.chat_service.create_llm", return_value=llm), \
+             patch("services.chat_service.lexicon_service.ensure_cache",
+                   new=AsyncMock()), \
+             patch("services.chat_service.prompt_service.get_active_prompt",
+                   new=AsyncMock(return_value=None)), \
+             patch("services.chat_service.get_client", return_value=MagicMock()), \
+             patch("services.chat_service.propagate_attributes",
+                   new=lambda **kw: nullcontext()), \
+             patch("services.chat_service.retrieve_and_rank",
+                   new=AsyncMock(return_value=[])) as mock_rar:
+            result: dict = {}
+            gen = chat_service._run_rag(
+                kb_id=KB_ID, message="新问题", conv_id="c1",
+                history=history_objs, result=result,
+            )
+            parts: list[str] = []
+            async for delta in gen:
+                parts.append(delta)
+
+        return "".join(parts), mock_rar, result
+
+    @pytest.mark.asyncio
+    async def test_rewrite_enabled_passes_config_and_history(self):
+        """开关开启时：改写配置解析成功并连同最近 4 轮历史传给 retrieve_and_rank。"""
+        from config import settings
+        from services import chat_service
+
+        original = settings.chat_query_rewrite_enabled
+        settings.chat_query_rewrite_enabled = True
+        try:
+            history_objs = [
+                SimpleNamespace(role="user" if i % 2 == 0 else "assistant", content=f"消息{i}")
+                for i in range(6)
+            ]
+            expected_history = [
+                {"role": m.role, "content": m.content} for m in history_objs[-4:]
+            ]
+            text, mock_rar, result = await self._run(history_objs)
+
+            assert text == "你好"  # 流式生成正常
+            mock_rar.assert_awaited_once()
+            kwargs = mock_rar.await_args.kwargs
+            assert kwargs["query_rewrite_config"] == {
+                "model": "deepseek-chat", "platform": "deepseek",
+                "api_base": "http://x", "api_key": None, "params": {},
+            }
+            assert kwargs["query_rewrite_history"] == expected_history
+            assert result["retrieved"] == []
+        finally:
+            settings.chat_query_rewrite_enabled = original
+
+    @pytest.mark.asyncio
+    async def test_rewrite_disabled_passes_none(self):
+        """开关关闭时：retrieve_and_rank 收到 query_rewrite_config=None。"""
+        from config import settings
+
+        original = settings.chat_query_rewrite_enabled
+        settings.chat_query_rewrite_enabled = False
+        try:
+            text, mock_rar, _ = await self._run([])
+
+            assert text == "你好"
+            mock_rar.assert_awaited_once()
+            assert mock_rar.await_args.kwargs["query_rewrite_config"] is None
+        finally:
+            settings.chat_query_rewrite_enabled = original

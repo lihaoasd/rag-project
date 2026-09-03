@@ -282,3 +282,78 @@ class TestRetrieveAndRank:
             await retrieval.retrieve_and_rank(
                 query="查询", kb_id=KB_ID, retrieval_methods=["graph"],
             )
+
+    # ============================================================
+    # Query 改写：改写词用于召回，rerank 用原查询，默认不改写
+    # ============================================================
+    @pytest.mark.asyncio
+    async def test_query_rewrite_rewrites_before_recall(self):
+        """有改写配置时：改写词用于 dense 召回，改写函数收到原词与历史。"""
+        hit = _hit(0.9, "文本")
+        history = [{"role": "user", "content": "x"}]
+        with patch("core.retrieval.rewrite_query",
+                   new=AsyncMock(return_value="改写词")) as mock_rewrite, \
+             patch("core.retrieval.retrieve",
+                   new=AsyncMock(return_value=[hit])) as mock_retrieve, \
+             patch("core.retrieval.rerank", new=AsyncMock()) as mock_rerank:
+            result = await retrieval.retrieve_and_rank(
+                query="原词", kb_id=KB_ID, top_k=5,
+                retrieval_methods=["dense"],
+                query_rewrite_config={"model": "m"},
+                query_rewrite_history=history,
+            )
+
+        mock_rewrite.assert_awaited_once()
+        assert mock_rewrite.await_args.args[0] == "原词"
+        assert mock_rewrite.await_args.kwargs["history"] == history
+        assert mock_retrieve.await_args.kwargs["query"] == "改写词"
+        mock_rerank.assert_not_awaited()
+        assert result == [hit]
+
+    @pytest.mark.asyncio
+    async def test_query_rewrite_rerank_uses_original_query(self):
+        """改写只服务召回：rerank 用改写前的原问题判断相关性。"""
+        hit = _hit(0.9, "文本")
+        reranked = [dict(hit, score=0.99)]
+        with patch("core.retrieval.rewrite_query", new=AsyncMock(return_value="改写词")), \
+             patch("core.retrieval.retrieve", new=AsyncMock(return_value=[hit])), \
+             patch("core.retrieval.rerank",
+                   new=AsyncMock(return_value=reranked)) as mock_rerank:
+            await retrieval.retrieve_and_rank(
+                query="原词", kb_id=KB_ID, top_k=5,
+                retrieval_methods=["dense"],
+                rerank_config={"model": "r"}, rerank_threshold=0.0,
+                query_rewrite_config={"model": "m"},
+            )
+
+        assert mock_rerank.await_args.args[0] == "原词"
+
+    @pytest.mark.asyncio
+    async def test_query_rewrite_fulltext_uses_rewritten(self):
+        """fulltext 路用改写词直查（词库扩展前已是改写词）。"""
+        es_hits = [dict(_hit(2.0, "es文本"), kb_id=KB_ID)]
+        with patch("core.retrieval.rewrite_query", new=AsyncMock(return_value="改写词")), \
+             patch("core.retrieval.es_store.es_search",
+                   new=AsyncMock(return_value=es_hits)) as mock_es:
+            await retrieval.retrieve_and_rank(
+                query="原词", kb_id=KB_ID, top_k=5,
+                retrieval_methods=["fulltext"],
+                query_rewrite_config={"model": "m"},
+            )
+
+        assert mock_es.await_args.args[0] == "改写词"
+
+    @pytest.mark.asyncio
+    async def test_no_rewrite_config_skips_rewrite(self):
+        """不传 query_rewrite_config 时完全不调用改写，行为与现状一致（回归）。"""
+        hit = _hit(0.9, "文本")
+        with patch("core.retrieval.rewrite_query",
+                   new=AsyncMock(return_value="改写词")) as mock_rewrite, \
+             patch("core.retrieval.retrieve",
+                   new=AsyncMock(return_value=[hit])) as mock_retrieve:
+            await retrieval.retrieve_and_rank(
+                query="原词", kb_id=KB_ID, top_k=5, retrieval_methods=["dense"],
+            )
+
+        mock_rewrite.assert_not_awaited()
+        assert mock_retrieve.await_args.kwargs["query"] == "原词"
