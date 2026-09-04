@@ -7,6 +7,7 @@ import pytest
 from core.intent_detect import (
     _build_history_text,
     _classify_text,
+    _is_information_request,
     _parse_intent_output,
     detect_intent,
 )
@@ -88,7 +89,7 @@ class TestGetDetectPrompt:
         with patch("core.intent_detect.prompt_service.get_active_prompt",
                    new=AsyncMock(return_value=None)):
             prompt = await detect_prompt_helper("评分办法有哪些", "")
-        assert "问题分类器" in prompt
+        assert "问答意图分类器" in prompt
         assert "评分办法有哪些" in prompt
         assert "{query}" not in prompt
 
@@ -110,7 +111,7 @@ class TestGetDetectPrompt:
         with patch("core.intent_detect.prompt_service.get_active_prompt",
                    new=AsyncMock(side_effect=RuntimeError("db down"))):
             prompt = await detect_prompt_helper("你好", "")
-        assert "问题分类器" in prompt
+        assert "问答意图分类器" in prompt
 
 
 async def detect_prompt_helper(query: str, history_text: str = "") -> str:
@@ -218,3 +219,67 @@ class TestDetectIntent:
                    new=AsyncMock(return_value=None)), \
              patch("core.intent_detect.get_client", return_value=MagicMock()):
             assert await detect_intent("那这个呢", _llm_config(), history) is True
+
+
+# ============================================================
+# 检索请求兜底守卫：主题陌生的"查询 X"不被误判为普通聊天
+# ============================================================
+class TestInformationRequestGuard:
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "查询冠状动脉粥样硬化性心脏病",
+            "查一下心律失常的急救处理方案",
+            "帮我查投标保证金比例",
+            "找一下评分办法",
+            "检索安全员证书要求",
+        ],
+    )
+    def test_information_request_prefixes(self, query):
+        assert _is_information_request(query) is True
+
+    @pytest.mark.parametrize("query", ["你好", "谢谢", "讲个笑话", "你是谁", ""])
+    def test_plain_chat_not_information_request(self, query):
+        assert _is_information_request(query) is False
+
+    @pytest.mark.asyncio
+    async def test_llm_chat_verdict_overridden_for_information_request(self):
+        """LLM 误判"普通聊天"时，明确检索请求（查询+主题）覆盖改判 True。"""
+        llm = MagicMock()
+        llm.acomplete = AsyncMock(return_value=SimpleNamespace(text="普通聊天"))
+        with patch("core.intent_detect.create_llm", return_value=llm), \
+             patch("core.intent_detect.prompt_service.get_active_prompt",
+                   new=AsyncMock(return_value=None)), \
+             patch("core.intent_detect.get_client", return_value=MagicMock()):
+            assert await detect_intent("查询冠状动脉粥样硬化性心脏病", _llm_config()) is True
+
+    @pytest.mark.asyncio
+    async def test_plain_chat_keeps_chat_verdict(self):
+        """纯闲聊不受守卫影响，仍按 LLM 结果走普通聊天。"""
+        llm = MagicMock()
+        llm.acomplete = AsyncMock(return_value=SimpleNamespace(text="普通聊天"))
+        with patch("core.intent_detect.create_llm", return_value=llm), \
+             patch("core.intent_detect.prompt_service.get_active_prompt",
+                   new=AsyncMock(return_value=None)), \
+             patch("core.intent_detect.get_client", return_value=MagicMock()):
+            assert await detect_intent("你好", _llm_config()) is False
+
+
+def test_fallback_matches_migration_0020_seed():
+    """内置兜底文案与迁移 0020 seed 完全一致（同源防漂移），且含主题查询防误判规则。"""
+    import importlib.util
+    from pathlib import Path
+
+    from core.intent_detect import FALLBACK_INTENT_DETECT_PROMPT
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic" / "versions" / "0020_intent_detect_prompt_v2.py"
+    )
+    spec = importlib.util.spec_from_file_location("_migration_0020", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    assert mod._INTENT_DETECT_PROMPT_V2 == FALLBACK_INTENT_DETECT_PROMPT
+    assert "冠状动脉粥样硬化性心脏病" in FALLBACK_INTENT_DETECT_PROMPT
+    assert "纯社交表达" in FALLBACK_INTENT_DETECT_PROMPT

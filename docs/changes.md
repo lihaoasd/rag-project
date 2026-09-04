@@ -2,6 +2,21 @@
 
 ## 2026-09-04
 
+- 需求：问答意图识别把"查询冠状动脉粥样硬化性心脏病"（纯主题名词/陌生主题查询）误判为普通聊天、跳过检索——需修正意图识别提示词与兜底逻辑。
+- 根因：旧提示词把"需要检索"按投标主题白名单圈定（"与招标/投标/资质…相关"），且模型对"查询 + 疾病名词"这类无宾语维度的请求稳定输出"普通聊天"（实测 RAW 复现；变体探测显示带"资料/是什么/我想了解"等措辞才判需要检索）。
+- 改动（提示词 v3，核心/intent_detect.py + 迁移 0020 + 运行库默认模板三处同源）：
+  - 反转为"**默认需要检索**"：凡想查询/了解任何主题资料（含纯主题名词查询、`X 是什么`），无论主题是否与投标相关，都判需要检索；"普通聊天"仅限纯社交表达（问候/感谢/身份闲聊/讲笑话/日常寒暄）；输入不含明显社交信号一律按需要检索；
+  - 兜底守卫：`detect_intent` 中 LLM 判普通聊天但输入为明确检索请求（`_is_information_request`：查询/查一下/帮我查/找一下…前缀）时覆盖改判 True——即使提示词层仍误判也保证走检索；
+  - 迁移 `backend/alembic/versions/0020_intent_detect_prompt_v2.py`（Revises 0019）升级 intent_detect 默认模板 seed（guard：仅当行内容为 0018 旧文案时更新，不覆盖用户编辑）；运行库先误用 v2 种子，已直接 UPDATE 对齐为 0020 seed（0020 head，幂等可回滚）。
+- 测试：`test_intent_detect.py` 增 `TestInformationRequestGuard`（5 前缀 True / 纯闲聊与空串 False / LLM 误判被覆盖 True / 闲聊保持 False）与 `test_fallback_matches_migration_0020_seed`（逐字防漂移 + 含主题查询示例标记）；2 处旧断言"问题分类器/不确定时按"随文案更新为 v3 标记。
+- 验证：真实 LLM 实测——"查询冠状动脉粥样硬化性心脏病"与"X 是什么"RAW 输出"需要检索"（5/5 稳定），"你好/谢谢/你是谁/讲个笑话/今天天气不错"仍"普通聊天"，"查投标人资质要求"仍需要检索；运行库行与代码兜底/0020 seed 逐字一致；后端全量 pytest **677 passed**（exit 0）。
+
+## 2026-09-04
+
+- 确认/补全：问答意图识别与普通聊天提示词均已接入提示词管理——`core/intent_detect.py`（intent_detect）与 `services/chat_service.py`（chat_normal）运行时均优先读 DB 激活模板、缺失/异常回退内置常量；0018 迁移已种两个默认模板并应用运行库（实测运行库文案与各自代码兜底逐字一致 True/True）；前端提示词管理页已含「意图识别」「普通聊天」筛选与新增选项。附带小修：`services/prompt_service.py` 中未被引用的静态枚举 `SCENARIOS` 补齐为 8 个场景（与 DB `chk_prompt_templates_scenario` 一致）。
+
+## 2026-09-04
+
 - 需求：把 Query 改写默认提示词的增强文案（否定/改口剔除 + 多意图 JSON 数组输出，此前仅直接更新运行库一行数据）落成 **alembic 迁移**，保证新环境/重部署 `alembic upgrade head` 后默认模板一致；代码内置兜底同步为新文案（恢复"兜底 = 迁移 seed = 提示词管理默认模板"三处同源）。
 - 改动（迁移）：新增 `backend/alembic/versions/0019_query_rewrite_prompt_v2.py`（Revises 0018）——upgrade 仅当 `query_rewrite` 默认模板 `system_prompt` 仍为 0017 旧文案时原地更新为增强版 v2（不覆盖用户在提示词管理自行编辑过的行），downgrade 反向回退。注：0018 前置迁移（intent_detect/chat_normal 默认提示词接入，随早前提交入库但此前未应用）随本次 `upgrade head` 一并应用；链 0017 → 0018 → 0019。
 - 改动（代码）：`core/query_rewrite.py` `FALLBACK_QUERY_REWRITE_PROMPT` 与模块注释同步为 v2 文案（含否定/改口规则、多意图 JSON 规则与 few-shot 示例）。

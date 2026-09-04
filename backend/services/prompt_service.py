@@ -12,7 +12,11 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-SCENARIOS = ["rag_qa", "entity_extraction", "document_summary", "custom", "image_recognition"]
+# 场景枚举（与数据库 chk_prompt_templates_scenario 保持一致；供前端/文档参考）
+SCENARIOS = [
+    "rag_qa", "entity_extraction", "document_summary", "custom",
+    "image_recognition", "query_rewrite", "intent_detect", "chat_normal",
+]
 
 
 def _to_dict(pt: PromptTemplate) -> dict:
