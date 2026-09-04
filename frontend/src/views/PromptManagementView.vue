@@ -16,6 +16,8 @@
           <el-radio-button value="custom">自定义</el-radio-button>
           <el-radio-button value="image_recognition">图片识别</el-radio-button>
           <el-radio-button value="query_rewrite">Query 改写</el-radio-button>
+          <el-radio-button value="intent_detect">意图识别</el-radio-button>
+          <el-radio-button value="chat_normal">普通聊天</el-radio-button>
         </el-radio-group>
       </div>
       <div class="toolbar-right">
@@ -117,6 +119,8 @@
                 <el-option label="自定义" value="custom" />
                 <el-option label="图片识别" value="image_recognition" />
                 <el-option label="Query 改写" value="query_rewrite" />
+                <el-option label="意图识别" value="intent_detect" />
+                <el-option label="普通聊天" value="chat_normal" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -276,6 +280,8 @@ const SCENARIO_LABELS = {
   custom: '自定义',
   image_recognition: '图片识别',
   query_rewrite: 'Query 改写',
+  intent_detect: '意图识别',
+  chat_normal: '普通聊天',
 }
 
 const SCENARIO_TAG_TYPES = {
@@ -285,6 +291,8 @@ const SCENARIO_TAG_TYPES = {
   custom: 'info',
   image_recognition: 'danger',
   query_rewrite: 'primary',
+  intent_detect: 'warning',
+  chat_normal: 'success',
 }
 
 // --- State ---

@@ -71,6 +71,26 @@ class TestPromptLoading:
         assert "测试查询" in prompt
 
 
+def test_fallback_matches_migration_0019_seed():
+    """内置兜底文案与迁移 0019 seed 完全一致（三处同源：代码兜底 = 0019 = 提示词管理默认模板）。"""
+    import importlib.util
+    from pathlib import Path
+
+    from core.query_rewrite import FALLBACK_QUERY_REWRITE_PROMPT
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic" / "versions" / "0019_query_rewrite_prompt_v2.py"
+    )
+    spec = importlib.util.spec_from_file_location("_migration_0019", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    assert mod._QUERY_REWRITE_PROMPT_V2 == FALLBACK_QUERY_REWRITE_PROMPT
+    assert "否定改口" in FALLBACK_QUERY_REWRITE_PROMPT
+    assert "JSON 数组" in FALLBACK_QUERY_REWRITE_PROMPT
+
+
 # ============================================================
 # 改写行为：成功清洗 / 空输出 / 未变化 / 异常 / 历史渲染
 # ============================================================

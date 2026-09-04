@@ -2,6 +2,30 @@
 
 ## 2026-09-04
 
+- 需求：把 Query 改写默认提示词的增强文案（否定/改口剔除 + 多意图 JSON 数组输出，此前仅直接更新运行库一行数据）落成 **alembic 迁移**，保证新环境/重部署 `alembic upgrade head` 后默认模板一致；代码内置兜底同步为新文案（恢复"兜底 = 迁移 seed = 提示词管理默认模板"三处同源）。
+- 改动（迁移）：新增 `backend/alembic/versions/0019_query_rewrite_prompt_v2.py`（Revises 0018）——upgrade 仅当 `query_rewrite` 默认模板 `system_prompt` 仍为 0017 旧文案时原地更新为增强版 v2（不覆盖用户在提示词管理自行编辑过的行），downgrade 反向回退。注：0018 前置迁移（intent_detect/chat_normal 默认提示词接入，随早前提交入库但此前未应用）随本次 `upgrade head` 一并应用；链 0017 → 0018 → 0019。
+- 改动（代码）：`core/query_rewrite.py` `FALLBACK_QUERY_REWRITE_PROMPT` 与模块注释同步为 v2 文案（含否定/改口规则、多意图 JSON 规则与 few-shot 示例）。
+- 测试：`test_query_rewrite.py` 新增 `test_fallback_matches_migration_0019_seed`——导入迁移模块逐字比对兜底常量与 0019 seed（防三处漂移），并断言含"否定改口/JSON 数组"规则。
+- 验证：运行库（192.168.60.120:5444）`alembic upgrade head` → **0019 (head)**；实测运行库 `query_rewrite` 默认模板与代码兜底**逐字一致**；0018 顺带生效（intent_detect/chat_normal 默认提示词两行入库）；后端全量 pytest **664 passed**（两次稳定，exit 0）。部署提醒：新环境直接 `upgrade head` 即得 v2 默认模板；回退运行库可 `alembic downgrade 0018`（还原 0017 旧文案；再 `downgrade 0017` 移除 0018 的 intent_detect/chat_normal 种子行）。
+
+## 2026-09-04
+
+- 需求：问答页增加**意图识别**——判断用户输入是"需要检索文档（RAG）"还是"普通聊天"；普通聊天**不走检索**（跳过改写/召回/词库/rerank），直接 LLM 流式回复且不返回引用来源，避免闲聊浪费检索链路并误答"未找到文档"。
+- 方案：`docs/plan/41-chat-intent-detect-plan.md`（默认方案已确认：仅影响问答页、判定参考最近 4 轮历史、失败一律回退"需要检索"、开关 `chat_intent_detect_enabled=True` 默认开）。
+- 改动（后端）：
+  - `core/intent_detect.py`（新增）：LLM 意图识别（True=需要检索 / False=普通聊天）——内置 fallback 提示词 + `_get_detect_prompt()`（提示词管理 `intent_detect` 激活模板优先，模式同 query_rewrite）+ `_parse_intent_output()`（纯文本/英文/JSON 兼容；空/非法/LLM 异常一律回退 True）；
+  - `services/chat_service.py`：抽公共生成尾 `_generate_llm_answer()`（`_run_rag` 行为不变）；新增 `_run_chat_normal()`（chain span `chat_normal`，无检索、无 sources）与 `_decide_retrieval()`（开关/模型解析/识别三态，异常回退检索）；`chat_stream` Stage 4 分流；
+  - `config.py`：新增 `chat_intent_detect_enabled: bool = True`；`.env.example` 同步；
+  - 迁移 `0018_intent_detect_scenarios.py`：`chk_prompt_templates_scenario` 追加 `intent_detect`/`chat_normal` + seed 两个默认模板（文案与代码兜底一致）；
+  - `models/schemas.py`：`PromptCreate.scenario` 说明补两个新场景。
+- 改动（前端）：`PromptManagementView.vue` 场景筛选 radio / 新建弹窗 select / 标签表补「意图识别」「普通聊天」。
+- 测试：新增 `tests/test_intent_detect.py`（解析/历史/提示词/兜底）与 `test_chat_service.py` 增 `_decide_retrieval` 三态、`_run_chat_normal` 接线用例，共 **+44**；后端全量 **661 passed**；前端 `npm run build` 通过。
+- 部署提醒：服务器需 `alembic upgrade head`（应用 0018：扩展约束 + seed 两默认模板）后重启 backend；前端需重新构建部署。默认开启后每轮问答多一次轻量 LLM 分类调用（失败自动回退既有检索链路）。
+- 追踪修复：新增外层编排 `_run_qa_round()`（`@traced_span("chat_qa","chain")`，Stage 4 前开启并下发 session_id/kb_id），使 `intent_detect`（generation）与 `_run_rag`/`_run_chat_normal`（chain）挂在**同一 trace** 下，不再单独成条；`result` 记录 `intent=retrieval/chat`。新增 `_run_qa_round` 分流用例 2 例，全量 **663 passed**。
+- 观测补强：`detect_intent` 的 `intent_detect` generation 改为按 `update_current_generation` 完整记录（同 query_rewrite/plan 39 口径）——`model`、实际输入 `prompt`、`output`、`usage_details`（token 用量，模型未返回时为 None）、异常分支 `level=ERROR`+`status_message`，不再是仅记录 query/metadata 的部分信息。
+
+## 2026-09-04
+
 - 修复：问答页 SSE 流式 token 实际逐条到达，但界面不逐字刷新，回答在结束时整块突然显示。
 - 根因：`ChatView.vue` 的 `aiMsg` 是 push 进 `messages`（ref 数组）前的**裸对象**——`onToken` 里 `aiMsg.content += token` 直接改响应式代理的 raw target，不触发 Vue 重渲染；仅 `onDone` 置 `streaming=false` 时才整块渲染一次。SSE 链路（后端逐 token yield、nginx `proxy_buffering off`）本身无问题。
 - 改动（前端）：`src/views/ChatView.vue`——`aiMsg` 改用 `reactive({...})` 创建后再 push（`import` 增 `reactive`），`onToken/onSources/onError` 的赋值即走响应式代理触发逐 token 渲染。

@@ -305,3 +305,293 @@ class TestRunRagRewriteWiring:
             assert mock_rar.await_args.kwargs["query_rewrite_config"] is None
         finally:
             settings.chat_query_rewrite_enabled = original
+
+
+# ============================================================
+# 意图识别分流接线（_decide_retrieval / _run_chat_normal）
+# ============================================================
+class TestDecideRetrieval:
+    """验证 _decide_retrieval 三态：开关关→True；识别普通聊天→False；模型解析异常→True。"""
+
+    def _llm_config(self):
+        return {
+            "model": "deepseek-chat", "platform": "deepseek",
+            "api_base": "http://x", "api_key": None, "params": {},
+        }
+
+    @pytest.mark.asyncio
+    async def test_disabled_always_retrieval(self):
+        """开关关闭：直接 True，不解析模型、不调识别。"""
+        from config import settings
+        from services import chat_service
+
+        original = settings.chat_intent_detect_enabled
+        settings.chat_intent_detect_enabled = False
+        try:
+            with patch("services.chat_service.resolve_model_config", new=AsyncMock()) as mock_resolve, \
+                 patch("services.chat_service.detect_intent", new=AsyncMock()) as mock_detect:
+                assert await chat_service._decide_retrieval(KB_ID, "你好呀", []) is True
+                mock_resolve.assert_not_awaited()
+                mock_detect.assert_not_awaited()
+        finally:
+            settings.chat_intent_detect_enabled = original
+
+    @pytest.mark.asyncio
+    async def test_model_resolve_error_falls_back_true(self):
+        """模型解析抛错：回退 True（按需检索）。"""
+        from config import settings
+        from services import chat_service
+
+        original = settings.chat_intent_detect_enabled
+        settings.chat_intent_detect_enabled = True
+        try:
+            with patch(
+                "services.chat_service.resolve_model_config",
+                new=AsyncMock(side_effect=RuntimeError("未配置 llm 模型")),
+            ):
+                assert await chat_service._decide_retrieval(KB_ID, "资质要求有哪些", []) is True
+        finally:
+            settings.chat_intent_detect_enabled = original
+
+    @pytest.mark.asyncio
+    async def test_chat_intent_returns_false_with_recent_history(self):
+        """识别为普通聊天：返回 False，并携带最近 4 轮历史 dict。"""
+        from config import settings
+        from services import chat_service
+
+        original = settings.chat_intent_detect_enabled
+        settings.chat_intent_detect_enabled = True
+        try:
+            history_objs = [
+                SimpleNamespace(role="user" if i % 2 == 0 else "assistant", content=f"消息{i}")
+                for i in range(6)
+            ]
+            expected_history = [
+                {"role": m.role, "content": m.content} for m in history_objs[-4:]
+            ]
+            cfg = self._llm_config()
+            with patch(
+                "services.chat_service.resolve_model_config",
+                new=AsyncMock(return_value=cfg),
+            ), patch(
+                "services.chat_service.detect_intent",
+                new=AsyncMock(return_value=False),
+            ) as mock_detect:
+                assert await chat_service._decide_retrieval(
+                    KB_ID, "谢谢，你真棒", history_objs
+                ) is False
+                mock_detect.assert_awaited_once_with("谢谢，你真棒", cfg, expected_history)
+        finally:
+            settings.chat_intent_detect_enabled = original
+
+    @pytest.mark.asyncio
+    async def test_retrieval_intent_returns_true(self):
+        """识别为需要检索：返回 True（走 RAG）。"""
+        from config import settings
+        from services import chat_service
+
+        original = settings.chat_intent_detect_enabled
+        settings.chat_intent_detect_enabled = True
+        try:
+            with patch(
+                "services.chat_service.resolve_model_config",
+                new=AsyncMock(return_value=self._llm_config()),
+            ), patch(
+                "services.chat_service.detect_intent",
+                new=AsyncMock(return_value=True),
+            ):
+                assert await chat_service._decide_retrieval(KB_ID, "评分办法是什么", []) is True
+        finally:
+            settings.chat_intent_detect_enabled = original
+
+
+class TestRunChatNormalWiring:
+    """验证 _run_chat_normal：无检索、走 chat_normal 提示词、流式输出正常。"""
+
+    def _stream_llm(self):
+        llm = MagicMock()
+
+        async def _astream_chat(messages=None, **kwargs):
+            self.seen_messages = messages
+
+            async def _gen():
+                yield SimpleNamespace(delta="你", additional_kwargs={})
+                yield SimpleNamespace(delta="好", additional_kwargs={})
+                yield SimpleNamespace(delta="", additional_kwargs={
+                    "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2,
+                })
+
+            return _gen()
+
+        llm.astream_chat = _astream_chat
+        return llm
+
+    @pytest.mark.asyncio
+    async def test_chat_normal_streams_without_retrieval(self):
+        """普通聊天：不调 retrieve_and_rank；System 提示词为内置兜底；流式文本完整。"""
+        from services import chat_service
+
+        self.seen_messages = None
+        llm = self._stream_llm()
+        llm_config = {
+            "model": "deepseek-chat", "platform": "deepseek",
+            "api_base": "http://x", "api_key": None, "params": {},
+        }
+        with patch("services.chat_service.resolve_model_config",
+                   new=AsyncMock(return_value=llm_config)), \
+             patch("services.chat_service.create_llm", return_value=llm), \
+             patch("services.chat_service.prompt_service.get_active_prompt",
+                   new=AsyncMock(return_value=None)), \
+             patch("services.chat_service.get_client", return_value=MagicMock()), \
+             patch("services.chat_service.propagate_attributes",
+                   new=lambda **kw: nullcontext()), \
+             patch("services.chat_service.retrieve_and_rank",
+                   new=AsyncMock()) as mock_rar:
+            result: dict = {}
+            gen = chat_service._run_chat_normal(
+                kb_id=KB_ID, message="你好", conv_id="c2",
+                history=[SimpleNamespace(role="user", content="你好")],
+                result=result,
+            )
+            parts: list[str] = []
+            async for delta in gen:
+                parts.append(delta)
+
+            assert "".join(parts) == "你好"
+            assert result["retrieved"] == []
+            mock_rar.assert_not_awaited()
+            system_msg = self.seen_messages[0]
+            assert "投标领域 AI 助手" in system_msg.content
+            assert "参考文档内容" not in system_msg.content
+
+    @pytest.mark.asyncio
+    async def test_chat_normal_uses_active_template(self):
+        """提示词管理存在 chat_normal 激活模板时优先渲染。"""
+        from services import chat_service
+
+        self.seen_messages = None
+        llm = self._stream_llm()
+        llm_config = {
+            "model": "deepseek-chat", "platform": "deepseek",
+            "api_base": "http://x", "api_key": None, "params": {},
+        }
+        active_template = {
+            "system_prompt": "自定义闲聊模板：{query}",
+            "variables": [
+                {"name": "query", "label": "用户输入", "required": True, "description": ""},
+                {"name": "history", "label": "对话历史", "required": False, "description": ""},
+            ],
+        }
+        with patch("services.chat_service.resolve_model_config",
+                   new=AsyncMock(return_value=llm_config)), \
+             patch("services.chat_service.create_llm", return_value=llm), \
+             patch("services.chat_service.prompt_service.get_active_prompt",
+                   new=AsyncMock(return_value=active_template)), \
+             patch("services.chat_service.get_client", return_value=MagicMock()), \
+             patch("services.chat_service.propagate_attributes",
+                   new=lambda **kw: nullcontext()):
+            gen = chat_service._run_chat_normal(
+                kb_id=KB_ID, message="介绍一下你", conv_id="c3",
+                history=[], result={},
+            )
+            async for _delta in gen:
+                pass
+
+            assert self.seen_messages[0].content == "自定义闲聊模板：介绍一下你"
+
+
+class TestRunQaRound:
+    """验证 _run_qa_round（trace 根 chat_qa）按意图分流且结果完整。"""
+
+    def _stream_llm(self):
+        llm = MagicMock()
+
+        async def _astream_chat(messages=None, **kwargs):
+            self.seen_messages = messages
+
+            async def _gen():
+                yield SimpleNamespace(delta="你", additional_kwargs={})
+                yield SimpleNamespace(delta="好", additional_kwargs={})
+                yield SimpleNamespace(delta="", additional_kwargs={
+                    "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2,
+                })
+
+            return _gen()
+
+        llm.astream_chat = _astream_chat
+        return llm
+
+    def _llm_config(self):
+        return {
+            "model": "deepseek-chat", "platform": "deepseek",
+            "api_base": "http://x", "api_key": None, "params": {},
+        }
+
+    async def _run_round(self, detect_result: bool, message: str):
+        """带全套 mock 执行 _run_qa_round，返回 (收集文本, result, retrieve_and_rank mock)。"""
+        from services import chat_service
+
+        self.seen_messages = None
+        llm = self._stream_llm()
+        cfg = self._llm_config()
+
+        async def _resolve(kb, model_type):
+            if model_type == "rerank":
+                return None
+            return cfg
+
+        with patch("services.chat_service.resolve_model_config",
+                   new=AsyncMock(side_effect=_resolve)), \
+             patch("services.chat_service.create_llm", return_value=llm), \
+             patch("services.chat_service.get_client", return_value=MagicMock()), \
+             patch("services.chat_service.propagate_attributes",
+                   new=lambda **kw: nullcontext()), \
+             patch("services.chat_service.prompt_service.get_active_prompt",
+                   new=AsyncMock(return_value=None)), \
+             patch("services.chat_service.lexicon_service.ensure_cache",
+                   new=AsyncMock()), \
+             patch("services.chat_service.detect_intent",
+                   new=AsyncMock(return_value=detect_result)), \
+             patch("services.chat_service.retrieve_and_rank",
+                   new=AsyncMock(return_value=[])) as mock_rar:
+            result: dict = {}
+            parts: list[str] = []
+            async for delta in chat_service._run_qa_round(
+                kb_id=KB_ID, message=message, conv_id="c4",
+                history=[SimpleNamespace(role="user", content="消息0")],
+                result=result,
+            ):
+                parts.append(delta)
+        return "".join(parts), result, mock_rar
+
+    @pytest.mark.asyncio
+    async def test_chat_intent_round_skips_retrieval(self):
+        """识别普通聊天：走 _run_chat_normal，不调检索；result.intent=chat。"""
+        from config import settings
+
+        original = settings.chat_intent_detect_enabled
+        settings.chat_intent_detect_enabled = True
+        try:
+            text, result, mock_rar = await self._run_round(False, "谢谢")
+            assert text == "你好"
+            assert result["intent"] == "chat"
+            assert result["retrieved"] == []
+            mock_rar.assert_not_awaited()
+        finally:
+            settings.chat_intent_detect_enabled = original
+
+    @pytest.mark.asyncio
+    async def test_retrieval_intent_round_goes_rag(self):
+        """识别需要检索：走 _run_rag（检索被调用）；result.intent=retrieval。"""
+        from config import settings
+
+        original = settings.chat_intent_detect_enabled
+        settings.chat_intent_detect_enabled = True
+        try:
+            text, result, mock_rar = await self._run_round(True, "资质要求有哪些")
+            assert text == "你好"
+            assert result["intent"] == "retrieval"
+            assert result["retrieved"] == []
+            mock_rar.assert_awaited_once()
+        finally:
+            settings.chat_intent_detect_enabled = original

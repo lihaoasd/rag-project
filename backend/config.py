@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     query_rewrite_enabled: bool = False          # 检索页服务端默认开关（请求未显式传 query_rewrite 时生效；默认关）
     chat_query_rewrite_enabled: bool = True     # 问答（chat）Query 改写开关（聊天页无前端控件，后端配置；默认关）
 
+    # === 意图识别（问答分流：需要检索 vs 普通聊天）===
+    chat_intent_detect_enabled: bool = True     # 问答（chat）意图识别开关（普通聊天不走检索；默认开）
+
     # === ES 对账 ===
     es_reconcile_enabled: bool = True           # 每日定时对账开关
     es_reconcile_interval_hours: int = 24       # 对账间隔（小时）

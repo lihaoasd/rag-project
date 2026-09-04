@@ -196,7 +196,7 @@ class PromptTemplateCreate(BaseModel):
     """创建提示词模板请求"""
     name: str = Field(..., min_length=1, max_length=255, description="模板名称")
     description: str | None = Field(None, description="模板描述")
-    scenario: str = Field(..., description="场景类型: rag_qa / entity_extraction / document_summary / custom / image_recognition / query_rewrite")
+    scenario: str = Field(..., description="场景类型: rag_qa / entity_extraction / document_summary / custom / image_recognition / query_rewrite / intent_detect / chat_normal")
     system_prompt: str = Field(..., min_length=1, description="系统提示词（含变量占位符）")
     user_prompt: str | None = Field(None, description="用户提示词模板（可选）")
     variables: list[PromptVariableDef] | None = Field(None, description="变量定义列表")
