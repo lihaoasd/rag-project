@@ -444,3 +444,67 @@ class TestSearchWithQueryRewrite:
         assert mock_retrieve.call_args.kwargs["query"] == "改写词"
         assert reranker.arerank.await_args.args[0] == "测试"  # rerank 用原查询
         assert result["query"] == "测试"
+
+
+class TestSearchWithMultiIntent:
+    """多意图：改写返回 list → 逐子查询召回 + 按子查询 rerank + 各取 top_k → 跨意图去重合并。"""
+
+    def _hit(self, score: float, text: str, chunk_index: int) -> dict:
+        return {
+            "score": score,
+            "text": text,
+            "doc_id": DOC_ID,
+            "file_name": "test.pdf",
+            "page_number": 1,
+            "chunk_index": chunk_index,
+        }
+
+    @pytest.mark.asyncio
+    async def test_multi_intent_recalls_per_subquery_and_merges(self, mock_retrieve):
+        """2 意图（无 rerank）：召回按子查询各一次，每意图取 top_k，合并去重，响应 query 为原词。"""
+        hits_a = [self._hit(0.9, "A0", 0), self._hit(0.8, "A1", 1), self._hit(0.7, "A2", 2)]
+        hits_b = [self._hit(0.6, "B0", 3), self._hit(0.5, "B1", 4), self._hit(0.4, "B2", 5)]
+        mock_retrieve.side_effect = [hits_a, hits_b]
+
+        with patch("services.search_service.rewrite_query",
+                   new=AsyncMock(return_value=["子A", "子B"])), \
+             patch("services.search_service.resolve_default_model_config",
+                   new=AsyncMock(return_value={"model": "m"})):
+            result = await search_service.search(
+                kb_ids=[KB_ID], query="原词", top_k=2,
+                retrieval_methods=["dense"], query_rewrite=True,
+            )
+
+        assert [c.kwargs["query"] for c in mock_retrieve.await_args_list] == ["子A", "子B"]
+        assert result["query"] == "原词"
+        # 每意图各取 top_k=2：A0/A1 + B0/B1，A2/B2 被截断
+        assert [r["text"] for r in result["results"]] == ["A0", "A1", "B0", "B1"]
+
+    @pytest.mark.asyncio
+    async def test_multi_intent_reranks_per_subquery_and_dedupes(self, mock_retrieve):
+        """有 rerank：每个子查询分别 rerank（非原查询）；跨意图重复切片只保留先出现意图。"""
+        hit_a = self._hit(0.9, "A0", 0)
+        hit_b = self._hit(0.8, "B1", 0)  # chunk_index 与 A0 相同 → 去重
+        mock_retrieve.side_effect = [[hit_a], [hit_b]]
+        reranker = MagicMock()
+        reranker.arerank = AsyncMock(return_value=[(0, 0.99)])
+
+        with patch("services.search_service.rewrite_query",
+                   new=AsyncMock(return_value=["子A", "子B"])), \
+             patch("services.search_service.resolve_default_model_config",
+                   new=AsyncMock(return_value={"model": "m"})), \
+             patch("core.retrieval.create_reranker", return_value=reranker), \
+             patch("services.search_service.model_service.get_model",
+                   new=AsyncMock(return_value={"id": "r1", "model_type": "rerank",
+                                               "model": "bge-reranker", "api_base": "http://x",
+                                               "api_key": None, "params": {}})):
+            result = await search_service.search(
+                kb_ids=[KB_ID], query="原词", top_k=10, rerank_model_id="r1",
+                query_rewrite=True,
+            )
+
+        # rerank 按各自子查询进行（两意图各一次）
+        assert [c.args[0] for c in reranker.arerank.await_args_list] == ["子A", "子B"]
+        assert result["query"] == "原词"
+        # 重复切片去重：仅保留意图 A 的 A0
+        assert [r["text"] for r in result["results"]] == ["A0"]

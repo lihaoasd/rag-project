@@ -2,6 +2,18 @@
 
 ## 2026-09-03
 
+- 需求：Query 改写需处理**多意图**输入——一次输入含多个独立检索意图时（如"查资质要求，还要保证金比例和评分办法"），改写/检索链路把意图**拆成多条子查询、逐条各自检索**，结果**合并**输出，避免单条混合查询只命中一个主题。方案：`docs/plan/40-multi-intent-query-plan.md`（评审通过：检索页+问答双入口、多意图才拆、按子查询分别 rerank、每意图各取 top_k）。
+- 设计：`rewrite_query` 返回值扩为 `str | list[str]`——LLM 一次调用按提示词规则输出：单意图→一行改写文本；多意图→JSON 数组子查询。解析：以 `[` 开头整体 json 解析，≥2 条→list；1 条→解包；非法 JSON/单行文本→按单查询回退现状；失败/空输出仍回退原词。
+- 改动（后端）：
+  - `core/query_rewrite.py`：新增 `_parse_rewrite_output()` 双格式解析；`rewrite_query` 支持多意图返回 list（generation 记录 output=数组）；docstring 更新；
+  - `core/retrieval.py`：`retrieve_and_rank` 重构——召回融合抽为 `_recall_and_fuse(sub_query)`；多意图（list≥2）时逐子查询召回 + **按子查询 rerank** + 阈值过滤 + 各取 top_k，新增 `merge_intent_hits()` 跨意图按 `(kb_id, doc_id, chunk_index)` 去重合并（保意图顺序、先出现意图优先）；单意图路径行为不变（回归）；
+  - `services/search_service.py`：`search()` 增加多意图分支（复用 `_recall_milvus/_recall_fulltext/_recall_graph` 逐子查询召回、`_apply_rerank` 按子查询重排、各取 top_k、`merge_intent_hits` 合并）；span metadata 增 `sub_queries`；单意图分支原样保留；
+  - 运行库提示词管理 `query_rewrite` 默认模板（192.168.60.120:5444）system_prompt 更新：追加"多意图必须输出 JSON 数组、每元素一条子查询、勿合并成一句话、含改口示例与反例、被否定的意图不得入数组；单意图输出一行文本不输出 JSON"（代码兜底/迁移 seed 不动，与用户口径一致）。
+- 测试：`test_query_rewrite.py` 增 `TestMultiIntentParsing` 6 例（数组→list 且 generation 记数组/多行 JSON/单元素解包/空元素过滤/单行 str/非法 JSON 回退）；`test_retrieval.py` 增 `TestRetrieveAndRankMultiIntent` 3 例（逐意图召回+按子查询 rerank+去重、无 rerank 每意图截 top_k、str 单意图回归）；`test_search_service.py` 增 `TestSearchWithMultiIntent` 2 例（逐意图召回合并截断、按子查询 rerank 去重且响应 query 为原词）。
+- 验证：定向 64 passed（query_rewrite/retrieval/search_service）；真实 LLM 语义实测 5/5——多意图输出 3 元素数组、改口剔除后单意图、单意图不输出 JSON、多意图含"不含联合体"排除条件数组、改口变体只剩 AAA 意图；前端无改动。部署提醒：服务器（192.168.60.120）需重新部署 backend 并重启（含运行库模板文案已随库生效）。
+
+## 2026-09-03
+
 - 需求：Query 改写需处理**自我纠正/改口型否定**输入（如"我要查询 XXX，不了，还是查询 AA"），改写结果只保留最终意图 AA，**不得带出被否定的 XXX**；同时保留真实排除条件（"不含/没有 XXX 的招标文件"属于最终筛选意图）。
 - 口径（用户确认）：只剔"自我纠正/改口"中被放弃的目标；含否定词的**真实筛选条件原样保留**。同步范围（用户指定）：**仅更新运行库提示词管理 `query_rewrite` 默认模板文案**，代码兜底常量与迁移 0017 seed 不随本次改动（保持原文案；仅在无激活模板时兜底使用，与新 DB 文案允许不一致）。
 - 改动（运行库 192.168.60.120:5444/ai_bid_rag，仅数据）：`prompt_templates` 中 scenario=`query_rewrite` 且 is_default/is_active 的默认模板（id b6788103-…）`system_prompt` 更新，新增两条规则：改口型否定以最终意图为准且被否定内容不得出现；"不/别/不含/不要"作真实筛选条件时必须保留。其余字段（name/description/variables/is_active/is_default/sort_order）不变。

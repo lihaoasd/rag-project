@@ -178,3 +178,67 @@ class TestRewriteLangfuseRecording:
         assert "timeout" in kwargs["status_message"]
         assert kwargs["model"] == CONFIG["model"]
         assert kwargs["input"] == "原词"
+
+
+# ============================================================
+# 多意图拆解：JSON 数组 → list；单意图/解析失败 → str（回退现状）
+# ============================================================
+class TestMultiIntentParsing:
+    @pytest.mark.asyncio
+    async def test_json_array_multi_intent_returns_list_and_records(self):
+        """≥2 条子查询的 JSON 数组 → list[str]，generation output 记录为数组。"""
+        mock_lf = MagicMock()
+        with patch("core.query_rewrite.create_llm",
+                   return_value=_llm_with_text('["查A","查B","查C"]')), \
+             patch("core.query_rewrite.get_client", return_value=mock_lf):
+            result = await query_rewrite.rewrite_query("原词", CONFIG)
+
+        assert result == ["查A", "查B", "查C"]
+        mock_lf.update_current_generation.assert_called_once()
+        assert mock_lf.update_current_generation.call_args.kwargs["output"] == result
+
+    @pytest.mark.asyncio
+    async def test_multiline_json_array_parsed(self):
+        with patch("core.query_rewrite.create_llm",
+                   return_value=_llm_with_text('[\n  "查A",\n  "查B"\n]')):
+            result = await query_rewrite.rewrite_query("原词", CONFIG)
+
+        assert result == ["查A", "查B"]
+
+    @pytest.mark.asyncio
+    async def test_json_array_single_element_unwrapped(self):
+        """单元素数组按单查询解包（等价于单意图）。"""
+        with patch("core.query_rewrite.create_llm",
+                   return_value=_llm_with_text('["查A"]')):
+            result = await query_rewrite.rewrite_query("原词", CONFIG)
+
+        assert isinstance(result, str)
+        assert result == "查A"
+
+    @pytest.mark.asyncio
+    async def test_empty_array_items_filtered(self):
+        """空元素过滤：['查A','','查B'] → 两条有效子查询。"""
+        with patch("core.query_rewrite.create_llm",
+                   return_value=_llm_with_text('["查A","","查B"]')):
+            result = await query_rewrite.rewrite_query("原词", CONFIG)
+
+        assert result == ["查A", "查B"]
+
+    @pytest.mark.asyncio
+    async def test_single_line_text_stays_str(self):
+        with patch("core.query_rewrite.create_llm",
+                   return_value=_llm_with_text('投标保证金比例')):
+            result = await query_rewrite.rewrite_query("原词", CONFIG)
+
+        assert isinstance(result, str)
+        assert result == "投标保证金比例"
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_falls_back_to_text(self):
+        """以 '[' 开头但非合法 JSON → 按单行文本处理（回退单查询语义）。"""
+        with patch("core.query_rewrite.create_llm",
+                   return_value=_llm_with_text('[abc')):
+            result = await query_rewrite.rewrite_query("原词", CONFIG)
+
+        assert isinstance(result, str)
+        assert result == "[abc"

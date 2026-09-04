@@ -255,6 +255,28 @@ async def rerank(
     return hits
 
 
+def merge_intent_hits(intent_lists: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """跨意图结果合并：按 (kb_id, doc_id, chunk_index) 去重，保留先出现意图中的条目与顺序。
+
+    多意图下各子查询的 rerank 分数不可比，因此不做全局重排；
+    输出顺序 = 意图出现顺序依次拼接，意图内保持传入顺序（已按分数降序）。
+    """
+    seen: set[tuple[str, str, int]] = set()
+    merged: list[dict[str, Any]] = []
+    for hits in intent_lists:
+        for h in hits:
+            key = (
+                h.get("kb_id", ""),
+                h.get("doc_id", ""),
+                h.get("chunk_index", -1),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(h)
+    return merged
+
+
 async def retrieve_and_rank(
     query: str,
     kb_id: str,
@@ -279,12 +301,14 @@ async def retrieve_and_rank(
         retrieval_methods: 检索策略列表（dense/sparse/fulltext，可多选），为 None 时默认纯稠密 ["dense"]
         expand_query: fulltext 路的查询扩展函数（词库同义词 OR 扩展），为 None 时原词直查
         query_rewrite_config: LLM 改写配置，为 None 时不改写；有配置时先改写 query 再召回
-            （改写只服务召回，重排仍用原 query 判断相关性）
+            （改写只服务召回：单意图重排仍用原 query 判断相关性；
+            多意图时按子查询分别召回并按各自子查询重排，各取 top_k 后跨意图去重合并）
         query_rewrite_history: 改写时携带的最近对话轮次 [{"role", "content"}, ...]（仅问答传入）
 
     Returns:
-        RRF 融合（单选时直返）并按分数降序的结果列表:
+        单意图：RRF 融合（单选时直返）并按分数降序的结果列表:
         [{score, text, doc_id, file_name, page_number, chunk_index, kb_id, ...}, ...]
+        多意图：各意图结果（每意图 ≤ top_k 条）跨意图去重合并后的列表，顺序=意图顺序拼接。
 
     单路召回失败（如 ES 未部署）降级为空并记日志，不阻断整体检索。
     """
@@ -296,50 +320,69 @@ async def retrieve_and_rank(
     # ===== 0. 可选 Query 改写（失败/空输出由 rewrite_query 内部回退原词） =====
     original_query = query
     if query_rewrite_config:
-        query = await rewrite_query(query, query_rewrite_config, history=query_rewrite_history)
-
-    # ===== 1. 各路独立召回（单路失败降级为空） =====
-    ranked_lists: list[list[dict]] = []
-    for m in methods:
-        if m in ("dense", "sparse"):
-            try:
-                if m == "dense":
-                    threshold = (0.2 if rerank_config else similarity_threshold)
-                    hits = await retrieve(
-                        query=query, kb_id=kb_id, top_k=top_k,
-                        similarity_threshold=threshold, retrieval_method=m,
-                    )
-                else:
-                    # sparse 分数非 [0,1]，无阈值语义
-                    hits = await retrieve(
-                        query=query, kb_id=kb_id, top_k=top_k, retrieval_method=m,
-                    )
-            except Exception as e:
-                logger.warning("问答 %s 路检索失败，降级为空: %s", m, e)
-                hits = []
-        else:  # fulltext（ES + IK 全文检索）
-            try:
-                expanded = expand_query(query) if expand_query else query
-                hits = await es_store.es_search(
-                    expanded, [kb_id],
-                    top_k=top_k * settings.retrieval_es_top_k_factor,
-                    highlight=False,
-                )
-            except Exception as e:
-                logger.warning("问答 fulltext 路检索失败，降级为空: %s", e)
-                hits = []
-        for h in hits:
-            h.setdefault("kb_id", kb_id)
-        ranked_lists.append(hits)
-
-    # ===== 2. 单选直返 / 多选 RRF 融合 =====
-    if len(ranked_lists) == 1:
-        all_hits = ranked_lists[0]
-        all_hits.sort(key=lambda x: x["score"], reverse=True)
+        rewritten = await rewrite_query(
+            query, query_rewrite_config, history=query_rewrite_history
+        )
     else:
-        all_hits = rrf_merge(ranked_lists, k=settings.retrieval_rrf_k)
+        rewritten = query
 
-    # ===== 3. 可选重排 + 阈值过滤（重排用改写前的原查询判断相关性） =====
+    # ===== 1. 多路召回（子查询级别）：单路失败降级为空，单选直返/多选 RRF 融合 =====
+    async def _recall_and_fuse(sub_query: str) -> list[dict]:
+        ranked_lists: list[list[dict]] = []
+        for m in methods:
+            if m in ("dense", "sparse"):
+                try:
+                    if m == "dense":
+                        threshold = (0.2 if rerank_config else similarity_threshold)
+                        hits = await retrieve(
+                            query=sub_query, kb_id=kb_id, top_k=top_k,
+                            similarity_threshold=threshold, retrieval_method=m,
+                        )
+                    else:
+                        # sparse 分数非 [0,1]，无阈值语义
+                        hits = await retrieve(
+                            query=sub_query, kb_id=kb_id, top_k=top_k, retrieval_method=m,
+                        )
+                except Exception as e:
+                    logger.warning("问答 %s 路检索失败，降级为空: %s", m, e)
+                    hits = []
+            else:  # fulltext（ES + IK 全文检索）
+                try:
+                    expanded = expand_query(sub_query) if expand_query else sub_query
+                    hits = await es_store.es_search(
+                        expanded, [kb_id],
+                        top_k=top_k * settings.retrieval_es_top_k_factor,
+                        highlight=False,
+                    )
+                except Exception as e:
+                    logger.warning("问答 fulltext 路检索失败，降级为空: %s", e)
+                    hits = []
+            for h in hits:
+                h.setdefault("kb_id", kb_id)
+            ranked_lists.append(hits)
+
+        if len(ranked_lists) == 1:
+            all_hits = ranked_lists[0]
+            all_hits.sort(key=lambda x: x["score"], reverse=True)
+        else:
+            all_hits = rrf_merge(ranked_lists, k=settings.retrieval_rrf_k)
+        return all_hits
+
+    # ===== 1b. 多意图（≥2 条子查询）：逐子查询召回 + 按子查询重排 + 各取 top_k 后合并去重 =====
+    if isinstance(rewritten, list) and len(rewritten) >= 2:
+        per_intent: list[list[dict]] = []
+        for sub in rewritten:
+            all_hits = await _recall_and_fuse(sub)
+            if rerank_config and all_hits:
+                all_hits = await rerank(sub, all_hits, rerank_config)
+                all_hits = [h for h in all_hits if h["score"] >= rerank_threshold]
+            per_intent.append(all_hits[:top_k])
+        return merge_intent_hits(per_intent)
+
+    query = rewritten  # 单意图（str）
+
+    # ===== 2. 可选重排 + 阈值过滤（重排用改写前的原查询判断相关性） =====
+    all_hits = await _recall_and_fuse(query)
     if rerank_config and all_hits:
         all_hits = await rerank(original_query, all_hits, rerank_config)
         all_hits = [h for h in all_hits if h["score"] >= rerank_threshold]

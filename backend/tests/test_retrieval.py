@@ -357,3 +357,78 @@ class TestRetrieveAndRank:
 
         mock_rewrite.assert_not_awaited()
         assert mock_retrieve.await_args.kwargs["query"] == "原词"
+
+
+class TestRetrieveAndRankMultiIntent:
+    """多意图：rewrite 返回 list → 逐子查询召回 + 按子查询 rerank + 各取 top_k → 跨意图去重合并。"""
+
+    @pytest.mark.asyncio
+    async def test_recalls_and_reranks_per_intent_then_merges_dedupe(self):
+        """2 意图：retrieve/rerank 各 2 次且 rerank 用各自子查询；重复切片只保留先出现意图。"""
+        hits_a = [_hit(0.9, "A0"), _hit(0.8, "A1")]
+        hits_b = [_hit(0.7, "B1"), _hit(0.6, "B2")]
+        hits_a[0]["chunk_index"] = 0
+        hits_a[1]["chunk_index"] = 1
+        hits_b[0]["chunk_index"] = 1  # 与意图 A 的 chunk1 重复
+        hits_b[1]["chunk_index"] = 2
+        reranked_a = [dict(h, score=s) for h, s in zip(hits_a, (0.99, 0.88))]
+        reranked_b = [dict(h, score=s) for h, s in zip(hits_b, (0.95, 0.6))]
+
+        with patch("core.retrieval.rewrite_query",
+                   new=AsyncMock(return_value=["子A", "子B"])), \
+             patch("core.retrieval.retrieve",
+                   new=AsyncMock(side_effect=[hits_a, hits_b])) as mock_retrieve, \
+             patch("core.retrieval.rerank",
+                   new=AsyncMock(side_effect=[reranked_a, reranked_b])) as mock_rerank:
+            result = await retrieval.retrieve_and_rank(
+                query="原词", kb_id=KB_ID, top_k=2,
+                retrieval_methods=["dense"],
+                rerank_config={"model": "r"}, rerank_threshold=0.0,
+                query_rewrite_config={"model": "m"},
+            )
+
+        # 每个子查询各一次完整召回
+        assert [c.kwargs["query"] for c in mock_retrieve.await_args_list] == ["子A", "子B"]
+        # 重排按各自子查询（非原查询）
+        assert [c.args[0] for c in mock_rerank.await_args_list] == ["子A", "子B"]
+        # 合并去重：A0/A1(先出现保留)/B2，共 3 条，顺序=意图顺序拼接
+        assert [h["text"] for h in result] == ["A0", "A1", "B2"]
+
+    @pytest.mark.asyncio
+    async def test_no_rerank_truncates_each_intent_to_top_k(self):
+        """无 rerank 时每意图各取 top_k 后合并（不全局截断）。"""
+        hits_a = [_hit(0.9, "A0"), _hit(0.8, "A1"), _hit(0.7, "A2")]
+        hits_b = [_hit(0.6, "B0"), _hit(0.5, "B1"), _hit(0.4, "B2")]
+        for i, h in enumerate(hits_a + hits_b):
+            h["chunk_index"] = i
+
+        with patch("core.retrieval.rewrite_query",
+                   new=AsyncMock(return_value=["子A", "子B"])), \
+             patch("core.retrieval.retrieve",
+                   new=AsyncMock(side_effect=[hits_a, hits_b])) as mock_retrieve, \
+             patch("core.retrieval.rerank", new=AsyncMock()) as mock_rerank:
+            result = await retrieval.retrieve_and_rank(
+                query="原词", kb_id=KB_ID, top_k=2,
+                retrieval_methods=["dense"],
+                query_rewrite_config={"model": "m"},
+            )
+
+        assert [c.kwargs["query"] for c in mock_retrieve.await_args_list] == ["子A", "子B"]
+        mock_rerank.assert_not_awaited()
+        # 每意图截到 2 条，共 4 条（A0/A1/B0/B1），A2/B2 被丢弃
+        assert [h["text"] for h in result] == ["A0", "A1", "B0", "B1"]
+
+    @pytest.mark.asyncio
+    async def test_single_str_result_keeps_existing_single_flow(self):
+        """改写返回 str（单意图）时行为与现状一致（回归）。"""
+        hit = _hit(0.9, "文本")
+        with patch("core.retrieval.rewrite_query", new=AsyncMock(return_value="改写词")), \
+             patch("core.retrieval.retrieve", new=AsyncMock(return_value=[hit])) as mock_retrieve:
+            result = await retrieval.retrieve_and_rank(
+                query="原词", kb_id=KB_ID, top_k=5, retrieval_methods=["dense"],
+                query_rewrite_config={"model": "m"},
+            )
+
+        mock_retrieve.assert_awaited_once()
+        assert mock_retrieve.await_args.kwargs["query"] == "改写词"
+        assert result == [hit]

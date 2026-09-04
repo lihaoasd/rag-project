@@ -21,7 +21,7 @@ from core.database import async_session
 from core.model_factory import resolve_default_model_config
 from core.observability import format_retrieval_observation, traced_span
 from core.query_rewrite import rewrite_query
-from core.retrieval import retrieve, rerank, rrf_merge
+from core.retrieval import merge_intent_hits, retrieve, rerank, rrf_merge
 from repositories.kb_repository import KnowledgeBaseRepository
 from services import lexicon_service, model_service
 from utils.logging import get_logger
@@ -242,7 +242,8 @@ async def search(
         rerank_top_n: 进入排序模型的候选数量
         highlight: 是否返回 ES 高亮片段（fulltext 生效）
         query_rewrite: 是否启用 LLM Query 改写；为空则沿用服务端默认 query_rewrite_enabled
-            （改写只服务召回，rerank 与响应仍用原查询；无全局默认 LLM 或改写失败自动回退原词）
+            （改写只服务召回，rerank 与响应仍用原查询；无全局默认 LLM 或改写失败自动回退原词；
+            多意图输入改写输出 list 时按子查询分别召回/重排，各取 top_k 后跨意图去重合并）
 
     Returns:
         {query, total, results: [{rank, score, text, doc_id, file_name, page_number,
@@ -265,12 +266,19 @@ async def search(
 
     # ===== 0. 可选 Query 改写（只服务召回；失败/无默认 LLM 回退原词） =====
     query_rewritten = False
+    sub_queries: list[str] | None = None
     rewrite_on = settings.query_rewrite_enabled if query_rewrite is None else query_rewrite
     if rewrite_on:
         rewrite_config = await resolve_default_model_config("llm")  # 无全局默认 LLM → None → 跳过
         if rewrite_config:
-            query = await rewrite_query(original_query, rewrite_config)
-            query_rewritten = query != original_query
+            rewritten = await rewrite_query(original_query, rewrite_config)
+            if isinstance(rewritten, list) and len(rewritten) >= 2:
+                sub_queries = rewritten
+                query_rewritten = True
+            else:
+                # 单意图（str；改写失败/空输出时 rewrite_query 已回退原词）
+                query = rewritten
+                query_rewritten = query != original_query
 
     get_client().update_current_span(
         input=original_query,
@@ -282,6 +290,7 @@ async def search(
             "rerank_model_id": rerank_model_id,
             "highlight": highlight,
             "query_rewritten": query_rewritten,
+            "sub_queries": sub_queries,
         },
     )
 
@@ -291,48 +300,94 @@ async def search(
     # 召回数：rerank 时需覆盖 rerank_top_n（全局前 N 个进排序）；无 rerank 时即 top_k
     fetch_top_k = max(top_k, rerank_top_n) if rerank_model_id else top_k
 
-    # ===== 1. 各路独立召回 =====
-    ranked_lists = []
-    per_method_hits: dict[str, int] = {}
-    if "dense" in methods:
-        hits = await _recall_milvus(query, kb_ids, "dense", fetch_top_k, vector_gate)
-        per_method_hits["dense"] = len(hits)
-        ranked_lists.append(hits)
-    if "sparse" in methods:
-        hits = await _recall_milvus(query, kb_ids, "sparse", fetch_top_k, None)
-        per_method_hits["sparse"] = len(hits)
-        ranked_lists.append(hits)
-    if "fulltext" in methods:
-        hits = await _recall_fulltext(
-            query, kb_ids, fetch_top_k * settings.retrieval_es_top_k_factor, highlight,
-        )
-        per_method_hits["fulltext"] = len(hits)
-        ranked_lists.append(hits)
-    if "graph" in methods:
-        hits = await _recall_graph(query, kb_ids, fetch_top_k)
-        per_method_hits["graph"] = len(hits)
-        ranked_lists.append(hits)
-    get_client().update_current_span(metadata={"per_method_hits": per_method_hits})
+    # ===== 1b. 多意图（≥2 条子查询）：逐子查询召回 → 按子查询 rerank → 各取 top_k → 跨意图合并去重 =====
+    if sub_queries:
+        intent_hits: list[list[dict]] = []
+        for sub in sub_queries:
+            per_sub: list[list[dict]] = []
+            per_sub_hits: dict[str, int] = {}
+            if "dense" in methods:
+                hits = await _recall_milvus(sub, kb_ids, "dense", fetch_top_k, vector_gate)
+                per_sub_hits["dense"] = len(hits)
+                per_sub.append(hits)
+            if "sparse" in methods:
+                hits = await _recall_milvus(sub, kb_ids, "sparse", fetch_top_k, None)
+                per_sub_hits["sparse"] = len(hits)
+                per_sub.append(hits)
+            if "fulltext" in methods:
+                hits = await _recall_fulltext(
+                    sub, kb_ids, fetch_top_k * settings.retrieval_es_top_k_factor, highlight,
+                )
+                per_sub_hits["fulltext"] = len(hits)
+                per_sub.append(hits)
+            if "graph" in methods:
+                hits = await _recall_graph(sub, kb_ids, fetch_top_k)
+                per_sub_hits["graph"] = len(hits)
+                per_sub.append(hits)
 
-    # ===== 2. 单选直返 / 多选 RRF 融合 =====
-    if len(ranked_lists) == 1:
-        all_hits = ranked_lists[0]
-        # 单路召回逐 kb 拼接后需全局按分数降序（fulltext 的 ES 已有序，dense/sparse 跨 kb 需排序）
-        all_hits.sort(key=lambda x: x["score"], reverse=True)
+            if len(per_sub) == 1:
+                sub_hits = per_sub[0]
+                sub_hits.sort(key=lambda x: x["score"], reverse=True)
+            else:
+                sub_hits = _rrf_merge_traced(
+                    per_sub, k=settings.retrieval_rrf_k, method_hits=per_sub_hits
+                )
+
+            if rerank_model_id:
+                candidates = sub_hits[:rerank_top_n]
+                try:
+                    # 多意图按各自子查询判断相关性（跨意图 rerank 分数不可比）
+                    sub_hits = await _apply_rerank(sub, candidates, rerank_model_id)
+                except Exception as e:
+                    logger.warning("rerank 失败，回退原排序: %s", e)
+                sub_hits = [h for h in sub_hits if h["score"] >= similarity_threshold]
+
+            intent_hits.append(sub_hits[:top_k])  # 每个意图各取 top_k
+        all_hits = merge_intent_hits(intent_hits)
+
+    # ===== 1. 各路独立召回（单意图） =====
     else:
-        all_hits = _rrf_merge_traced(
-            ranked_lists, k=settings.retrieval_rrf_k, method_hits=per_method_hits
-        )
+        ranked_lists = []
+        per_method_hits: dict[str, int] = {}
+        if "dense" in methods:
+            hits = await _recall_milvus(query, kb_ids, "dense", fetch_top_k, vector_gate)
+            per_method_hits["dense"] = len(hits)
+            ranked_lists.append(hits)
+        if "sparse" in methods:
+            hits = await _recall_milvus(query, kb_ids, "sparse", fetch_top_k, None)
+            per_method_hits["sparse"] = len(hits)
+            ranked_lists.append(hits)
+        if "fulltext" in methods:
+            hits = await _recall_fulltext(
+                query, kb_ids, fetch_top_k * settings.retrieval_es_top_k_factor, highlight,
+            )
+            per_method_hits["fulltext"] = len(hits)
+            ranked_lists.append(hits)
+        if "graph" in methods:
+            hits = await _recall_graph(query, kb_ids, fetch_top_k)
+            per_method_hits["graph"] = len(hits)
+            ranked_lists.append(hits)
+        get_client().update_current_span(metadata={"per_method_hits": per_method_hits})
 
-    # ===== 3. 可选 rerank（只取前 rerank_top_n 个候选，失败回退原排序；重排用原查询判断相关性） =====
-    if rerank_model_id:
-        candidates = all_hits[:rerank_top_n]
-        try:
-            all_hits = await _apply_rerank(original_query, candidates, rerank_model_id)
-        except Exception as e:
-            logger.warning("rerank 失败，回退原排序: %s", e)
-        # 最终阈值：rerank 成功按 rerank 分数过滤，失败按原分数过滤
-        all_hits = [h for h in all_hits if h["score"] >= similarity_threshold]
+        # ===== 2. 单选直返 / 多选 RRF 融合 =====
+        if len(ranked_lists) == 1:
+            all_hits = ranked_lists[0]
+            # 单路召回逐 kb 拼接后需全局按分数降序（fulltext 的 ES 已有序，dense/sparse 跨 kb 需排序）
+            all_hits.sort(key=lambda x: x["score"], reverse=True)
+        else:
+            all_hits = _rrf_merge_traced(
+                ranked_lists, k=settings.retrieval_rrf_k, method_hits=per_method_hits
+            )
+
+        # ===== 3. 可选 rerank（只取前 rerank_top_n 个候选，失败回退原排序；重排用原查询判断相关性） =====
+        if rerank_model_id:
+            candidates = all_hits[:rerank_top_n]
+            try:
+                all_hits = await _apply_rerank(original_query, candidates, rerank_model_id)
+            except Exception as e:
+                logger.warning("rerank 失败，回退原排序: %s", e)
+            # 最终阈值：rerank 成功按 rerank 分数过滤，失败按原分数过滤
+            all_hits = [h for h in all_hits if h["score"] >= similarity_threshold]
 
     # ===== 4. 查询知识库名称（并发） =====
     kb_names: dict[str, str] = {}
