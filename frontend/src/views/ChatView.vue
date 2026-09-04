@@ -135,7 +135,7 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import { listKnowledgeBases } from '@/api/knowledgeBase'
@@ -205,7 +205,7 @@ async function handleSend() {
 
   // 真实 SSE 流式问答
   streaming.value = true
-  const aiMsg = { role: 'assistant', content: '', sources: [] }
+  const aiMsg = reactive({ role: 'assistant', content: '', sources: [] })
   messages.value.push(aiMsg)
 
   abortController.value = chatStream(kbId.value, text, sessionId.value, {

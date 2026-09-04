@@ -1,5 +1,12 @@
 # 修改记录
 
+## 2026-09-04
+
+- 修复：问答页 SSE 流式 token 实际逐条到达，但界面不逐字刷新，回答在结束时整块突然显示。
+- 根因：`ChatView.vue` 的 `aiMsg` 是 push 进 `messages`（ref 数组）前的**裸对象**——`onToken` 里 `aiMsg.content += token` 直接改响应式代理的 raw target，不触发 Vue 重渲染；仅 `onDone` 置 `streaming=false` 时才整块渲染一次。SSE 链路（后端逐 token yield、nginx `proxy_buffering off`）本身无问题。
+- 改动（前端）：`src/views/ChatView.vue`——`aiMsg` 改用 `reactive({...})` 创建后再 push（`import` 增 `reactive`），`onToken/onSources/onError` 的赋值即走响应式代理触发逐 token 渲染。
+- 验证：以项目本地 vue 包最小复现——裸对象连续 4 次 content 变更渲染计数不变、reactive 对象逐次递增；`npm run build` 通过。
+
 ## 2026-09-03
 
 - 需求：Query 改写需处理**多意图**输入——一次输入含多个独立检索意图时（如"查资质要求，还要保证金比例和评分办法"），改写/检索链路把意图**拆成多条子查询、逐条各自检索**，结果**合并**输出，避免单条混合查询只命中一个主题。方案：`docs/plan/40-multi-intent-query-plan.md`（评审通过：检索页+问答双入口、多意图才拆、按子查询分别 rerank、每意图各取 top_k）。
