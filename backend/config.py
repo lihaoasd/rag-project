@@ -72,7 +72,7 @@ class Settings(BaseSettings):
 
     # === Query 改写 ===
     query_rewrite_enabled: bool = False          # 检索页服务端默认开关（请求未显式传 query_rewrite 时生效；默认关）
-    chat_query_rewrite_enabled: bool = False     # 问答（chat）Query 改写开关（聊天页无前端控件，后端配置；默认关）
+    chat_query_rewrite_enabled: bool = True     # 问答（chat）Query 改写开关（聊天页无前端控件，后端配置；默认关）
 
     # === ES 对账 ===
     es_reconcile_enabled: bool = True           # 每日定时对账开关
