@@ -89,7 +89,7 @@ class TestGetDetectPrompt:
         with patch("core.intent_detect.prompt_service.get_active_prompt",
                    new=AsyncMock(return_value=None)):
             prompt = await detect_prompt_helper("评分办法有哪些", "")
-        assert "问答意图分类器" in prompt
+        assert "意图分类器" in prompt
         assert "评分办法有哪些" in prompt
         assert "{query}" not in prompt
 
@@ -111,7 +111,7 @@ class TestGetDetectPrompt:
         with patch("core.intent_detect.prompt_service.get_active_prompt",
                    new=AsyncMock(side_effect=RuntimeError("db down"))):
             prompt = await detect_prompt_helper("你好", "")
-        assert "问答意图分类器" in prompt
+        assert "意图分类器" in prompt
 
 
 async def detect_prompt_helper(query: str, history_text: str = "") -> str:
@@ -265,8 +265,8 @@ class TestInformationRequestGuard:
             assert await detect_intent("你好", _llm_config()) is False
 
 
-def test_fallback_matches_migration_0020_seed():
-    """内置兜底文案与迁移 0020 seed 完全一致（同源防漂移），且含主题查询防误判规则。"""
+def test_fallback_matches_migration_0021_seed():
+    """内置兜底文案与迁移 0021 seed 完全一致（同源防漂移），且含"放宽检索/仅闲聊为普通聊天"规则。"""
     import importlib.util
     from pathlib import Path
 
@@ -274,12 +274,13 @@ def test_fallback_matches_migration_0020_seed():
 
     path = (
         Path(__file__).resolve().parents[1]
-        / "alembic" / "versions" / "0020_intent_detect_prompt_v2.py"
+        / "alembic" / "versions" / "0021_intent_detect_prompt_scope.py"
     )
-    spec = importlib.util.spec_from_file_location("_migration_0020", path)
+    spec = importlib.util.spec_from_file_location("_migration_0021", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
     assert mod._INTENT_DETECT_PROMPT_V2 == FALLBACK_INTENT_DETECT_PROMPT
-    assert "冠状动脉粥样硬化性心脏病" in FALLBACK_INTENT_DETECT_PROMPT
-    assert "纯社交表达" in FALLBACK_INTENT_DETECT_PROMPT
+    assert "放宽检索" in FALLBACK_INTENT_DETECT_PROMPT
+    assert "日常闲聊" in FALLBACK_INTENT_DETECT_PROMPT
+    assert "专业知识" in FALLBACK_INTENT_DETECT_PROMPT

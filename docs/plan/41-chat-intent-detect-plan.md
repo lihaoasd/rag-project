@@ -29,7 +29,7 @@
 |------|------|
 | `backend/config.py` | Query 改写区新增 `chat_intent_detect_enabled: bool = True` |
 | `backend/.env.example` | 追加 `CHAT_INTENT_DETECT_ENABLED=true` 注释说明 |
-| `backend/core/intent_detect.py`（新增） | `FALLBACK_INTENT_DETECT_PROMPT`、`_build_history_text()`、`_get_detect_prompt()`、`_parse_intent_output()`、`detect_intent() -> bool`（True=需要检索；失败/无法解析一律 True） |
+| `backend/core/intent_detect.py`（新增） | `FALLBACK_INTENT_DETECT_PROMPT`、`_build_history_text()`、`_get_detect_prompt()`、`_parse_intent_output()`、`_is_information_request()`（检索请求前缀守卫）、`detect_intent() -> bool`（True=需要检索；失败/无法解析一律 True） |
 | `backend/services/chat_service.py` | `FALLBACK_CHAT_NORMAL_PROMPT` + `_get_chat_normal_prompt()`；抽公共生成尾 `_generate_llm_answer()`；新增 `_run_chat_normal()`（chain span `chat_normal`，无检索）；`_run_rag` 尾部改用公共生成函数（行为不变）；新增 `_decide_retrieval()` 与 `_run_qa_round()`（trace 根 `chat_qa`：识别 + 分流），`chat_stream` Stage 4 委托 `_run_qa_round` |
 | `backend/alembic/versions/0018_intent_detect_scenarios.py`（新增） | 仿 0017：CHECK 约束追加 `'intent_detect','chat_normal'` + seed 两个默认模板；downgrade 删除并还原约束 |
 | `backend/models/schemas.py` | `PromptCreate.scenario` description 场景列表补 `intent_detect / chat_normal` |
@@ -40,7 +40,7 @@
 
 ## 4. 关键设计
 ### 4.1 `core/intent_detect.py`（新增，模板仿 query_rewrite）
-- `FALLBACK_INTENT_DETECT_PROMPT`：人设"投标文档问答系统问题分类器"；规则 文档事实/指代前文检索问题 → 需要检索；与文档无关寒暄 → 普通聊天；不确定宁可需要检索；只输出"需要检索/普通聊天"；变量 `{history}`（可选，前置提示勿写入结果）+ `{query}`。
+- `FALLBACK_INTENT_DETECT_PROMPT`：判定口径**放宽检索**——任何想获取信息/资料/专业知识（含工程/医疗/法律等任意专业领域、纯主题名词查询，如"查询冠状动脉粥样硬化性心脏病""X 是什么"）→ 需要检索；仅纯日常闲聊（问候/寒暄/感谢/身份闲聊/讲笑话/天气等生活闲聊/情绪附和）→ 普通聊天；拿不准一律需要检索；只输出"需要检索/普通聊天"；变量 `{history}`（可选，前置提示勿写入结果）+ `{query}`。与迁移 0021 seed 逐字一致（防漂移测试）。
 - `_parse_intent_output(text) -> bool | None`：小写化清洗后按关键词判定（"普通聊天/闲聊/寒暄/chat/小talk"→False；"需要检索/检索/文档/retrieval"→True）；输出为 JSON 时读 `intent` 字段；无法判定返回 None。
 - `_get_detect_prompt()`：优先 `prompt_service.get_active_prompt("intent_detect")` 并渲染变量；缺失/DB 异常回退内置常量（仿 query_rewrite）。
 - `detect_intent()`：`@traced_span("intent_detect","generation")`；`create_llm(config)` → `acomplete(prompt)`；None/异常 → warning + 返回 True（安全兜底）；正常则 update_current_span(input/output/model)。
