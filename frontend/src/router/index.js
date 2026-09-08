@@ -51,6 +51,11 @@ const routes = [
     component: () => import('@/views/LexiconView.vue'),
   },
   {
+    path: '/domains',
+    name: 'Domains',
+    component: () => import('@/views/DomainConfigView.vue'),
+  },
+  {
     path: '/es-admin',
     name: 'EsAdmin',
     component: () => import('@/views/EsAdminView.vue'),

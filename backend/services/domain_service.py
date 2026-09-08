@@ -192,7 +192,7 @@ def profile_meta(profile: dict) -> dict:
         "is_preset": profile["is_preset"],
         "entity_types": [
             {"code": code, "name": meta["name"], "color": meta["color"],
-             "description": meta["description"]}
+             "description": meta["description"], "examples": meta.get("examples", [])}
             for code, meta in profile["entity_meta"].items()
         ],
         "relation_types": [

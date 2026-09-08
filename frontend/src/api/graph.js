@@ -8,6 +8,13 @@ export function getGraphStats(kbId) {
 }
 
 /**
+ * 图谱本体 meta（v2 动态）：生效领域模板的类型/颜色/关系清单
+ */
+export function getGraphMeta(kbId) {
+  return apiClient.get(`/knowledge-bases/${kbId}/graph/meta`).then((res) => res.data)
+}
+
+/**
  * 图谱数据（ECharts 渲染，按 degree 降序分页；excludeNames=已加载节点名，增量加载）
  */
 export function getGraphData(kbId, { limit = 150, offset = 0, excludeNames = [] } = {}) {

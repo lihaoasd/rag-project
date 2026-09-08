@@ -36,6 +36,7 @@
           <div class="kb-info">
             <div class="kb-name">{{ kb.name }}</div>
             <div class="kb-meta">{{ kb.document_count || 0 }} 个文档</div>
+            <div class="kb-meta">领域：{{ domainName(kb.domain_profile_id) }}</div>
             <div class="kb-meta">{{ formatDate(kb.created_at) }}</div>
           </div>
         </div>
@@ -91,6 +92,18 @@
             :rows="3"
             placeholder="简要描述该知识库的用途"
           />
+        </el-form-item>
+        <el-form-item label="领域模板" prop="domain_profile_id">
+          <el-select v-model="form.domain_profile_id" style="width: 100%">
+            <el-option label="通用（默认，通用知识本体）" value="" />
+            <el-option
+              v-for="d in domains"
+              :key="d.id"
+              :label="`${d.name}${d.is_preset ? '（内置）' : ''}（${d.entity_count} 实体 / ${d.relation_count} 关系）`"
+              :value="d.id"
+            />
+          </el-select>
+          <div class="form-tip">领域模板决定该知识库图谱可抽取的实体与关系类型，创建后仍可在图谱页更换。</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -152,6 +165,7 @@ import { useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
 import { ElMessage, ElNotification } from 'element-plus'
 import { listKnowledgeBases, createKnowledgeBase, deleteKnowledgeBase } from '@/api/knowledgeBase'
+import { listDomains } from '@/api/domain'
 import { listModels, getKbModels, bindKbModel } from '@/api/model'
 
 const router = useRouter()
@@ -162,13 +176,15 @@ const searchText = ref('')
 const dialogVisible = ref(false)
 const submitting = ref(false)
 const formRef = ref(null)
-const form = ref({ name: '', description: '' })
+const form = ref({ name: '', description: '', domain_profile_id: '' })
 const rules = {
   name: [
     { required: true, message: '请输入知识库名称', trigger: 'blur' },
     { min: 1, max: 255, message: '长度在 1 到 255 个字符', trigger: 'blur' },
   ],
 }
+// 领域模板（创建选域 / 卡片展示名称）
+const domains = ref([])
 
 // --- 模型绑定状态 ---
 const MODEL_TYPES = [
@@ -250,8 +266,21 @@ function formatDate(iso) {
 }
 
 function showCreateDialog() {
-  form.value = { name: '', description: '' }
+  form.value = { name: '', description: '', domain_profile_id: '' }
   dialogVisible.value = true
+}
+
+async function loadDomains() {
+  try {
+    const data = await listDomains()
+    domains.value = data?.items || []
+  } catch { /* 选域降级为默认通用，不阻塞列表 */ }
+}
+
+function domainName(profileId) {
+  if (!profileId) return '通用'
+  const d = domains.value.find((x) => x.id === profileId)
+  return d ? d.name : '通用'
 }
 
 async function loadList() {
@@ -270,7 +299,11 @@ async function handleSubmit() {
 
   submitting.value = true
   try {
-    await createKnowledgeBase(form.value)
+    await createKnowledgeBase({
+      name: form.value.name,
+      description: form.value.description || null,
+      domain_profile_id: form.value.domain_profile_id || null,
+    })
     ElMessage.success('知识库创建成功')
     dialogVisible.value = false
     await loadList()
@@ -296,7 +329,10 @@ function enterKb(id) {
   router.push(`/knowledge-bases/${id}/documents`)
 }
 
-onMounted(() => loadList())
+onMounted(() => {
+  loadList()
+  loadDomains()
+})
 </script>
 
 <style scoped>
@@ -358,6 +394,13 @@ onMounted(() => loadList())
   font-size: 13px;
   color: var(--color-text-secondary);
   line-height: 1.6;
+}
+
+.form-tip {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin-top: 4px;
 }
 
 .kb-card-footer {

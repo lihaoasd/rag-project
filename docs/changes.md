@@ -30,6 +30,13 @@
   - `routers/knowledge_base.py`：创建 KB 显式绑定校验、`GET/PUT /{kb_id}/domain` 换绑（本体变化 → 图谱状态失效）；`routers/graph.py`：`GET /graph/meta` 返回生效模板 meta（画布图例/实体下拉单一来源）；`main.py` 注册 domain 路由；
   - 用例：`test_domain_service.py` 增模板操作 8 例、`test_kb_service.py` 增 KB 删除联动清图 1 例、`helpers.py` MockKB 增 domain_profile_id。
   - 验证：KB/图谱/领域相关 pytest **103 passed**；真实 v2 库服务级冒烟通过（默认绑通用 → 自定义 CRUD → 预设复制/保护 → 换绑投标 → 引用保护 409 → 删除，及预览校验/提示词）。
+- M5 前端（方案 Step 5）：
+  - `services/domain_service.profile_meta` 的实体项补充 examples（编辑器回填/提示词预览用，单一来源）；
+  - 新 `api/domain.js`（模板 CRUD/复制/预览 + KB 领域 GET/PUT）；`api/graph.js` 增 `getGraphMeta`；
+  - 新 `DomainConfigView.vue`：领域模板列表（内置/自定义标识 + 实体/关系数）+ 编辑器（动态增删实体/关系行、颜色选择器、示例/方向提示、实时「校验/预览」面板展示抽取提示词）+ 复制/删除（引用保护透传 409）+ 内置预设只读可复制；路由 `/domains` + 侧边栏菜单「领域模板」；
+  - `KnowledgeBaseView.vue`：创建知识库选领域（省略默认通用）、卡片显示「领域：xx」；
+  - `GraphView.vue`：图谱本体 meta 驱动——图例/节点配色按模板颜色、实体编辑类型下拉为模板 code+中文名（旧常量兜底）、标题展示生效领域并可弹窗更换（换绑后提示图谱状态失效需重建）；
+  - 验证：`npm run build` 通过（含 DomainConfigView chunk）；后端 domain 相关 pytest **27 passed**。
 
 ## 2026-09-08
 

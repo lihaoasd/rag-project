@@ -27,6 +27,15 @@
               </el-button>
             </template>
           </el-input>
+          <el-tag
+            v-if="metaDomain"
+            effect="plain"
+            class="domain-tag"
+            style="cursor: pointer"
+            @click="openDomainDialog"
+          >
+            领域：{{ metaDomain.name }}（{{ metaEntityTypes.length }} 类实体）· 点击更换
+          </el-tag>
           <el-button type="primary" :loading="building" @click="handleBuildKb">
             <el-icon><RefreshRight /></el-icon>
             全量构建
@@ -245,6 +254,43 @@
       </template>
     </el-dialog>
 
+    <!-- 领域模板更换弹窗（v2：本体变化 → 图谱状态失效需重建） -->
+    <el-dialog
+      v-model="domainDialog.visible"
+      title="更换领域模板"
+      width="480px"
+      :close-on-click-modal="false"
+    >
+      <div v-loading="domainDialog.loading">
+        <p class="domain-dialog-tip">
+          更换后图谱将按新本体重新抽取，当前已构建图谱<b>状态会失效</b>（需手动「全量构建」）。
+        </p>
+        <el-form label-position="top">
+          <el-form-item label="目标领域模板">
+            <el-select v-model="domainDialog.target" style="width: 100%" placeholder="选择领域模板">
+              <el-option
+                v-for="d in domainDialog.domains"
+                :key="d.id"
+                :label="`${d.name}${d.is_preset ? '（内置）' : ''}（${d.entity_count} 实体 / ${d.relation_count} 关系）`"
+                :value="d.id"
+              />
+            </el-select>
+          </el-form-item>
+        </el-form>
+      </div>
+      <template #footer>
+        <el-button @click="domainDialog.visible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="domainDialog.saving"
+          :disabled="!domainDialog.target || domainDialog.target === domainDialog.current"
+          @click="saveDomainChange"
+        >
+          确认更换
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 实体编辑弹窗（名称/类型/描述） -->
     <el-dialog
       v-model="editDialog.visible"
@@ -259,7 +305,12 @@
         </el-form-item>
         <el-form-item label="类型" prop="type">
           <el-select v-model="editDialog.form.type" style="width: 100%">
-            <el-option v-for="t in ENTITY_TYPE_OPTIONS" :key="t" :label="t" :value="t" />
+            <el-option
+              v-for="o in entityTypeOptions"
+              :key="o.code"
+              :label="o.label"
+              :value="o.code"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="描述" prop="description">
@@ -302,12 +353,13 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
 import { getKnowledgeBase } from '@/api/knowledgeBase'
-import { getGraphStats, getGraphData, buildKbGraph, clearKbGraph, searchGraph, getEntityDetail, expandGraphNode, listGraphEntities, updateGraphEntity } from '@/api/graph'
+import { getGraphStats, getGraphMeta, getGraphData, buildKbGraph, clearKbGraph, searchGraph, getEntityDetail, expandGraphNode, listGraphEntities, updateGraphEntity } from '@/api/graph'
+import { listDomains, bindKbDomain } from '@/api/domain'
 
 const route = useRoute()
 const router = useRouter()
@@ -315,6 +367,10 @@ const kbId = route.params.kbId
 
 // --- State ---
 const kbName = ref('')
+// v2 领域模板 meta：生效模板类型/颜色驱动图例与类型下拉
+const metaDomain = ref(null)
+const metaEntityTypes = ref([])
+const domainDialog = ref({ visible: false, loading: false, saving: false, domains: [], current: '', target: '' })
 const stats = ref({ graph_exists: false, stats: {}, build: {} })
 const build = ref({ doc_total: 0, built: 0 })
 const graphLoaded = ref(false)
@@ -354,7 +410,7 @@ const ENTITY_TYPE_OPTIONS = ['Organization', 'Person', 'Place', 'Event', 'Time',
 const evidenceDialog = ref({ visible: false, entity: '', items: [] })
 let chart = null
 
-// 类型配色
+// 类型配色（v2：领域模板 meta 颜色优先，以下为内置预设兜底色板）
 const TYPE_COLORS = {
   Organization: '#409EFF',
   Project: '#67C23A',
@@ -370,10 +426,22 @@ const TYPE_COLORS = {
   Location: '#00BFA5',
   Qualification: '#9C27B0',
 }
+const typeColorMap = ref({ ...TYPE_COLORS })
 
 function typeColor(type) {
-  return TYPE_COLORS[type] || '#909399'
+  return typeColorMap.value[type] || '#909399'
 }
+
+// 实体编辑/筛选类型下拉：生效模板 code + 中文名（模板外旧数据不展示为可选项）
+const entityTypeOptions = computed(() => {
+  if (metaEntityTypes.value.length) {
+    return metaEntityTypes.value.map((t) => ({
+      code: t.code,
+      label: `${t.name}（${t.code}）`,
+    }))
+  }
+  return ENTITY_TYPE_OPTIONS.map((c) => ({ code: c, label: c }))
+})
 
 function goBack() {
   if (window.history.length > 1) router.back()
@@ -422,13 +490,15 @@ function renderChart(nodes, edges) {
     if (!chartRef.value) return
     if (!chart) chart = echarts.init(chartRef.value)
 
-    const categories = Object.keys(TYPE_COLORS).map((t) => ({ name: t }))
+    // v2：分类 = 实际节点类型（模板 meta 配色），不再按固定本体映射/Event 兜底
+    const typeSet = [...new Set(nodes.map((n) => n.type))]
+    const categories = typeSet.map((t) => ({ name: t, itemStyle: { color: typeColor(t) } }))
     const nodeData = nodes.map((n) => ({
       id: n.id,
       name: n.name,
       value: n.degree,
       symbolSize: Math.min(12 + n.degree * 1.2, 44),
-      category: TYPE_COLORS[n.type] ? n.type : 'Event',
+      category: n.type,
       itemStyle: {
         color: typeColor(n.type),
         // 已展开过的节点加边框标记（分级浏览）
@@ -485,6 +555,56 @@ function renderChart(nodes, edges) {
 }
 
 // --- 数据加载 ---
+async function loadGraphMeta() {
+  try {
+    const data = await getGraphMeta(kbId)
+    const domain = data?.domain
+    if (domain) {
+      metaDomain.value = domain
+      metaEntityTypes.value = domain.entity_types || []
+      const map = { ...TYPE_COLORS }
+      for (const t of metaEntityTypes.value) {
+        if (t.color) map[t.code] = t.color
+      }
+      typeColorMap.value = map
+    }
+  } catch { /* meta 拉取失败不影响图谱浏览（保留内置配色） */ }
+}
+
+async function openDomainDialog() {
+  domainDialog.value.current = metaDomain.value?.id || ''
+  domainDialog.value.target = domainDialog.value.current
+  domainDialog.value.visible = true
+  domainDialog.value.loading = true
+  try {
+    const data = await listDomains()
+    domainDialog.value.domains = data?.items || []
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '加载失败'
+    ElMessage.error('加载领域模板失败: ' + msg)
+    domainDialog.value.visible = false
+  } finally {
+    domainDialog.value.loading = false
+  }
+}
+
+async function saveDomainChange() {
+  const target = domainDialog.value.target
+  domainDialog.value.saving = true
+  try {
+    await bindKbDomain(kbId, target)
+    domainDialog.value.visible = false
+    await loadGraphMeta()
+    await loadGraph()
+    ElMessage.warning('领域模板已更换，图谱状态已失效——请点击「全量构建」以新本体重建')
+  } catch (err) {
+    const msg = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.error('更换失败: ' + msg)
+  } finally {
+    domainDialog.value.saving = false
+  }
+}
+
 async function loadStats() {
   try {
     const data = await getGraphStats(kbId)
@@ -762,6 +882,7 @@ onMounted(async () => {
     const data = await getKnowledgeBase(kbId)
     kbName.value = data?.name || ''
   } catch { /* ignore */ }
+  await loadGraphMeta()
   await loadGraph()
   await loadEntityList()
   // 从检索页跳转而来：自动检索目标实体

@@ -52,6 +52,12 @@
             <span>词库管理</span>
           </template>
         </el-menu-item>
+        <el-menu-item index="/domains">
+          <template #title>
+            <el-icon><SetUp /></el-icon>
+            <span>领域模板</span>
+          </template>
+        </el-menu-item>
         <el-menu-item index="/es-admin">
           <template #title>
             <el-icon><DataAnalysis /></el-icon>
