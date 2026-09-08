@@ -37,6 +37,9 @@
   - `KnowledgeBaseView.vue`：创建知识库选领域（省略默认通用）、卡片显示「领域：xx」；
   - `GraphView.vue`：图谱本体 meta 驱动——图例/节点配色按模板颜色、实体编辑类型下拉为模板 code+中文名（旧常量兜底）、标题展示生效领域并可弹窗更换（换绑后提示图谱状态失效需重建）；
   - 验证：`npm run build` 通过（含 DomainConfigView chunk）；后端 domain 相关 pytest **27 passed**。
+- M6 收尾与验收（方案 Step 6）：
+  - README 增补 v2 说明（分支/库/回滚路径 + 设计/方案文档指针）；
+  - 验收：后端最终全量 pytest **777 passed**（较 v1 基线 734 净增 43，exit 0）；前端 `npm run build` 通过；真实 Neo4j 写图回归通过——KB 绑『通用』→ 真实建图（正则 Quantity/Time 落库）→ stats 类型 ⊆ 模板 code → 清图/删 KB 联动清理正常。
 
 ## 2026-09-08
 
