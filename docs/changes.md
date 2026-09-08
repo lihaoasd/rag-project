@@ -9,6 +9,12 @@
   - 迁移 `0024_domain_profiles.py`：建表 + KB 加列 + 索引 + 种子（固定 UUID 00000000-…-0001/0002，JSON ensure_ascii=False）；
   - 新增 `repositories/domain_repository.py`：模板 CRUD + count_kb_refs/list_kb_ids_by_profile（删除前引用校验）+ bind_kb（KB 绑定/换绑）。
   - 验证：迁移在 ai_bid_rag_v2 执行 exit 0；冒烟确认 alembic_version=0024、种子（通用 9/12、投标 9/15，UTF-8 精确匹配=2）、knowledge_bases.domain_profile_id 列存在；新模块导入自检通过。
+- M2 模板服务（方案 Step 2）：
+  - `core/domain_presets.py` 种子 ID 上收为常量（GENERIC/BID_PRESET_ID），迁移 0024 改从该模块引入（单一事实源）；
+  - `repositories/domain_repository.py` 补 `get_kb_domain_profile_id`；
+  - 新增 `services/domain_service.py`：模板紧凑结构转换（entity_codes/meta、relation_names/meta）、`validate_profile`（数量/正则/保留标签/去重/颜色校验）、`build_extraction_prompt`（schema 约束提示词由模板生成）、`profile_meta`（前端 meta 视图）、缓存（ensure/refresh/invalidate）+ `get_profile`/`get_profile_for_kb`（未绑定/失效回退内置通用预设，图谱链路永不空）；
+  - 新增 `tests/test_domain_repository.py`（CRUD/引用计数/绑定 16 用例）与 `tests/test_domain_service.py`（校验/提示词/预设完整性 16 用例）。
+  - 验证：pytest 两文件 **32 passed**（5.2s）。
 
 ## 2026-09-08
 

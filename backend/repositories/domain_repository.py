@@ -108,3 +108,8 @@ class DomainRepository:
         await self.session.commit()
         await self.session.refresh(kb)
         return kb
+
+    async def get_kb_domain_profile_id(self, kb_id: str) -> str | None:
+        """取 KB 绑定的模板 id（未绑定返回 None）。"""
+        stmt = select(KnowledgeBase.domain_profile_id).where(KnowledgeBase.id == kb_id)
+        return (await self.session.scalars(stmt)).first()

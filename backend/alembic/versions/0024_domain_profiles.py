@@ -16,16 +16,17 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-from core.domain_presets import BID_PRESET, GENERIC_PRESET
+from core.domain_presets import (
+    BID_PRESET,
+    BID_PRESET_ID,
+    GENERIC_PRESET,
+    GENERIC_PRESET_ID,
+)
 
 revision: str = "0024"
 down_revision: Union[str, None] = "0023"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
-
-# 固定种子 ID（UUID 风格，可读、可被代码回退逻辑引用）
-GENERIC_PRESET_ID = "00000000-0000-4000-8000-000000000001"
-BID_PRESET_ID = "00000000-0000-4000-8000-000000000002"
 
 
 def upgrade() -> None:
