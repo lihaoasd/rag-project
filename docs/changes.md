@@ -49,6 +49,7 @@
   - 处理（用户确认方案 A：仅配置 + 文档，**代码零改动**——索引名本就是配置项 `es_index_name ← ES_INDEX_NAME`）：v2 `backend/.env` 增加 `ES_INDEX_NAME=bid_chunks_v2`；`backend/.env.example` 补 ES 段示例；v1 环境文件不动（保持默认 `bid_chunks`）。
   - 验证：真实 ES 预建 `bid_chunks_v2` 成功；索引清单同时含 `bid_chunks` 与 `bid_chunks_v2`，v1 索引未受影响。
 - 修复 · 领域模板「查看/预览/编辑」点击无效：`openDetail` 在 `await getDomain` 期间 `editor.form` 仍为 null，而对话框（destroy-on-close 重挂载）立即渲染 `v-model="editor.form.xxx"` → 空值解引用报错致弹窗打不开；改为打开时同步初始化 `emptyForm()`，拉取成功后回填。`npm run build` 通过。
+- 简化 · 领域模板列表：原「预览」按钮与「查看」重复（同一只读弹窗），已删除，仅保留 查看/编辑（弹窗底部即校验+提示词预览）、复制、删除。
 
 ## 2026-09-08
 

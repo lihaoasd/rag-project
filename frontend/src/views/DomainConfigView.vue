@@ -33,13 +33,12 @@
       <el-table-column label="关系类型" width="96" align="center">
         <template #default="{ row }">{{ row.relation_count }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="230" align="center">
+      <el-table-column label="操作" width="190" align="center">
         <template #default="{ row }">
           <el-button text type="primary" size="small" @click="row.is_preset ? openView(row) : openEdit(row)">
             {{ row.is_preset ? '查看' : '编辑' }}
           </el-button>
           <el-button text type="success" size="small" @click="handleCopy(row)">复制</el-button>
-          <el-button text type="warning" size="small" @click="openView(row)">预览</el-button>
           <el-button
             v-if="!row.is_preset"
             text
