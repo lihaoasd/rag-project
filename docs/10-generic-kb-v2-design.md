@@ -159,6 +159,8 @@ def validate_relation(profile, name) -> bool
 - 节点 label 拼接用模板 code（白名单 = `profile.entity_codes`，杜绝 Cypher 注入：code 已由 D6 正则约束，拼接安全，沿用现有"标签白名单校验"注释逻辑）。
 - 实体编辑 `update_entity` 的类型下拉校验同模板（§6.3）。
 - `get_graph_stats`/`get_graph_data`/`search_subgraph` 等**不需要**改类型逻辑（按既有属性/标签读），但响应需附带模板元数据供前端渲染（见 3.5）。
+- **读取侧零改动确认（已核对 `graph_service` 源码）**：图谱读取全部按属性值取类型 —— stats 用 `RETURN n.type AS type`、子图/展开/分页用 `n.type`/`type(r)`、节点与边 id 为 `{type}_{name}`/`{source_type}_{source}` 拼接、检索过滤走通用 `(n:Entity)` 标签。因此实体 code 只需满足 D6 正则且库内唯一、稳定，读取路径无需改造。
+- **实现注意（清理 v1 遗留默认值）**：`_build_write_statements` 中 `rel.get("a_type", "Event")` 的兜底默认 "Event" 是 v1 写法；动态化后应改为"端点类型缺失即丢弃该关系"（上游 §3.3 端点过滤已保证两端存在，此兜底不再需要默认类型）。
 
 ### 3.5 图谱元数据接口（前端动态渲染的单一来源）
 
