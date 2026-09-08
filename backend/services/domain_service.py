@@ -57,6 +57,8 @@ def _to_profile_data(profile: DomainProfile) -> dict:
         "id": profile.id,
         "name": profile.name,
         "is_preset": profile.is_preset,
+        "entity_types": profile.entity_types or [],        # 原始有序清单（提示词生成用）
+        "relation_types": profile.relation_types or [],    # 原始有序清单（提示词生成用）
         "entity_codes": set(entity_meta.keys()),
         "entity_meta": entity_meta,
         "relation_names": set(relation_meta.keys()),
@@ -81,11 +83,18 @@ def _preset_data(preset: dict, preset_id: str) -> dict:
         "id": preset_id,
         "name": preset["name"],
         "is_preset": True,
+        "entity_types": preset["entity_types"],            # 原始有序清单（提示词生成用）
+        "relation_types": preset["relation_types"],        # 原始有序清单（提示词生成用）
         "entity_codes": set(entity_meta.keys()),
         "entity_meta": entity_meta,
         "relation_names": set(relation_meta.keys()),
         "relation_meta": relation_meta,
     }
+
+
+def default_profile() -> dict:
+    """内置通用预设兜底数据（图谱链路缺省/异常时使用）。"""
+    return _generic_fallback()
 
 
 def validate_profile(name: str, entity_types: list[dict], relation_types: list[dict]) -> list[str]:

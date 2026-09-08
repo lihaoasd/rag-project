@@ -13,6 +13,19 @@ def _enable_graph():
     return patch.object(graph_service.settings, "graph_enabled", True)
 
 
+@pytest.fixture(autouse=True)
+def _mock_domain_profile():
+    """v2：build_file_graph / update_entity 按 KB 解析领域模板 —— 单测固定回退内置通用预设。"""
+    from services import domain_service
+
+    with patch(
+        "services.graph_service.domain_service.get_profile_for_kb",
+        new_callable=AsyncMock,
+        return_value=domain_service.default_profile(),
+    ):
+        yield
+
+
 class TestBuildWriteStatements:
     def test_entities_and_relations(self):
         entities = [
@@ -23,7 +36,10 @@ class TestBuildWriteStatements:
             {"source": "甲公司", "target": "XX项目", "type": "参与",
              "a_type": "Organization", "b_type": "Project", "description": ""},
         ]
-        stmts = graph_service._build_write_statements(KB_ID, DOC_ID, "test.pdf", entities, relationships)
+        stmts = graph_service._build_write_statements(
+            KB_ID, DOC_ID, "test.pdf", entities, relationships,
+            entity_codes={"Organization", "Project"}, valid_relations={"参与"},
+        )
         # 实体 MERGE ×2 + 提及 ×2 + 关系 ×1 + Document 锚点 ×1 = 6
         assert len(stmts) == 6
         cyphers = [c for c, _ in stmts]
@@ -36,12 +52,15 @@ class TestBuildWriteStatements:
         entities = [
             {"name": "未知", "type": "Hacker", "description": "", "chunk_ids": ["c1"]},
         ]
-        stmts = graph_service._build_write_statements(KB_ID, DOC_ID, "f.pdf", entities, [])
-        # 非法类型实体跳过：仅 Document 锚点
+        stmts = graph_service._build_write_statements(
+            KB_ID, DOC_ID, "f.pdf", entities, [],
+            entity_codes={"Organization"}, valid_relations=set(),
+        )
+        # 模板外类型实体跳过：仅 Document 锚点
         assert len(stmts) == 1
 
     def test_illegal_relation_type_skipped(self):
-        """通用化：旧投标关系类型（中标/招标/分包等）已不在白名单，应被丢弃。"""
+        """实体在模板内但关系类型不在模板（如投标"中标"对通用模板）→ 关系丢弃。"""
         entities = [
             {"name": "甲公司", "type": "Organization", "description": "", "chunk_ids": ["c1"]},
             {"name": "乙公司", "type": "Organization", "description": "", "chunk_ids": ["c1"]},
@@ -50,9 +69,28 @@ class TestBuildWriteStatements:
             {"source": "甲公司", "target": "乙公司", "type": "中标",
              "a_type": "Organization", "b_type": "Organization", "description": ""},
         ]
-        stmts = graph_service._build_write_statements(KB_ID, DOC_ID, "f.pdf", entities, relationships)
+        stmts = graph_service._build_write_statements(
+            KB_ID, DOC_ID, "f.pdf", entities, relationships,
+            entity_codes={"Organization"}, valid_relations={"参与"},
+        )
         # 2 实体 + 2 提及 + 0 关系 + 1 锚点 = 5
         assert len(stmts) == 5
+
+    def test_relation_missing_endpoint_type_skipped(self):
+        """v1 遗留回归：端点类型缺失不再默认补 "Event"，直接丢弃（端点存在性保证）。"""
+        entities = [
+            {"name": "甲公司", "type": "Organization", "description": "", "chunk_ids": ["c1"]},
+            {"name": "乙公司", "type": "Organization", "description": "", "chunk_ids": ["c1"]},
+        ]
+        relationships = [
+            {"source": "甲公司", "target": "乙公司", "type": "参与",
+             "a_type": "Organization", "description": ""},  # b_type 缺失
+        ]
+        stmts = graph_service._build_write_statements(
+            KB_ID, DOC_ID, "f.pdf", entities, relationships,
+            entity_codes={"Organization"}, valid_relations={"参与"},
+        )
+        assert len(stmts) == 5  # 关系语句被丢弃
 
 
 class TestBuildFileGraph:

@@ -1,15 +1,16 @@
 """
-实体/关系抽取管线 — 词库/规则优先 + LLM 补充 + 合并去重。
+实体/关系抽取管线 — 词库/规则优先 + LLM 补充 + 合并去重（v2 领域模板动态化）。
 
-流程（设计文档 §5.1）：
-1. 词库匹配（lexicon_service.match_entities，零成本）→ 高频实体
-2. 内置正则（金额/日期）→ 确定性实体
-3. LLM 逐 chunk 补充（graph_extraction_batch 默认 1，每 chunk 一次调用，减少跨 chunk 幻觉）→ 长尾实体 + 关系
-4. 合并去重：全半角/空白归一化，同 (type, name) 合并来源 chunk_ids
+流程（设计 docs/10 §3 / docs/09 §5.1）：
+1. 词库匹配（lexicon_service.match_entities，零成本）→ 高频实体，类型须在该 KB 领域模板内
+2. 内置正则（金额/日期，模板含 Quantity/Time 才启用）→ 确定性实体
+3. LLM 逐 chunk 补充（提示词由领域模板生成，schema 约束）→ 长尾实体 + 关系
+4. 合并去重：全半角/空白归一化，同 (type, name) 合并来源 chunk_ids；
+   关系端点/类型按模板过滤（端点不在实体集合丢弃；类型不在模板关系清单丢弃）
 
 返回结构：
     entities:      [{name, type, description, chunk_ids}]
-    relationships: [{source, target, type, description, chunk_ids}]
+    relationships: [{source, target, type, description, chunk_ids, a_type, b_type}]
 """
 import json
 import re
@@ -20,60 +21,19 @@ from langfuse import get_client
 from config import settings
 from core.model_factory import create_llm, resolve_model_config
 from core.observability import extract_usage, traced_span
-from core.prompt_renderer import render_prompt
 from models.graph_schemas import ExtractionOutput
-from services import lexicon_service, prompt_service
+from services import domain_service, lexicon_service
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# LLM 实体类型枚举 → 图谱节点标签（通用本体，9 类，docs/09 §3.1）
-ENTITY_TYPE_LABEL_MAP = {
-    "ORGANIZATION": "Organization",
-    "PERSON": "Person",
-    "PLACE": "Place",
-    "EVENT": "Event",
-    "TIME": "Time",
-    "PROJECT": "Project",
-    "PRODUCT": "Product",
-    "QUANTITY": "Quantity",
-    "CONCEPT": "Concept",
-}
-
-# 内置正则：数量（金额/日期等，第二层匹配，确定性实体不依赖 LLM）
+# 内置正则：数量（金额等，第二层匹配，确定性实体不依赖 LLM）
 _MONEY_RE = re.compile(
     r"(?:约|共计|合计|为|人民币|RMB)?\s*([\d,，.]+)\s*(万元|亿元|元|美元|欧元|港元|万|亿|吨|kg|公斤|千米|公里|m|平方米|个|人|年|月|天)"
 )
 _DATE_RE = re.compile(
     r"(\d{4})\s*[年./-]\s*(\d{1,2})\s*[月./-]\s*(\d{1,2})\s*日?"
 )
-
-# 实体抽取系统提示词内置兜底（优先使用提示词管理 entity_extraction 激活模板，见 _get_extraction_prompt）
-FALLBACK_ENTITY_EXTRACTION_PROMPT = """你是通用信息抽取系统。从文本中提取实体和关系，只提取明确提及的信息，不要编造。
-实体 name 必须与原文完全一致（禁止改写、合并或规范化），同一实体在原文中重复出现只需输出一次。
-
-实体类型:
-ORGANIZATION(组织/机构/公司/团体), PERSON(人物), PLACE(地点/地理位置), EVENT(事件/活动),
-TIME(时间点/日期), PROJECT(项目/工程/任务), PRODUCT(产品/物品/资产/系统),
-QUANTITY(数量/金额/度量值,必须含单位,如 3000万元/50吨/2年), CONCEPT(概念/资质/标准/技能/制度/条款)
-
-关系类型(方向见括号,源类型|目标类型):
-(Person|Organization)-[属于]->(Organization)
-(Organization|Project|Event|Product)-[位于]->(Place)
-(Event|Project)-[发生在]->(Time|Place)
-(Person|Organization)-[参与]->(Event|Project)
-(Person|Organization)-[负责]->(Project|Product|Event)
-(Organization|Person)-[合作]->(Organization|Person)
-(任意业务实体)-[关联]->(任意业务实体)   ← 语义不明确的通用关系用此类型
-(Project|Event|Product|Organization)-[包含]->(Project|Event|Product|Concept|Person)
-(Project|Product)-[要求]->(Concept|Product|Person)
-(Organization|Person)-[拥有]->(Product|Concept)
-(Project|Event|Product|Organization)-[数量]->(Quantity)
-(Project|Event|Document)-[日期]->(Time)
-
-输出严格 JSON（不要其他文字，不要 markdown 代码块）:
-{"entities":[{"name":"...","type":"ORGANIZATION","description":"..."}],
- "relationships":[{"source":"...","target":"...","type":"属于","description":"..."}]}"""
 
 
 def _normalize_name(name: str) -> str:
@@ -82,7 +42,7 @@ def _normalize_name(name: str) -> str:
 
 
 def _regex_match_entities(text: str) -> list[dict]:
-    """内置正则匹配数量/时间实体（Quantity/Time）。"""
+    """内置正则匹配数量/时间实体（Quantity/Time code）。"""
     entities: list[dict] = []
     for m in _MONEY_RE.finditer(text):
         amount, unit = m.group(1), m.group(2)
@@ -93,6 +53,13 @@ def _regex_match_entities(text: str) -> list[dict]:
         name = f"{m.group(1)}年{m.group(2)}月{m.group(3)}日"
         entities.append({"name": name, "type": "Time", "description": "时间"})
     return entities
+
+
+def _profile_or_default(profile: dict | None) -> dict:
+    """None/缺字段 → 内置通用预设兜底（保证链路可用且可生成提示词）。"""
+    if profile and profile.get("entity_types") is not None and profile.get("relation_types") is not None:
+        return profile
+    return domain_service.default_profile()
 
 
 def _merge_with_lexicon(name: str, label: str) -> str:
@@ -155,21 +122,11 @@ def _parse_llm_output(text: str) -> ExtractionOutput | None:
         return None
 
 
-async def _get_extraction_prompt() -> str:
-    """获取实体抽取系统提示词：优先提示词管理 entity_extraction 激活模板，缺失/异常用内置 fallback。"""
-    try:
-        active = await prompt_service.get_active_prompt("entity_extraction")
-        if active:
-            variable_defs = active.get("variables") or []
-            return render_prompt(active["system_prompt"], {}, variable_defs)
-    except Exception as e:
-        logger.warning("获取实体抽取提示词失败，使用内置默认值: %s", e)
-    return FALLBACK_ENTITY_EXTRACTION_PROMPT
-
-
 @traced_span("entity_extract_llm", "generation")
-async def _llm_extract_batch(kb_id: str, batch_chunks: list[dict]) -> ExtractionOutput | None:
-    """对一批 chunk 调用 LLM 抽取实体/关系。失败重试 1 次。
+async def _llm_extract_batch(
+    kb_id: str, batch_chunks: list[dict], profile: dict | None = None
+) -> ExtractionOutput | None:
+    """对一批 chunk 调用 LLM 抽取实体/关系（提示词由领域模板生成）。失败重试 1 次。
 
     每次实际 LLM 调用记录为 langfuse generation（model/input/output/usage）；
     两次尝试均失败/输出解析失败时补记 ERROR 级。
@@ -182,7 +139,8 @@ async def _llm_extract_batch(kb_id: str, batch_chunks: list[dict]) -> Extraction
     # 过长截断，防止超上下文（单次抽取输入上限）
     user_text = user_text[:8000]
 
-    system_prompt = await _get_extraction_prompt()
+    p = _profile_or_default(profile)
+    system_prompt = domain_service.build_extraction_prompt(p["entity_types"], p["relation_types"])
     messages = [
         ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=user_text),
@@ -213,12 +171,15 @@ async def _llm_extract_batch(kb_id: str, batch_chunks: list[dict]) -> Extraction
 
 
 @traced_span("entity_extraction", "chain")
-async def extract_from_chunks(kb_id: str, chunks: list[dict]) -> dict:
+async def extract_from_chunks(
+    kb_id: str, chunks: list[dict], profile: dict | None = None
+) -> dict:
     """对文档切片执行完整抽取管线（每份文档一条 chain，批次 LLM 调用为其子 generation）。
 
     Args:
         kb_id: 知识库 ID（用于解析 LLM 配置）
         chunks: [{"id": chunk_id, "text": 文本}]（已过滤短 chunk）
+        profile: 领域模板紧凑结构（domain_service.get_profile_for_kb 产物）；None → 通用预设兜底
 
     Returns:
         {
@@ -228,6 +189,10 @@ async def extract_from_chunks(kb_id: str, chunks: list[dict]) -> dict:
     """
     await lexicon_service.ensure_cache()
     get_client().update_current_span(input={"kb_id": kb_id, "chunk_count": len(chunks)})
+
+    p = _profile_or_default(profile)
+    entity_codes = p["entity_codes"]
+    relation_names = p["relation_names"]
 
     # 实体合并桶：key=(type, name) → {name, type, description, chunk_ids}
     entity_bucket: dict[tuple[str, str], dict] = {}
@@ -262,7 +227,7 @@ async def extract_from_chunks(kb_id: str, chunks: list[dict]) -> dict:
         if description and not bucket["description"]:
             bucket["description"] = description
 
-    # ---------- 1/2. 词库 + 正则匹配（逐 chunk） ----------
+    # ---------- 1/2. 词库 + 正则匹配（逐 chunk，类型须在模板内） ----------
     llm_batch: list[dict] = []
     llm_batch_chunk_ids: list[str] = []
     batch_size = settings.graph_extraction_batch or 4
@@ -271,12 +236,14 @@ async def extract_from_chunks(kb_id: str, chunks: list[dict]) -> dict:
         chunk_id = chunk["id"]
         text = chunk["text"]
 
-        # 词库实体
+        # 词库实体（v2：词条映射类型不在模板 → 跳过，防跨领域污染）
         for ent in lexicon_service.match_entities(text):
-            _add_entity(ent["name"], ent["type"], "", chunk_id)
-        # 正则实体（金额/日期）
+            if ent["type"] in entity_codes:
+                _add_entity(ent["name"], ent["type"], "", chunk_id)
+        # 正则实体（v2：模板含 Quantity/Time 类型才进图）
         for ent in _regex_match_entities(text):
-            _add_entity(ent["name"], ent["type"], ent.get("description", ""), chunk_id)
+            if ent["type"] in entity_codes:
+                _add_entity(ent["name"], ent["type"], ent.get("description", ""), chunk_id)
 
         # 收集 LLM 批量输入
         llm_batch.append({"index": idx, "text": text})
@@ -284,35 +251,41 @@ async def extract_from_chunks(kb_id: str, chunks: list[dict]) -> dict:
 
         # 达到批量大小即触发 LLM 抽取
         if len(llm_batch) >= batch_size:
-            output = await _llm_extract_batch(kb_id, llm_batch)
+            output = await _llm_extract_batch(kb_id, llm_batch, p)
             if output is not None:
                 for e in output.entities:
-                    label = ENTITY_TYPE_LABEL_MAP.get(e.type)
-                    if not label:
+                    if e.type not in entity_codes:
+                        logger.debug("LLM 实体类型不在模板已跳过: %s", e.type)
                         continue
                     # chunk 归属用原文名定位，节点名再词库归并（避免归并后标准词不在原文中）
                     hit_ids = _assign_chunk_ids(e.name, llm_batch, llm_batch_chunk_ids)
-                    name = _merge_with_lexicon(e.name, label)
+                    name = _merge_with_lexicon(e.name, e.type)
                     for cid in hit_ids:
-                        _add_entity(name, label, e.description, cid)
+                        _add_entity(name, e.type, e.description, cid)
                 for r in output.relationships:
+                    if r.type not in relation_names:
+                        logger.debug("LLM 关系类型不在模板已跳过: %s", r.type)
+                        continue
                     for cid in llm_batch_chunk_ids:
                         _add_relation(r.source, r.target, r.type, r.description, cid)
             llm_batch, llm_batch_chunk_ids = [], []
 
     # 剩余不足一批的 chunk
     if llm_batch:
-        output = await _llm_extract_batch(kb_id, llm_batch)
+        output = await _llm_extract_batch(kb_id, llm_batch, p)
         if output is not None:
             for e in output.entities:
-                label = ENTITY_TYPE_LABEL_MAP.get(e.type)
-                if not label:
+                if e.type not in entity_codes:
+                    logger.debug("LLM 实体类型不在模板已跳过: %s", e.type)
                     continue
                 hit_ids = _assign_chunk_ids(e.name, llm_batch, llm_batch_chunk_ids)
-                name = _merge_with_lexicon(e.name, label)
+                name = _merge_with_lexicon(e.name, e.type)
                 for cid in hit_ids:
-                    _add_entity(name, label, e.description, cid)
+                    _add_entity(name, e.type, e.description, cid)
             for r in output.relationships:
+                if r.type not in relation_names:
+                    logger.debug("LLM 关系类型不在模板已跳过: %s", r.type)
+                    continue
                 for cid in llm_batch_chunk_ids:
                     _add_relation(r.source, r.target, r.type, r.description, cid)
 
@@ -334,8 +307,7 @@ async def extract_from_chunks(kb_id: str, chunks: list[dict]) -> dict:
         logger.debug("关系端点缺失已丢弃: %d 条", dropped)
 
     logger.info(
-        "抽取完成: entities=%d, relationships=%d",
-        len(entity_bucket), len(relationships),
+        "抽取完成: entities=%d, relationships=%d", len(entity_bucket), len(relationships),
     )
     return {
         "entities": list(entity_bucket.values()),

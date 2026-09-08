@@ -15,6 +15,13 @@
   - 新增 `services/domain_service.py`：模板紧凑结构转换（entity_codes/meta、relation_names/meta）、`validate_profile`（数量/正则/保留标签/去重/颜色校验）、`build_extraction_prompt`（schema 约束提示词由模板生成）、`profile_meta`（前端 meta 视图）、缓存（ensure/refresh/invalidate）+ `get_profile`/`get_profile_for_kb`（未绑定/失效回退内置通用预设，图谱链路永不空）；
   - 新增 `tests/test_domain_repository.py`（CRUD/引用计数/绑定 16 用例）与 `tests/test_domain_service.py`（校验/提示词/预设完整性 16 用例）。
   - 验证：pytest 两文件 **32 passed**（5.2s）。
+- M3 抽取与写图动态化（方案 Step 3）：
+  - `models/graph_schemas.py`：`ExtractedEntity.type` 由固定 Literal 改为 `str`——类型合法性移到抽取层按领域模板动态校验（模板 code 创建时已过正则/保留标签校验，无注入面）；
+  - `core/graph_extractor.py`：删除 `ENTITY_TYPE_LABEL_MAP`/`FALLBACK_ENTITY_EXTRACTION_PROMPT`/DB `entity_extraction` 模板读取；提示词改由模板原始清单实时生成（`build_extraction_prompt`）；词库/正则/LLM 三类实体均按模板 code 白名单过滤，关系按模板关系名过滤（类型过滤前置于入桶，防跨领域污染）；`extract_from_chunks(kb_id, chunks, profile=None)`，None → 通用预设兜底；
+  - `services/domain_service.py`：模板紧凑结构携带原始有序清单（`entity_types`/`relation_types`，供提示词生成）；新增公开 `default_profile()`；
+  - `services/graph_service.py`：删除模块级 `RELATION_TYPES`/`_ENTITY_LABELS` 常量；`_build_write_statements` 增参 `entity_codes`/`valid_relations`（按 KB 模板校验）；关系端点类型缺失不再默认补 `"Event"`（v1 遗留，缺失即丢弃）；`build_file_graph`/`update_entity` 经 `domain_service.get_profile_for_kb(kb_id)` 动态解析模板；
+  - 用例重构：`test_graph_extractor.py`（提示词来源改为模板断言 + 模板外类型丢弃新用例）、`test_graph_service.py`（写语句参数化 + 端点类型缺失回归）、`conftest.py` 增补 `services.domain_service.async_session` mock。
+  - 验证：图谱相关 4 文件 pytest **42 passed**（3.3s）；`main` 全应用导入通过。
 
 ## 2026-09-08
 

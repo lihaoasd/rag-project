@@ -1,13 +1,16 @@
 """
 图谱抽取管线单元测试 — 正则 / JSON 解析 / 合并去重 / 管线编排（mock LLM 与词库）。
+
+v2：抽取提示词由领域模板生成、LLM 输出类型/关系按模板过滤（docs/10 §3.2/§3.3）。
 """
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from core import graph_extractor
+from core.domain_presets import GENERIC_PRESET
 from models.graph_schemas import ExtractionOutput
-from services import lexicon_service
+from services import domain_service, lexicon_service
 from tests.helpers import KB_ID
 
 
@@ -46,7 +49,7 @@ class TestRegexMatchEntities:
 
 class TestParseLLMOutput:
     def test_plain_json(self):
-        raw = '{"entities": [{"name": "甲公司", "type": "ORGANIZATION"}], "relationships": []}'
+        raw = '{"entities": [{"name": "甲公司", "type": "Organization"}], "relationships": []}'
         out = graph_extractor._parse_llm_output(raw)
         assert out is not None
         assert out.entities[0].name == "甲公司"
@@ -123,8 +126,8 @@ class TestMergeWithLexicon:
             lexicon_service._cache = None
 
 
-class TestExtractionPromptLoading:
-    """实体抽取提示词：提示词管理激活模板优先，缺失/异常回退内置 fallback。"""
+class TestExtractionPromptFromProfile:
+    """实体抽取提示词由领域模板生成；None → 内置通用预设兜底。"""
 
     @staticmethod
     def _mock_llm_with_output():
@@ -136,61 +139,53 @@ class TestExtractionPromptLoading:
         return llm
 
     @staticmethod
-    def _patched_env(llm, active_result):
+    def _patched_env(llm):
         patches = [
             patch("core.graph_extractor.resolve_model_config",
                   new_callable=AsyncMock, return_value={"model": "mock"}),
             patch("core.graph_extractor.create_llm", return_value=llm),
-            patch("core.graph_extractor.prompt_service.get_active_prompt",
-                  new_callable=AsyncMock, return_value=active_result),
         ]
         for p in patches:
             p.start()
         return patches
 
     @pytest.mark.asyncio
-    async def test_uses_active_template(self):
+    async def test_default_uses_generic_preset_prompt(self):
         llm = self._mock_llm_with_output()
-        patches = self._patched_env(llm, {"system_prompt": "自定义抽取提示词模板", "variables": None})
+        patches = self._patched_env(llm)
         try:
             await graph_extractor._llm_extract_batch(KB_ID, [{"text": "测试文本"}])
         finally:
             for p in patches:
                 p.stop()
         args, _ = llm.achat.await_args
-        assert args[0][0].content == "自定义抽取提示词模板"
+        expected = domain_service.build_extraction_prompt(
+            GENERIC_PRESET["entity_types"], GENERIC_PRESET["relation_types"]
+        )
+        assert args[0][0].content == expected
+        assert "Organization(组织/机构)" in args[0][0].content
 
     @pytest.mark.asyncio
-    async def test_fallback_when_no_active(self):
+    async def test_custom_profile_prompt(self):
         llm = self._mock_llm_with_output()
-        patches = self._patched_env(llm, None)
+        patches = self._patched_env(llm)
+        custom = {
+            "name": "医疗",
+            "entity_types": [{"code": "Disease", "name": "疾病", "color": "#F00",
+                              "description": "疾病名", "examples": ["高血压"]}],
+            "relation_types": [{"name": "治疗", "description": "治疗关系",
+                                "direction_hint": "Organization→Disease"}],
+        }
+        profile = domain_service._preset_data(custom, "custom-id")
         try:
-            await graph_extractor._llm_extract_batch(KB_ID, [{"text": "测试文本"}])
+            await graph_extractor._llm_extract_batch(KB_ID, [{"text": "x"}], profile)
         finally:
             for p in patches:
                 p.stop()
         args, _ = llm.achat.await_args
-        assert args[0][0].content == graph_extractor.FALLBACK_ENTITY_EXTRACTION_PROMPT
-
-    @pytest.mark.asyncio
-    async def test_fallback_on_error(self):
-        llm = self._mock_llm_with_output()
-        patches = [
-            patch("core.graph_extractor.resolve_model_config",
-                  new_callable=AsyncMock, return_value={"model": "mock"}),
-            patch("core.graph_extractor.create_llm", return_value=llm),
-            patch("core.graph_extractor.prompt_service.get_active_prompt",
-                  new_callable=AsyncMock, side_effect=RuntimeError("db down")),
-        ]
-        for p in patches:
-            p.start()
-        try:
-            await graph_extractor._llm_extract_batch(KB_ID, [{"text": "测试文本"}])
-        finally:
-            for p in patches:
-                p.stop()
-        args, _ = llm.achat.await_args
-        assert args[0][0].content == graph_extractor.FALLBACK_ENTITY_EXTRACTION_PROMPT
+        assert "Disease(疾病)" in args[0][0].content
+        assert "治疗（Organization→Disease）" in args[0][0].content
+        assert "中标" not in args[0][0].content
 
 
 class TestExtractFromChunks:
@@ -203,7 +198,7 @@ class TestExtractFromChunks:
         }
         llm_output = ExtractionOutput(
             entities=[
-                {"name": "XX道路改造工程", "type": "PROJECT", "description": "项目"},
+                {"name": "XX道路改造工程", "type": "Project", "description": "项目"},
             ],
             relationships=[
                 {"source": "甲公司", "target": "XX道路改造工程", "type": "参与"},
@@ -230,7 +225,7 @@ class TestExtractFromChunks:
         assert "甲公司" in names
         assert "XX道路改造工程" in names
         assert any("3000" in n for n in names)
-        # 通用实体类型映射：PROJECT→Project、正则金额→Quantity、词库→Organization
+        # 通用预设类型：Project/Quantity（正则）/Organization（词库）
         proj = next(e for e in result["entities"] if e["name"] == "XX道路改造工程")
         assert proj["type"] == "Project"
         qty = next(e for e in result["entities"] if "3000" in e["name"])
@@ -239,12 +234,44 @@ class TestExtractFromChunks:
         assert org["type"] == "Organization"
         # other 分类不进图
         assert "招标文件" not in names
-        # 关系保留（端点均在实体集合，通用类型白名单内）
+        # 关系保留（端点均在实体集合，类型在通用模板关系清单内）
         assert len(result["relationships"]) == 1
         assert result["relationships"][0]["type"] == "参与"
         # chunk 归属（G-06 证据前提）：LLM 实体回原文定位到 c1
         llm_ent = next(e for e in result["entities"] if e["name"] == "XX道路改造工程")
         assert llm_ent["chunk_ids"] == ["c1"]
+
+    @pytest.mark.asyncio
+    async def test_out_of_profile_types_dropped(self, mock_async_session, mock_session):
+        """模板外的实体类型 / 关系类型被丢弃（跨领域防污染）。"""
+        lexicon_service._cache = {}
+        llm_output = ExtractionOutput(
+            entities=[
+                {"name": "甲公司", "type": "Organization", "description": ""},
+                {"name": "XX道路改造工程", "type": "Project", "description": ""},
+                {"name": "建筑一级资质", "type": "Qualification", "description": ""},  # 通用预设无此类型
+            ],
+            relationships=[
+                {"source": "甲公司", "target": "XX道路改造工程", "type": "参与"},   # 通用模板有
+                {"source": "甲公司", "target": "XX道路改造工程", "type": "中标"},   # 投标专用，通用模板无
+            ],
+        )
+        chunks = [{"id": "c1", "text": "甲公司中标 XX道路改造工程，具备建筑一级资质。"}]
+        try:
+            with patch(
+                "core.graph_extractor._llm_extract_batch",
+                new_callable=AsyncMock,
+                return_value=llm_output,
+            ) as mock_llm:
+                result = await graph_extractor.extract_from_chunks(KB_ID, chunks)
+        finally:
+            lexicon_service._cache = None
+
+        assert mock_llm.called
+        types = {e["type"] for e in result["entities"]}
+        assert types == {"Organization", "Project"}  # Qualification 不在通用预设 → 丢弃
+        # 中标 不在通用模板关系清单 → 丢弃；参与 端点齐全且类型在模板 → 保留
+        assert {r["type"] for r in result["relationships"]} == {"参与"}
 
     @pytest.mark.asyncio
     async def test_short_chunks_skipped_by_caller(self, mock_async_session, mock_session):
@@ -267,9 +294,9 @@ class TestExtractFromChunks:
             {"id": "c3", "text": "丙公司参与 ZZ活动。"},
         ]
         outputs = [
-            ExtractionOutput(entities=[{"name": "甲公司", "type": "ORGANIZATION"}], relationships=[]),
-            ExtractionOutput(entities=[{"name": "乙公司", "type": "ORGANIZATION"}], relationships=[]),
-            ExtractionOutput(entities=[{"name": "丙公司", "type": "ORGANIZATION"}], relationships=[]),
+            ExtractionOutput(entities=[{"name": "甲公司", "type": "Organization"}], relationships=[]),
+            ExtractionOutput(entities=[{"name": "乙公司", "type": "Organization"}], relationships=[]),
+            ExtractionOutput(entities=[{"name": "丙公司", "type": "Organization"}], relationships=[]),
         ]
         original_batch = graph_extractor.settings.graph_extraction_batch
         graph_extractor.settings.graph_extraction_batch = 1
@@ -304,8 +331,6 @@ class TestExtractionLangfuseRecording:
             patch("core.graph_extractor.resolve_model_config",
                   new_callable=AsyncMock, return_value={"model": "mock-model"}),
             patch("core.graph_extractor.create_llm", return_value=llm),
-            patch("core.graph_extractor.prompt_service.get_active_prompt",
-                  new_callable=AsyncMock, return_value=None),
         ]
 
     def _start(self, patches):

@@ -15,23 +15,18 @@ import time
 
 from config import settings
 from core.database import async_session
-from core.graph_extractor import ENTITY_TYPE_LABEL_MAP, _regex_match_entities, extract_from_chunks
+from core.graph_extractor import extract_from_chunks
 from core.neo4j_store import GraphDisabledError, Neo4jStore
 from core import graph_queue
 from repositories.document_repository import DocumentRepository
-from services import lexicon_service
+from services import domain_service
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# 业务关系类型白名单（通用本体 12 种，docs/09 §5.3；白名单外关系丢弃）
-RELATION_TYPES = {
-    "属于", "位于", "发生在", "参与", "负责", "合作",
-    "关联", "包含", "要求", "拥有", "数量", "日期",
-}
-
-# 实体类型标签白名单（写图标签拼接用）
-_ENTITY_LABELS = set(ENTITY_TYPE_LABEL_MAP.values())
+# 实体 code / 关系名白名单不再为模块常量（v2 领域模板动态化，docs/10 §3.4）：
+# 写图时由调用方按 KB 绑定模板传入 entity_codes / relation_names
+# （模板创建时已过 code 正则校验，无 Cypher 注入面）。
 
 
 class EntityConflictError(Exception):
@@ -54,19 +49,21 @@ def _build_write_statements(
     file_name: str,
     entities: list[dict],
     relationships: list[dict],
+    entity_codes: set[str],
+    valid_relations: set[str],
 ) -> list[tuple[str, dict]]:
     """构造单文件图谱写入的 Cypher 语句列表（一个事务执行）。
 
-    - 实体节点：键 = (kb_id, name, type 属性)；合并 mentioned_chunk_ids
-    - 业务关系：两端已存在时 MERGE，来源按 source_doc_ids（白名单类型）
+    - 实体节点：键 = (kb_id, name, type 属性)；合并 mentioned_chunk_ids（type 须在模板 code 内）
+    - 业务关系：两端已存在时 MERGE，来源按 source_doc_ids（类型须在模板关系清单内）
     - Document 锚点 + 提及 关系
     """
     statements: list[tuple[str, dict]] = []
 
     for ent in entities:
         label = ent.get("type", "")
-        if label not in _ENTITY_LABELS:
-            logger.debug("实体类型非法已跳过: %s", label)
+        if label not in entity_codes:
+            logger.debug("实体类型不在模板已跳过: %s", label)
             continue
         chunk_ids = ent.get("chunk_ids") or []
         statements.append((
@@ -84,8 +81,14 @@ def _build_write_statements(
 
     for rel in relationships:
         rtype = rel.get("type", "")
-        if rtype not in RELATION_TYPES:
-            logger.debug("关系类型不在白名单已跳过: %s", rtype)
+        if rtype not in valid_relations:
+            logger.debug("关系类型不在模板已跳过: %s", rtype)
+            continue
+        a_type = rel.get("a_type")
+        b_type = rel.get("b_type")
+        if not a_type or not b_type:
+            # v2：不再默认补 "Event"（v1 遗留），端点类型缺失即丢弃
+            logger.debug("关系端点类型缺失已跳过: %s (%s -> %s)", rtype, rel.get("source"), rel.get("target"))
             continue
         statements.append((
             "MATCH (a:Entity) WHERE a.kb_id = $kb_id AND a.name = $a_name AND a.type = $a_type "
@@ -97,8 +100,8 @@ def _build_write_statements(
             "d IN [$doc_id] | CASE WHEN d IN acc THEN acc ELSE acc + d END)",
             {
                 "kb_id": kb_id,
-                "a_name": rel["source"], "a_type": rel.get("a_type", "Event"),
-                "b_name": rel["target"], "b_type": rel.get("b_type", "Event"),
+                "a_name": rel["source"], "a_type": a_type,
+                "b_name": rel["target"], "b_type": b_type,
                 "rtype": rtype, "doc_id": doc_id, "description": rel.get("description", ""),
             },
         ))
@@ -112,7 +115,7 @@ def _build_write_statements(
     # 提及 关系（锚点 → 实体）
     for ent in entities:
         label = ent.get("type", "")
-        if label not in _ENTITY_LABELS:
+        if label not in entity_codes:
             continue
         statements.append((
             "MATCH (d:Document) WHERE d.kb_id = $kb_id AND d.doc_id = $doc_id "
@@ -217,12 +220,16 @@ async def build_file_graph(kb_id: str, doc_id: str) -> None:
             await _set_graph_completed(doc_id, started, 0, 0)
             return
 
-        # 抽取（词库 + 正则 + LLM）
-        result = await extract_from_chunks(kb_id, valid)
+        # 领域模板（v2）：按 KB 绑定模板动态化抽取与写图；未绑定回退内置通用预设
+        profile = await domain_service.get_profile_for_kb(kb_id)
 
-        # 写图（按 chunk 批次拆分事务，§4.4）
+        # 抽取（词库 + 正则 + LLM，提示词与过滤按模板）
+        result = await extract_from_chunks(kb_id, valid, profile)
+
+        # 写图（按 chunk 批次拆分事务，§4.4；类型/关系白名单按模板）
         statements = _build_write_statements(
-            kb_id, doc_id, file_name, result["entities"], result["relationships"]
+            kb_id, doc_id, file_name, result["entities"], result["relationships"],
+            entity_codes=profile["entity_codes"], valid_relations=profile["relation_names"],
         )
         await _write_in_batches(statements)
 
@@ -731,8 +738,10 @@ async def update_entity(
     关系基于图结构引用，改名/改类型自动跟随，无需迁移边。
     """
     _ensure_graph_enabled()
-    if type not in _ENTITY_LABELS:
-        raise ValueError(f"实体类型非法: {type}")
+    # v2：type 须在该 KB 领域模板实体清单内（label 拼接安全）
+    profile = await domain_service.get_profile_for_kb(kb_id)
+    if type not in profile["entity_codes"]:
+        raise ValueError(f"实体类型不在领域模板内: {type}")
     old_name = (old_name or "").strip()
     old_type = (old_type or "").strip()
     name = (name or "").strip()

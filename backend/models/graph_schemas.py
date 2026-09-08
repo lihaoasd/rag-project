@@ -1,23 +1,15 @@
 """
 图谱 Schema — LLM 抽取输出校验 + 图检索请求/响应。
+
+v2：实体类型不再用固定 Literal 约束——LLM 输出类型是否合法由领域模板
+（domain_profile）在抽取层动态校验（docs/10-generic-kb-v2-design.md §3.3）。
 """
-from typing import Literal
-
 from pydantic import BaseModel, Field
-
-
-# ============================================================
-# LLM 抽取输出校验（Schema 约束 JSON）
-# ============================================================
-ENTITY_TYPES = Literal[
-    "ORGANIZATION", "PERSON", "PLACE", "EVENT", "TIME",
-    "PROJECT", "PRODUCT", "QUANTITY", "CONCEPT",
-]
 
 
 class ExtractedEntity(BaseModel):
     name: str = Field(..., min_length=1, description="实体名称")
-    type: ENTITY_TYPES = Field(..., description="实体类型")
+    type: str = Field(..., min_length=1, description="实体类型 code（须在领域模板内）")
     description: str = Field("", description="简短描述")
 
 
