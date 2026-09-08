@@ -40,6 +40,10 @@
 - M6 收尾与验收（方案 Step 6）：
   - README 增补 v2 说明（分支/库/回滚路径 + 设计/方案文档指针）；
   - 验收：后端最终全量 pytest **777 passed**（较 v1 基线 734 净增 43，exit 0）；前端 `npm run build` 通过；真实 Neo4j 写图回归通过——KB 绑『通用』→ 真实建图（正则 Quantity/Time 落库）→ stats 类型 ⊆ 模板 code → 清图/删 KB 联动清理正常。
+- 运维 · 模型配置数据迁移（v1 → v2，一次性）：
+  - 需求：模型配置直接沿用 v1 原数据（方向 v1→v2，范围仅全局 model_configs，KB 级绑定不迁——v2 KB 系新建，旧 kb_id 无意义）。
+  - 做法：v1（ai_bid_rag）只读；v2（ai_bid_rag_v2）`model_configs` 先清空（前置守卫：`kb_model_bindings` 为空才允许）再按原行插入（保留 id 与 created_at/updated_at），得到与 v1 完全一致的镜像。
+  - 结果：v1 源 10 行 → v2 由原 2 行（v2 迁移链默认占位）变为 **10 行与 v1 一致**；默认配置每类型唯一校验通过；v1 数据未改动。
 
 ## 2026-09-08
 
