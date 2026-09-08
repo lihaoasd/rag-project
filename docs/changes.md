@@ -44,6 +44,10 @@
   - 需求：模型配置直接沿用 v1 原数据（方向 v1→v2，范围仅全局 model_configs，KB 级绑定不迁——v2 KB 系新建，旧 kb_id 无意义）。
   - 做法：v1（ai_bid_rag）只读；v2（ai_bid_rag_v2）`model_configs` 先清空（前置守卫：`kb_model_bindings` 为空才允许）再按原行插入（保留 id 与 created_at/updated_at），得到与 v1 完全一致的镜像。
   - 结果：v1 源 10 行 → v2 由原 2 行（v2 迁移链默认占位）变为 **10 行与 v1 一致**；默认配置每类型唯一校验通过；v1 数据未改动。
+- 运维 · ES 索引版本隔离（v2 独立索引 `bid_chunks_v2`）：
+  - 现状核查：全系统单一物理索引 `bid_chunks`（v1/v2 `.env` 均未设 `ES_INDEX_NAME`）；文档按 `kb_id` 字段区分、检索/删除均带 kb 条件 → **KB 级逻辑隔离已有，但 v1 与 v2 物理混存同一索引**（对账/清理/映射升级互相牵连）。
+  - 处理（用户确认方案 A：仅配置 + 文档，**代码零改动**——索引名本就是配置项 `es_index_name ← ES_INDEX_NAME`）：v2 `backend/.env` 增加 `ES_INDEX_NAME=bid_chunks_v2`；`backend/.env.example` 补 ES 段示例；v1 环境文件不动（保持默认 `bid_chunks`）。
+  - 验证：真实 ES 预建 `bid_chunks_v2` 成功；索引清单同时含 `bid_chunks` 与 `bid_chunks_v2`，v1 索引未受影响。
 
 ## 2026-09-08
 

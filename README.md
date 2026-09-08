@@ -2,7 +2,7 @@
 
 基于 RAG（Retrieval-Augmented Generation）的投标文档智能问答系统，支持 PDF/Word 文档上传、语义检索和 AI 问答。
 
-> **v2（分支 `v2-generic-kb` · 数据库 `ai_bid_rag_v2`）**：已演进为通用知识库平台——知识图谱的实体/关系本体不再硬编码，改由用户通过页面配置的**领域模板**驱动（内置『通用』『投标』预设，只读可复制；新建/编辑模板后知识库图谱按其自动抽取与过滤类型，支持在知识库/图谱页更换模板并联动失效重建）。设计见 `docs/10-generic-kb-v2-design.md`，开发方案见 `docs/plan/47-domain-config-plan.md`，逐里程碑记录见 `docs/changes.md`。
+> **v2（分支 `v2-generic-kb` · 数据库 `ai_bid_rag_v2`）**：已演进为通用知识库平台——知识图谱的实体/关系本体不再硬编码，改由用户通过页面配置的**领域模板**驱动（内置『通用』『投标』预设，只读可复制；新建/编辑模板后知识库图谱按其自动抽取与过滤类型，支持在知识库/图谱页更换模板并联动失效重建）。ES 全文索引亦做版本隔离：v2 使用独立索引 `bid_chunks_v2`（v1 保持 `bid_chunks`；KB 间本就按 `kb_id` 过滤隔离）。设计见 `docs/10-generic-kb-v2-design.md`，开发方案见 `docs/plan/47-domain-config-plan.md`，逐里程碑记录见 `docs/changes.md`。
 > v1 已封板于 git tag `v1.1.0`（分支 `langfuse-v4`，库 `ai_bid_rag` 数据不动）；回滚 = 切回 `langfuse-v4` 分支并还原 `backend/.env`（v1 备份 `backend/.env.v1.local`）。
 
 ## 技术栈
