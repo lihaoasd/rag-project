@@ -19,6 +19,7 @@ engine = create_async_engine(
     echo=False,
     poolclass=NullPool,
     json_serializer=lambda obj: json.dumps(obj, ensure_ascii=False),
+    connect_args={"timeout": settings.pg_connect_timeout},
 )
 
 # 会话工厂

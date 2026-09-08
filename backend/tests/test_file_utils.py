@@ -11,14 +11,14 @@ from utils.file_utils import validate_file_type, get_file_extension, ensure_temp
 class TestValidateFileType:
     """测试文件格式校验。"""
 
-    def test_pdf_rejected(self):
-        assert validate_file_type("document.pdf") is False
+    def test_pdf_valid(self):
+        assert validate_file_type("document.pdf") is True
 
     def test_pdf_uppercase(self):
-        assert validate_file_type("document.PDF") is False
+        assert validate_file_type("document.PDF") is True
 
     def test_pdf_mixed_case(self):
-        assert validate_file_type("document.Pdf") is False
+        assert validate_file_type("document.Pdf") is True
 
     def test_docx_valid(self):
         assert validate_file_type("document.docx") is True
@@ -48,7 +48,7 @@ class TestValidateFileType:
         assert validate_file_type("") is False
 
     def test_multiple_dots_filename(self):
-        assert validate_file_type("test.doc.pdf") is False  # PDF 不支持
+        assert validate_file_type("test.doc.pdf") is True  # 扩展名取最后一段 .pdf
 
 
 class TestGetFileExtension:

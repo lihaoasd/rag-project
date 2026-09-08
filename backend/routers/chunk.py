@@ -108,7 +108,7 @@ async def rechunk_document(kb_id: str, doc_id: str, body: RechunkRequest):
     if doc is None:
         raise HTTPException(status_code=404, detail="文档不存在")
 
-    if doc["status"] not in ("completed", "failed"):
+    if doc["status"] not in ("completed", "failed", "partial"):
         raise HTTPException(
             status_code=400,
             detail="只能对已完成解析或解析失败的文档重新切片",

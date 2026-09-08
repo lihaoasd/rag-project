@@ -8,6 +8,7 @@
 asyncio.to_thread() 放到线程池执行，避免阻塞 asyncio 事件循环。
 """
 import asyncio
+import hashlib
 import os
 import time
 import uuid
@@ -18,7 +19,7 @@ from fastapi import UploadFile
 from config import settings
 from core import es_store
 from core.database import async_session
-from core.indexing import build_index, chunk_documents, delete_index
+from core.indexing import build_index, delete_index, delete_vector_nodes
 from core.model_factory import resolve_model_config
 from core.parser import parse_document as parse_file, ParagraphItem
 from core.word_chunker import aggregate_paragraphs, word_chunk_blocks
@@ -47,15 +48,87 @@ async def _store_chunk_batch(
     milvus_pks: list[str],
     processed_count: int,
 ) -> None:
-    """写入一批 chunk 到 PG，并更新文档进度。"""
+    """将一批 chunk upsert 到 PG（(doc_id, chunk_index) 冲突时整行更新），并更新文档进度。"""
     async with async_session() as session:
         doc_repo = DocumentRepository(session)
-        await doc_repo.batch_create_chunks(doc_id, kb_id, metadatas, milvus_pks)
+        await doc_repo.batch_upsert_chunks(doc_id, kb_id, metadatas, milvus_pks)
         await doc_repo.update_status(
             doc_id,
             "processing",
             processed_chunk_count=processed_count,
         )
+
+
+async def _committed_chunk_count(doc_id: str) -> int:
+    """PG 中该文档实际已入库的切片行数（partial/failed 判定）。"""
+    async with async_session() as session:
+        doc_repo = DocumentRepository(session)
+        return await doc_repo.count_chunks_by_doc_id(doc_id)
+
+
+def _chunk_md5(page_number: int, text: str) -> str:
+    """切片内容指纹 = MD5("{page_number}|{text}")。
+
+    公式必须与 alembic 0023 存量回填 SQL
+    `md5(convert_to(concat_ws('|', page_number::text, text_content), 'UTF8'))` 逐字节一致；
+    修改本函数需同步迁移回填逻辑并重新比对。
+    """
+    return hashlib.md5(f"{page_number}|{text}".encode("utf-8")).hexdigest()
+
+
+async def _existing_chunk_md5s(doc_id: str, chunk_indexes: list[int]) -> dict[int, str]:
+    """PG 中该文档已存切片指纹（chunk_index → md5）；缺失索引不在返回结果里。"""
+    if not chunk_indexes:
+        return {}
+    async with async_session() as session:
+        doc_repo = DocumentRepository(session)
+        return await doc_repo.get_chunk_md5_map(doc_id, chunk_indexes)
+
+
+async def _mark_parse_failure(doc_id: str, error_msg: str, duration_ms: int) -> None:
+    """解析类入口失败后的统一状态落库（partial / failed 判定）。
+
+    以 PG 实际已入库切片行数为准（权威，不依赖 processed 进度字段的提交时序）：
+    - >0（已提交 ≥1 批切片）→ partial（部分成功，保留已入库数据，供“继续解析”续跑）；
+    - ==0 → failed（无残留，重试整文档）。
+
+    partial 依赖 migration 0022（documents.status CHECK 含 'partial'）；若数据库尚未升级
+    （如旧库直接跑新代码），partial 写入会触发 CheckViolation —— 降级为 failed 落库并告警，
+    避免文档永久卡在 processing（已入库切片仍保留，可查看/重解析）。
+    """
+    try:
+        committed = await _committed_chunk_count(doc_id)
+        status = "partial" if committed > 0 else "failed"
+        try:
+            async with async_session() as session:
+                doc_repo = DocumentRepository(session)
+                await doc_repo.update_status(
+                    doc_id,
+                    status,
+                    error_message=error_msg,
+                    processed_chunk_count=committed,
+                    parse_duration_ms=duration_ms,
+                )
+        except Exception as db_err:
+            logger.error(
+                "更新文档 %s 状态异常（需 migration 0022？降级置 failed）: %s",
+                status, db_err,
+            )
+            async with async_session() as session:
+                doc_repo = DocumentRepository(session)
+                await doc_repo.update_status(
+                    doc_id,
+                    "failed",
+                    error_message=f"{error_msg} [partial 状态写入失败,已降级 failed;请执行 alembic upgrade head]",
+                    processed_chunk_count=committed,
+                    parse_duration_ms=duration_ms,
+                )
+        logger.warning(
+            "解析未完成: doc_id=%s, status=%s, 已入库=%d, error=%s",
+            doc_id, status, committed, error_msg,
+        )
+    except Exception as db_err:
+        logger.error("更新文档失败状态异常: %s", db_err)
 
 
 async def _parse_and_store_in_batches(
@@ -67,63 +140,94 @@ async def _parse_and_store_in_batches(
     ocr_config: dict | None,
     vision_config: dict | None,
 ) -> tuple[int, int]:
-    """按批次执行图片识别、分块、向量化与落库，返回 (chunk_count, page_count)。"""
+    """按批次执行图片识别、分块、向量化与落库，返回 (chunk_count, page_count)。
+
+    幂等（MD5 指纹，docs/plan/45）：
+        - 每 chunk 指纹 = _chunk_md5(page_number, text)，与 PG 存量 (doc_id, chunk_index) 比对；
+        - 存量存在且指纹一致 → unchanged，跳过（不重写向量 / ES / PG）；
+        - 缺失或指纹不同 → to_write：先删确定性 pk 向量（幂等，清中断残留/旧内容）→
+          重嵌 → ES 覆盖 → PG upsert（ON CONFLICT DO UPDATE 并刷新 chunk_md5）。
+    整篇可重复执行：unchanged 自动跳过、中断残留/新增自动补写，无需行数锚点。
+    """
     batch_size = settings.parse_batch_size
     current_chunk_index = 0
 
-    if file_type in ("docx", "doc"):
-        blocks = aggregate_paragraphs(parsed)
-        for i in range(0, len(blocks), batch_size):
-            batch_blocks = blocks[i : i + batch_size]
-            await process_word_images(
-                batch_blocks,
-                kb_id,
-                doc_id,
-                ocr_config=ocr_config,
-                vision_config=vision_config,
-            )
-            chunks, metadatas, _ = word_chunk_blocks(
-                batch_blocks,
-                doc_id,
-                file_name,
-                start_chunk_index=current_chunk_index,
-            )
-            if not chunks:
-                continue
+    # 统一结构化链路：docx/doc（段落项列表）/ pdf（(段落项, 物理页数)）
+    # → 逻辑块聚合 → 分批图片识别 + 分块 + 幂等落库
+    if file_type == "pdf":
+        items, page_count = parsed
+    else:
+        items = parsed
+        page_count = 1
+    blocks = aggregate_paragraphs(items)
+    for i in range(0, len(blocks), batch_size):
+        batch_blocks = blocks[i : i + batch_size]
+        await process_word_images(
+            batch_blocks,
+            kb_id,
+            doc_id,
+            ocr_config=ocr_config,
+            vision_config=vision_config,
+        )
+        chunks, metadatas, _ = word_chunk_blocks(
+            batch_blocks,
+            doc_id,
+            file_name,
+            start_chunk_index=current_chunk_index,
+        )
+        if not chunks:
+            continue
+        current_chunk_index += len(chunks)
 
-            milvus_pks = await build_index(chunks, metadatas, kb_id)
-            # ES 双写（best-effort，失败由对账兜底）
-            await es_store.bulk_index(chunks, metadatas, kb_id)
-            current_chunk_index += len(chunks)
-            await _store_chunk_batch(
-                doc_id,
-                kb_id,
-                metadatas,
-                milvus_pks,
-                current_chunk_index,
+        # 幂等分区：先给本批每块打指纹，再与 PG 存量比对
+        for m in metadatas:
+            m["chunk_md5"] = _chunk_md5(
+                int(m.get("page_number") or 1), m.get("text") or ""
             )
+        indexes = [m["chunk_index"] for m in metadatas]
+        existing = await _existing_chunk_md5s(doc_id, indexes)
+        to_write = [
+            m for m in metadatas if existing.get(m["chunk_index"]) != m["chunk_md5"]
+        ]
+        if not to_write:
+            logger.info(
+                "PG 幂等跳过(unchanged): doc_id=%s, chunks=%d, chunk_index=%d..%d",
+                doc_id, len(chunks), indexes[0], indexes[-1],
+            )
+            continue
 
-        return current_chunk_index, 1
+        p_metas = to_write
+        p_chunks = [m["text"] for m in p_metas]
+        # 先删后插：中断批残留 / 内容变更的旧向量（确定性 pk，删除幂等）
+        await delete_vector_nodes(
+            kb_id,
+            [f"{doc_id}:{m['chunk_index']:06d}" for m in p_metas],
+        )
 
-    for d in parsed:
-        d.metadata["doc_id"] = doc_id
-        d.metadata["file_name"] = file_name
-    chunks, metadatas, _ = chunk_documents(parsed)
-    for i in range(0, len(chunks), batch_size):
-        batch_chunks = chunks[i : i + batch_size]
-        batch_metas = metadatas[i : i + batch_size]
-        milvus_pks = await build_index(batch_chunks, batch_metas, kb_id)
-        # ES 双写（best-effort，失败由对账兜底）
-        await es_store.bulk_index(batch_chunks, batch_metas, kb_id)
-        current_chunk_index += len(batch_chunks)
+        milvus_pks = await build_index(p_chunks, p_metas, kb_id)
+        # ES 双写（best-effort，失败由对账兜底；_id 确定性覆盖）
+        await es_store.bulk_index(p_chunks, p_metas, kb_id)
+        # PG upsert 前打印本批明细（写入条数 / unchanged 数 / 序号范围 / 每块字符数 / 合计）
+        char_lengths = [len(m.get("text", "")) for m in p_metas]
+        logger.info(
+            "PG 入库前检查: doc_id=%s, 写=%d(unchanged=%d), chunk_index=%d..%d, 每块字符数=%s, 合计=%d",
+            doc_id,
+            len(p_metas),
+            len(chunks) - len(p_metas),
+            p_metas[0]["chunk_index"],
+            p_metas[-1]["chunk_index"],
+            char_lengths,
+            sum(char_lengths),
+        )
         await _store_chunk_batch(
             doc_id,
             kb_id,
-            batch_metas,
+            p_metas,
             milvus_pks,
             current_chunk_index,
         )
-    return len(chunks), len(parsed)
+
+    return current_chunk_index, page_count
 
 
 def _doc_to_dict(doc) -> dict:
@@ -153,7 +257,7 @@ async def upload_document(kb_id: str, file: UploadFile) -> dict:
     流程:
         1. 暂存到临时目录
         2. 上传到 MinIO
-        3. PG 写入文档记录（status=uploaded）
+        3. PG 写入文档记录（status=uploaded），知识库文档计数 +1
         4. 清理临时文件
 
     异常处理：任一步骤失败 → status=failed，记录 error_message
@@ -189,6 +293,12 @@ async def upload_document(kb_id: str, file: UploadFile) -> dict:
                 object_key=object_key,
             )
             doc_id_str = str(doc.id)
+            # 口径：知识库文档数 = documents 实际行数 → 上传即 +1（删除时 -1，解析/重跑不再加减）
+            try:
+                kb_repo = KnowledgeBaseRepository(session)
+                await kb_repo.increment_doc_count(kb_id)
+            except Exception as count_err:
+                logger.error("更新文档计数失败: doc_id=%s, error=%s", doc_id_str, count_err)
 
         logger.info("文档上传完成: doc_id=%s, file=%s", doc_id_str, file.filename)
 
@@ -238,7 +348,7 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
         5. Embedding + Milvus 索引
         6. PG 写入切片记录
         7. 更新状态 → completed
-        8. 更新知识库文档计数 +1
+        （文档计数在上传时已 +1，解析/重跑不再加减）
 
     异常处理：任一步骤失败 → status=failed，记录 error_message
     清理：finally 中删除临时文件
@@ -259,7 +369,7 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
             file_type = doc.file_type
 
             # 更新状态 → processing，清除旧错误信息
-            await doc_repo.update_status(doc_id, "processing", error_message="")
+            await doc_repo.update_status(doc_id, "processing", error_message="", processed_chunk_count=0)
 
         # 2. 从 MinIO 下载文件到临时目录（同步 I/O，放到线程池）
         temp_dir = ensure_temp_dir(settings.temp_dir)
@@ -273,7 +383,7 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
         # OCR 或 vision 任一配置即处理图片；两者都未配置/停用时完全跳过
         extract_images = (ocr_config is not None) or (vision_config is not None)
         parsed = await parse_file(
-            temp_path, file_type, ocr_config=ocr_config, extract_images=extract_images
+            temp_path, file_type, extract_images=extract_images
         )
         if not parsed:
             raise ValueError("文档解析结果为空，可能是不支持的格式或文件损坏")
@@ -289,11 +399,10 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
             vision_config,
         )
 
-        # 5. 更新状态 → completed
+        # 5. 更新状态 → completed（文档计数不变：上传时已 +1）
         duration_ms = int((time.perf_counter() - parse_started_at) * 1000)
         async with async_session() as session:
             doc_repo = DocumentRepository(session)
-            kb_repo = KnowledgeBaseRepository(session)
             await doc_repo.update_status(
                 doc_id,
                 "completed",
@@ -302,8 +411,6 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
                 processed_chunk_count=chunk_count,
                 parse_duration_ms=duration_ms,
             )
-            # 6. 更新知识库文档计数
-            await kb_repo.increment_doc_count(kb_id)
 
         logger.info("文档解析完成: doc_id=%s, pages=%d, chunks=%d", doc_id, page_count, chunk_count)
 
@@ -312,18 +419,102 @@ async def parse_document(kb_id: str, doc_id: str) -> None:
         duration_ms = int((time.perf_counter() - parse_started_at) * 1000)
         logger.error("文档解析失败: doc_id=%s, error=%s", doc_id, error_msg, exc_info=True)
 
-        # 更新状态 → failed
-        try:
-            async with async_session() as session:
-                doc_repo = DocumentRepository(session)
-                await doc_repo.update_status(
-                    doc_id,
-                    "failed",
-                    error_message=error_msg,
-                    parse_duration_ms=duration_ms,
+        # 更新状态 → partial（有已提交批次）/ failed（无提交）统一判定
+        await _mark_parse_failure(doc_id, error_msg, duration_ms)
+
+    finally:
+        # 清理临时文件
+        if temp_path and temp_path.exists():
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+async def resume_document(kb_id: str, doc_id: str) -> None:
+    """继续解析部分成功（partial）的文档 — 全量重解析，按 MD5 指纹只写差集。
+
+    与 parse_document 的区别：
+        - 仅对 status=partial 文档生效；整篇重新解析，unchanged 自动跳过、
+          missing/changed 自动补写（幂等，见 docs/plan/45），无需行数锚点；
+        - 完成后置 completed；
+        - 文档计数不变：上传时已 +1（见 docs/plan/46）。
+    """
+    temp_path = None
+    parse_started_at = time.perf_counter()
+
+    try:
+        # 1. 获取文档记录并校验 partial
+        async with async_session() as session:
+            doc_repo = DocumentRepository(session)
+            doc = await doc_repo.get_by_id(doc_id)
+            if doc is None:
+                logger.error("续跑失败：文档不存在 doc_id=%s", doc_id)
+                return
+            if doc.status != "partial":
+                logger.warning(
+                    "续跑跳过：文档状态非 partial（%s）doc_id=%s", doc.status, doc_id
                 )
-        except Exception as db_err:
-            logger.error("更新文档失败状态异常: %s", db_err)
+                return
+
+            object_key = doc.object_key
+            file_type = doc.file_type
+
+            # 更新状态 → processing（保留已入库行，unchanged 自动跳过）
+            await doc_repo.update_status(doc_id, "processing", error_message="")
+
+        # 2. 从 MinIO 下载文件到临时目录（同步 I/O，放到线程池）
+        temp_dir = ensure_temp_dir(settings.temp_dir)
+        temp_path = Path(temp_dir) / f"{doc_id}_resume.{file_type}"
+        await asyncio.to_thread(minio_client.download, object_key, temp_path)
+        logger.info("续跑下载完成: %s → %s", object_key, temp_path.name)
+
+        # 3. 重新解析文档（确定性：同一文件重产出相同全局 chunk 序列）
+        ocr_config = await resolve_model_config(kb_id, "ocr")
+        vision_config = await resolve_model_config(kb_id, "vision")
+        # OCR 或 vision 任一配置即处理图片；两者都未配置/停用时完全跳过
+        extract_images = (ocr_config is not None) or (vision_config is not None)
+        parsed = await parse_file(
+            temp_path, file_type, extract_images=extract_images
+        )
+        if not parsed:
+            raise ValueError("文档解析结果为空")
+
+        # 4. 幂等续跑：指纹比对，只写 unchanged 之外的部分
+        chunk_count, page_count = await _parse_and_store_in_batches(
+            parsed,
+            file_type,
+            doc_id,
+            kb_id,
+            doc.file_name,
+            ocr_config,
+            vision_config,
+        )
+
+        # 5. 更新状态 → completed（文档计数不变：上传时已 +1）
+        duration_ms = int((time.perf_counter() - parse_started_at) * 1000)
+        async with async_session() as session:
+            doc_repo = DocumentRepository(session)
+            await doc_repo.update_status(
+                doc_id,
+                "completed",
+                page_count=page_count,
+                chunk_count=chunk_count,
+                processed_chunk_count=chunk_count,
+                parse_duration_ms=duration_ms,
+            )
+
+        logger.info(
+            "续跑完成: doc_id=%s, chunks=%d, pages=%d",
+            doc_id, chunk_count, page_count,
+        )
+
+    except Exception as e:
+        error_msg = str(e)
+        duration_ms = int((time.perf_counter() - parse_started_at) * 1000)
+        logger.error("续跑失败: doc_id=%s, error=%s", doc_id, error_msg, exc_info=True)
+        # 已提交行仍 >0 → 维持 partial，可再次续跑；_mark_parse_failure 按 PG 已入库行数判定
+        await _mark_parse_failure(doc_id, error_msg, duration_ms)
 
     finally:
         # 清理临时文件
@@ -656,7 +847,7 @@ async def rechunk_document(
             file_type = doc.file_type
 
             # 2. 更新状态 → processing
-            await doc_repo.update_status(doc_id, "processing", error_message="")
+            await doc_repo.update_status(doc_id, "processing", error_message="", processed_chunk_count=0)
 
             # 2.5 联动清除图谱（先取 chunk_ids 再删 PG，best-effort，§4.3 调用契约）
             from services.graph_service import clear_file_graph_best_effort
@@ -683,7 +874,7 @@ async def rechunk_document(
         # OCR 或 vision 任一配置即处理图片；两者都未配置/停用时完全跳过
         extract_images = (ocr_config is not None) or (vision_config is not None)
         parsed = await parse_file(
-            temp_path, file_type, ocr_config=ocr_config, extract_images=extract_images
+            temp_path, file_type, extract_images=extract_images
         )
         if not parsed:
             raise ValueError("文档解析结果为空")
@@ -721,17 +912,8 @@ async def rechunk_document(
         error_msg = str(e)
         duration_ms = int((time.perf_counter() - parse_started_at) * 1000)
         logger.error("重切片失败: doc_id=%s, error=%s", doc_id, error_msg, exc_info=True)
-        try:
-            async with async_session() as session:
-                doc_repo = DocumentRepository(session)
-                await doc_repo.update_status(
-                    doc_id,
-                    "failed",
-                    error_message=error_msg,
-                    parse_duration_ms=duration_ms,
-                )
-        except Exception as db_err:
-            logger.error("更新文档失败状态异常: %s", db_err)
+        # 更新状态 → partial（有已提交批次）/ failed（无提交）统一判定
+        await _mark_parse_failure(doc_id, error_msg, duration_ms)
 
     finally:
         if temp_path and temp_path.exists():
@@ -745,8 +927,8 @@ async def reparse_document(kb_id: str, doc_id: str) -> None:
     """重新解析文档 — 清旧切片 → 下载 MinIO → 重新解析 → 切分 → 向量化 → 索引。
 
     与 parse_document 的区别：
-        - parse_document: 首次解析，不清旧数据，文档计数 +1
-        - reparse_document: 清旧数据后重解析，文档计数不变
+        - parse_document: 首次解析，不清旧数据；文档计数均不变（上传时已 +1，见 docs/plan/46）
+        - reparse_document: 清旧数据后重解析，文档计数同样不变
     """
     temp_path = None
     parse_started_at = time.perf_counter()
@@ -764,7 +946,7 @@ async def reparse_document(kb_id: str, doc_id: str) -> None:
             file_type = doc.file_type
 
             # 2. 更新状态 → processing
-            await doc_repo.update_status(doc_id, "processing", error_message="")
+            await doc_repo.update_status(doc_id, "processing", error_message="", processed_chunk_count=0)
 
             # 2.5 联动清除图谱（先取 chunk_ids 再删 PG，best-effort，§4.3 调用契约）
             from services.graph_service import clear_file_graph_best_effort
@@ -791,7 +973,7 @@ async def reparse_document(kb_id: str, doc_id: str) -> None:
         # OCR 或 vision 任一配置即处理图片；两者都未配置/停用时完全跳过
         extract_images = (ocr_config is not None) or (vision_config is not None)
         parsed = await parse_file(
-            temp_path, file_type, ocr_config=ocr_config, extract_images=extract_images
+            temp_path, file_type, extract_images=extract_images
         )
         if not parsed:
             raise ValueError("文档解析结果为空")
@@ -829,17 +1011,8 @@ async def reparse_document(kb_id: str, doc_id: str) -> None:
         error_msg = str(e)
         duration_ms = int((time.perf_counter() - parse_started_at) * 1000)
         logger.error("重新解析失败: doc_id=%s, error=%s", doc_id, error_msg, exc_info=True)
-        try:
-            async with async_session() as session:
-                doc_repo = DocumentRepository(session)
-                await doc_repo.update_status(
-                    doc_id,
-                    "failed",
-                    error_message=error_msg,
-                    parse_duration_ms=duration_ms,
-                )
-        except Exception as db_err:
-            logger.error("更新文档失败状态异常: %s", db_err)
+        # 更新状态 → partial（有已提交批次）/ failed（无提交）统一判定
+        await _mark_parse_failure(doc_id, error_msg, duration_ms)
 
     finally:
         if temp_path and temp_path.exists():

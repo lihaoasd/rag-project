@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     pg_database: str = "ai_bid_rag"
     pg_user: str = "postgres"
     pg_password: str = "postgres"
+    # 数据库连接超时（秒）— asyncpg connect timeout；网络抖动/大文档解析中途偶发超时，
+    # 按需调大（如 .env 里 PG_CONNECT_TIMEOUT=300）
+    pg_connect_timeout: int = 180
 
     # === MinIO 配置 ===
     minio_endpoint: str = "localhost:9000"

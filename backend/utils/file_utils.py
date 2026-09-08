@@ -5,11 +5,11 @@ import os
 from pathlib import Path
 
 
-ALLOWED_EXTENSIONS = {".docx", ".doc"}
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc"}
 
 
 def validate_file_type(filename: str) -> bool:
-    """校验文件是否为支持的格式（docx / doc；PDF 暂不支持解析）。"""
+    """校验文件是否为支持的格式（pdf / docx / doc）。"""
     ext = Path(filename).suffix.lower()
     return ext in ALLOWED_EXTENSIONS
 

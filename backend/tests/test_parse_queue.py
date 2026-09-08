@@ -54,6 +54,23 @@ class TestEnqueueRechunk:
         assert position == 1
 
 
+class TestEnqueueResume:
+    @pytest.mark.asyncio
+    async def test_enqueue_resume_adds_task(self):
+        while not parse_queue._parse_queue.empty():
+            parse_queue._parse_queue.get_nowait()
+
+        position = await parse_queue.enqueue_resume(KB_ID, DOC_ID)
+        assert position == 1
+        assert parse_queue.queue_size() == 1
+
+        # 队列项为 ("resume", kb_id, doc_id, None, None)
+        task = parse_queue._parse_queue.get_nowait()
+        assert task[0] == "resume"
+        assert task[1] == KB_ID
+        assert task[2] == DOC_ID
+
+
 class TestQueueSize:
     def test_queue_size_empty(self):
         while not parse_queue._parse_queue.empty():

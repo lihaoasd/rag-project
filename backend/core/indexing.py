@@ -54,6 +54,8 @@ async def build_index(
     embed_model = create_embedding(embed_config)
 
     # 2. 创建 TextNode 列表（含 SOURCE 关系，确保 ref_doc_id 正确映射到 doc_id 字段）
+    #    node_id = f"{doc_id}:{chunk_index:06d}" 确定性主键：正常全量写入唯一；
+    #    解析部分成功后的续跑可按同一公式定位/删除中断批可能残留的向量（先删后插，幂等）。
     text_nodes: list[TextNode] = []
     for i, (text, meta) in enumerate(zip(chunks, metadata_list)):
         doc_id = meta.get("doc_id", "")
@@ -73,6 +75,7 @@ async def build_index(
                 NodeRelationship.SOURCE: RelatedNodeInfo(node_id=doc_id),
             },
         )
+        node.node_id = f"{doc_id}:{meta.get('chunk_index', i):06d}"
         text_nodes.append(node)
 
     # 3. 批量向量化并设置到 node.embedding
@@ -112,6 +115,25 @@ async def delete_index(kb_id: str, doc_id: str) -> None:
     vector_store = get_vector_store(kb_id)
     await asyncio.to_thread(vector_store.delete, ref_doc_id=doc_id)
     logger.info("delete_index 完成: kb_id=%s, doc_id=%s", kb_id, doc_id)
+
+
+async def delete_vector_nodes(kb_id: str, node_ids: list[str]) -> None:
+    """按确定性 node_id（Milvus 主键）best-effort 删除向量。
+
+    续跑时清掉中断批次可能已写入 Milvus 的残留向量（PG/ES 侧幂等覆盖），
+    失败只记日志，不阻断续跑主流程。
+    """
+    if not node_ids:
+        return
+    try:
+        vector_store = get_vector_store(kb_id)
+        await asyncio.to_thread(vector_store.delete_nodes, node_ids=node_ids)
+        logger.info("delete_vector_nodes 完成: kb_id=%s, count=%d", kb_id, len(node_ids))
+    except Exception as e:
+        logger.warning(
+            "delete_vector_nodes 失败（继续写入，可能残留 %d 个向量）: kb_id=%s, error=%s",
+            len(node_ids), kb_id, e,
+        )
 
 
 def drop_kb_collection(kb_id: str) -> None:
@@ -170,7 +192,7 @@ def chunk_documents(
         node.metadata.setdefault("file_name", "unknown")
         node.metadata.setdefault("page_number", 1)
         node.metadata.setdefault("chunk_index", i)
-        node.metadata.setdefault("heading", "")          # PDF 无标题概念，Word 由 word_chunker 填充
+        node.metadata.setdefault("heading", "")          # LlamaDocument 无标题概念（结构化链路由 word_chunker / pdf_extractor 填充）
         node.metadata.setdefault("heading_path", "")     # 同上
         node.metadata.setdefault("chunk_type", "text")
         node.metadata.setdefault("source_chunk_index", -1)

@@ -5,6 +5,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from repositories.document_repository import DocumentRepository
 from tests.helpers import MockDocument, MockChunk, KB_ID, DOC_ID
@@ -174,6 +175,39 @@ class TestDocumentRepository:
         # 验证传入了 2 个 chunk
         call_args = mock_session.add_all.call_args[0][0]
         assert len(call_args) == 2
+
+    # ---- batch_upsert_chunks（MD5 幂等写，docs/plan/45）----
+    @pytest.mark.asyncio
+    async def test_batch_upsert_chunks_on_conflict(self, repo, mock_session):
+        mock_session.execute = AsyncMock()
+        metadatas = [
+            {"chunk_index": 0, "page_number": 1, "text": "第一段文本", "chunk_md5": "a" * 32},
+            {"chunk_index": 1, "page_number": 2, "text": "第二段文本", "chunk_md5": "b" * 32},
+        ]
+        await repo.batch_upsert_chunks(DOC_ID, KB_ID, metadatas, ["pk_1", "pk_2"])
+
+        mock_session.execute.assert_awaited_once()
+        stmt = mock_session.execute.await_args.args[0]
+        sql = str(stmt.compile(dialect=postgresql.dialect()))
+        assert "ON CONFLICT" in sql and "(doc_id, chunk_index)" in sql
+        # 冲突更新刷新 chunk_md5 / text_content；id 不参与更新
+        assert "chunk_md5" in sql and "text_content" in sql
+        mock_session.commit.assert_awaited_once()
+
+    # ---- get_chunk_md5_map（幂等写存量指纹查询）----
+    @pytest.mark.asyncio
+    async def test_get_chunk_md5_map(self, repo, mock_session):
+        mock_result = MagicMock()
+        mock_result.all.return_value = [(0, "aa"), (2, "bb"), (3, None)]
+        mock_session.execute.return_value = mock_result
+
+        result = await repo.get_chunk_md5_map(DOC_ID, [0, 1, 2, 3])
+        assert result == {0: "aa", 2: "bb"}  # md5 为空的存量不计入
+
+    @pytest.mark.asyncio
+    async def test_get_chunk_md5_map_invalid_or_empty(self, repo):
+        assert await repo.get_chunk_md5_map("not-a-uuid", [0]) == {}
+        assert await repo.get_chunk_md5_map(DOC_ID, []) == {}
 
 
 class TestDocumentChunkRepository:

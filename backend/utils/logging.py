@@ -31,6 +31,10 @@ THIRD_PARTY_LOG_LEVELS = {
     "urllib3": logging.WARNING,
     "uvicorn": logging.WARNING,
     "uvicorn.access": logging.WARNING,
+    # pdfplumber 底层 pdfminer 逐 token/逐字符解析日志量极大，压到 WARNING；
+    # 需要了解 PDF 解析进度时看 core.pdf_extractor 的“正在解析第 x/y 页”即可
+    "pdfminer": logging.WARNING,
+    "pdfplumber": logging.WARNING,
 }
 
 

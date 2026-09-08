@@ -115,7 +115,17 @@
               解析
             </el-button>
             <el-button
-              v-if="row.status === 'completed'"
+              v-if="row.status === 'partial'"
+              text
+              type="primary"
+              size="small"
+              :loading="row._resuming"
+              @click="handleResume(row)"
+            >
+              继续解析
+            </el-button>
+            <el-button
+              v-if="row.status === 'completed' || row.status === 'partial' || (row.status === 'failed' && (row.processed_chunk_count ?? 0) > 0)"
               text
               type="primary"
               size="small"
@@ -144,7 +154,7 @@
               清图
             </el-button>
             <el-button
-              v-if="row.status === 'completed' || row.status === 'failed'"
+              v-if="row.status === 'completed' || row.status === 'failed' || row.status === 'partial'"
               text
               type="warning"
               size="small"
@@ -224,7 +234,7 @@ import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElNotification, ElMessageBox } from 'element-plus'
 import { getKnowledgeBase } from '@/api/knowledgeBase'
-import { listDocuments, deleteDocument, parseDocument, reparseDocument } from '@/api/document'
+import { listDocuments, deleteDocument, parseDocument, reparseDocument, resumeDocument } from '@/api/document'
 import { buildDocGraph, clearDocGraph } from '@/api/graph'
 
 const route = useRoute()
@@ -252,6 +262,7 @@ function statusLabel(s) {
     processing: '解析中',
     completed: '就绪',
     failed: '失败',
+    partial: '部分成功',
   }
   return map[s] || s
 }
@@ -345,6 +356,19 @@ async function handleParse(row) {
     row._parsing = false
     const msg = err?.response?.data?.detail || err?.message || '未知错误'
     ElMessage.error('解析失败: ' + msg)
+  }
+}
+
+async function handleResume(row) {
+  row._resuming = true
+  try {
+    await resumeDocument(kbId, row.id)
+    ElMessage.success('继续解析已触发，正在后台续跑...')
+    await loadList()
+  } catch (err) {
+    row._resuming = false
+    const msg = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.error('继续解析失败: ' + msg)
   }
 }
 

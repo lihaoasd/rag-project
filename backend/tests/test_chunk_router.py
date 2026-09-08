@@ -320,3 +320,28 @@ class TestRechunkDocument:
                 json={},
             )
             assert response.status_code == 202
+
+    def test_rechunk_partial_status_allowed(self, client):
+        """partial（部分成功）状态的文档也允许重切片（全量清旧重来兜底）。"""
+        with patch("routers.chunk.document_service.get_document",
+                   new_callable=AsyncMock) as mock_get, \
+             patch("routers.chunk.parse_queue.enqueue_rechunk",
+                   new_callable=AsyncMock) as mock_enqueue, \
+             patch("routers.chunk.async_session") as mock_session_ctx:
+
+            mock_get.return_value = {
+                "id": DOC_ID,
+                "status": "partial",
+                "file_name": "test.pdf",
+            }
+            mock_enqueue.return_value = 1
+            mock_session = AsyncMock()
+            mock_session_ctx.return_value.__aenter__.return_value = mock_session
+
+            response = client.post(
+                f"/api/knowledge-bases/{KB_ID}/documents/{DOC_ID}/rechunk",
+                json={},
+            )
+            assert response.status_code == 202
+            data = response.json()
+            assert data["status"] == "queued"

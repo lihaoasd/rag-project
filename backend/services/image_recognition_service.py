@@ -1,4 +1,4 @@
-"""Word 图片识别服务：MinIO 上传 + OCR + Vision，失败只记日志。"""
+"""文档（Word/PDF）图片识别服务：MinIO 上传 + OCR + Vision，失败只记日志。"""
 import asyncio
 import uuid
 from typing import Any

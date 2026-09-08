@@ -50,6 +50,15 @@ export function reparseDocument(kbId, docId) {
 }
 
 /**
+ * 继续解析（仅 partial 部分成功状态可用）：从最后已提交处续跑剩余切片
+ */
+export function resumeDocument(kbId, docId) {
+  return apiClient
+    .post(`/knowledge-bases/${kbId}/documents/${docId}/resume`)
+    .then((res) => res.data)
+}
+
+/**
  * 删除文档
  */
 export function deleteDocument(kbId, docId) {

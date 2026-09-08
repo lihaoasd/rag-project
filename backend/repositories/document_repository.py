@@ -4,6 +4,7 @@
 import uuid
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.document import Document, DocumentChunk
@@ -191,6 +192,67 @@ class DocumentRepository:
         await self.session.commit()
         logger.info("切片记录写入 PG: doc_id=%s, count=%d", doc_id, len(chunks))
 
+    async def batch_upsert_chunks(
+        self,
+        doc_id: str,
+        kb_id: str,
+        metadatas: list[dict],
+        milvus_pks: list[str],
+    ) -> None:
+        """按 (doc_id, chunk_index) upsert 切片（幂等写，docs/plan/45）。
+
+        调用方保证：进入本方法的都是“缺失或 chunk_md5 与存量不同”的切片；
+        冲突即内容已变 → 整行更新并刷新 chunk_md5；无冲突 → 插入新行。
+        """
+        uuid.UUID(doc_id)  # 验证格式
+        uuid.UUID(kb_id)   # 验证格式
+        values = []
+        for i, (meta, pk) in enumerate(zip(metadatas, milvus_pks)):
+            text = meta.get("text", "")
+            values.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "doc_id": doc_id,
+                    "kb_id": kb_id,
+                    "chunk_index": meta.get("chunk_index", i),
+                    "page_number": meta.get("page_number", 1),
+                    "char_count": len(text),
+                    "text_content": text,
+                    "chunk_md5": meta.get("chunk_md5"),
+                    "milvus_pk": pk,
+                    "metadata": {
+                        "chunk_type": meta.get("chunk_type", "text"),
+                        "source_chunk_index": meta.get("source_chunk_index", -1),
+                        "image_index": meta.get("image_index", 0),
+                        "object_key": meta.get("object_key", ""),
+                        "mime_type": meta.get("mime_type", ""),
+                        "image_refs": meta.get("image_refs", []),
+                        "image_keys": meta.get("image_keys", []),
+                        "heading": meta.get("heading", ""),
+                        "heading_path": meta.get("heading_path", ""),
+                    },
+                }
+            )
+        stmt = pg_insert(DocumentChunk.__table__).values(values)
+        excluded = stmt.excluded
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["doc_id", "chunk_index"],
+            set_={
+                "page_number": excluded.page_number,
+                "char_count": excluded.char_count,
+                "text_content": excluded.text_content,
+                "chunk_md5": excluded.chunk_md5,
+                "milvus_pk": excluded.milvus_pk,
+                "metadata": getattr(excluded, "metadata"),
+            },
+        )
+        await self.session.execute(stmt)
+        await self.session.commit()
+        logger.info(
+            "切片记录 upsert PG: doc_id=%s, count=%d（冲突更新,刷新 chunk_md5）",
+            doc_id, len(values),
+        )
+
     # ============================================================
     # 单切片操作
     # ============================================================
@@ -244,6 +306,42 @@ class DocumentRepository:
             .order_by(DocumentChunk.chunk_index.asc())
         )
         return list((await self.session.scalars(stmt)).all())
+
+    async def count_chunks_by_doc_id(self, doc_id: str) -> int:
+        """统计文档实际已入库的切片行数（partial 失败判定的权威锚点）。"""
+        try:
+            uuid.UUID(doc_id)  # 验证格式
+        except ValueError:
+            return 0
+        stmt = (
+            select(func.count())
+            .select_from(DocumentChunk)
+            .where(DocumentChunk.doc_id == doc_id)
+        )
+        return (await self.session.scalar(stmt)) or 0
+
+    async def get_chunk_md5_map(
+        self, doc_id: str, chunk_indexes: list[int]
+    ) -> dict[int, str]:
+        """查询文档指定 chunk_index 集合的已存指纹（chunk_index → md5）。
+
+        幂等写（docs/plan/45）用：缺失索引不在结果里；已存且 md5 相同 → 跳过重写。
+        """
+        try:
+            uuid.UUID(doc_id)  # 验证格式
+        except ValueError:
+            return {}
+        if not chunk_indexes:
+            return {}
+        stmt = (
+            select(DocumentChunk.chunk_index, DocumentChunk.chunk_md5)
+            .where(
+                DocumentChunk.doc_id == doc_id,
+                DocumentChunk.chunk_index.in_(list(chunk_indexes)),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return {idx: md5 for idx, md5 in result.all() if md5}
 
     async def get_chunks_by_ids(self, kb_id: str, chunk_ids: list[str]) -> list[DocumentChunk]:
         """按 chunk ID 列表批量查询切片（图谱检索证据用，含文件名 join 需调用方补充）。"""

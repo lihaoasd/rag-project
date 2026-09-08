@@ -1,5 +1,65 @@
 # 修改记录
 
+## 2026-09-08
+
+- 日志降噪：`utils/logging.py` 的第三方压级名单加入 `pdfminer`/`pdfplumber` → WARNING（此前 DEBUG 启动时 pdfminer 逐 token/逐字符解析日志刷屏，单份大 PDF 可达数十万行）；`core/pdf_extractor.py` 在逐页解析时输出 `PDF 正在解析第 x/y 页`（INFO），解析进度一目了然且无库级噪音。验证：pdf_extractor + config 模块 58 passed。
+- 解析失败状态落库容错与超时/诊断（现场：PG 批量入库超时失败后，partial 状态更新因数据库未执行 migration 0022 触发 `chk_documents_status` CheckViolation，文档卡 processing）：
+  - `services/document_service.py::_mark_parse_failure`：partial 写入失败（如旧库缺 0022 约束）时**降级置 failed 并告警**（错误信息提示执行 `alembic upgrade head`），文档不再永久卡 processing；已入库切片保留可查看/重解析。
+  - `config.py` 新增 `pg_connect_timeout`（默认 180s，asyncpg connect timeout；环境变量 `PG_CONNECT_TIMEOUT` 可调），`core/database.py` 引擎 `connect_args={"timeout": ...}` 生效 —— 缓解网络抖动/批量入库前的连接超时。
+  - `_parse_and_store_in_batches` 在 **PG 入库前**打印明细：本批条数、chunk_index 范围、每块字符数列表与合计（`PG 入库前检查: …`），便于判断是否"数据量过大/单块超长"导致超时。
+  - 验证：test_document_service + test_config 48 passed。
+- 切片 MD5 幂等写（45 号方案，评审通过）：解析/续跑/重跑同一文档时不再无条件重插/重写——
+  - 指纹：`chunk_md5 = MD5("{page_number}|{text}")`（公式与 0023 回填 SQL `md5(convert_to(concat_ws('|',…)))` 逐字节一致）；
+  - `services/document_service.py`：新增 `_chunk_md5`/`_existing_chunk_md5s`；executor 每批先查 PG 存量指纹后分区——**unchanged 跳过**（不重写向量/ES/PG）、**changed/missing 才写**（先删确定性 pk 向量→重嵌→ES 覆盖→PG upsert）；移除 `resume_from` 行数锚点与前缀过滤，`resume_document` 简化为全量解析自动差集（partial 语义不变）；
+  - `repositories/document_repository.py`：新增 `get_chunk_md5_map` 与 `batch_upsert_chunks`（`pg_insert(表级) ON CONFLICT (doc_id, chunk_index) DO UPDATE`，冲突更新并刷新 md5）；`_store_chunk_batch` 改走 upsert；
+  - 模型/迁移：`DocumentChunk` 增 `chunk_md5` 列；`alembic/versions/0023_chunk_md5_unique.py`（加列 → 清历史重复（每 doc+index 保留最早行）→ 回填指纹 → 建 `uq_document_chunks_doc_index` 唯一约束）；
+  - 验证：executor 幂等场景（全新全插/全 unchanged 零写/部分 changed+missing 只写差集）+ 指纹稳定 + 仓储 upsert(ON CONFLICT)/md5 map 单测；全量 pytest **732 passed**（基线 727）。部署：先备份 document_chunks → `alembic upgrade head`（0022→0023）→ 重启后端；重跑同一文档二次应见「unchanged 跳过、0 写入」。
+- 知识库文档计数改「行数口径」（46 号方案，评审通过）：`knowledge_bases.document_count` 从「成功解析计数」改为与该库 `documents` 实际行数（所有状态）一致——
+  - 实测漂移：投标库 count=1、行数=3（completed 2 + failed 1）；根因：上传/失败/partial/processing 不入旧计数、parse 无条件 +1 与 delete 无条件 -1 在重试/历史变更下失真；
+  - `services/document_service.py`：`upload_document` 创建行后同会话 `increment_doc_count`（计数异常仅记日志不阻断上传）；`parse_document`/`resume_document`/`reparse_document` 不再加减（删除原有 completed 后 +1 与 was_never_completed 分支），删除文档仍 -1；
+  - 存量一次性对账：`UPDATE knowledge_bases SET document_count=(SELECT count(*) FROM documents …)` 已执行 → 两库均 count==行数；
+  - 验证：上传 +1 / 续跑不再 +1 等单测；全量 pytest **733 passed**（基线 732）。部署：仅重启后端（无结构变化）。
+- 扫描页覆盖阈值修复（回归，无独立方案号，接 plan 44）：线上 `身份证.pdf`（kb c80aadef，doc 7cb1e23c）解析报「PDF 无可解析文本」——用户已配置 OCR（pp_ocr 全局默认启用，resolve 正常返回），根因在解析器：
+  - `core/pdf_extractor.py`：无文本层页两张扫描图实际只占页面 **~19.7%~20.0%**，旧 `SCAN_IMAGE_MIN_COVER=0.2` 用“严格小于”把它们排除 → 整页无候选 → 抛错；改为 **0.1** 并注释说明（证件扫描图常只占页面积约 1/5）；
+  - 验证：真实文件下载重跑 extract → items=2、skipped=[]（修复前 items=0、skipped=[1]）；新增回归用例 `test_split_scan_images_just_below_old_cover_threshold_ocr`（两张各约 19% 页面积图，旧阈值会被漏）；全量 pytest **734 passed**（基线 733）。部署：仅重启后端。
+
+## 2026-09-05
+
+- 问题：解析/重切片/重解析按**批次**落库（图片识别→分块→Milvus→ES→PG），任一批次中途失败（如 PG 瞬时不可达）会被置为 failed，但**此前成功批次已留在 PG/Milvus/ES**——可查看/编辑部分切片、计数混乱、整文档重试会重复写入。方案：`docs/plan/43-partial-parse-resume-plan.md`（评审通过）。
+- 目标语义（需求方确认）：失败时**保留已成功批次**；文档状态改为 `partial`（部分成功，已入库 N）；提供**继续解析（续跑）**入口，从最后已提交处写剩余部分；三个解析入口失败统一判定；`failed`（0 提交）行为不变。
+- 改动（后端）：
+  - `alembic/versions/0022_add_partial_parse_status.py`（新增）：documents.status CHECK 约束增 `'partial'`（仿 0002）。
+  - `core/indexing.py`：`build_index` 显式 `node.node_id = f"{doc_id}:{chunk_index:06d}"`（确定性 Milvus 主键，续跑先删后插的基础）；新增 `delete_vector_nodes(kb_id, node_ids)`（best-effort 按 pk 删除中断批残留向量）。
+  - `services/document_service.py`：
+    - `_parse_and_store_in_batches` 增 `resume_from`：写侧跳过 `chunk_index < resume_from`（已提交前缀），只写剩余且全局编号连续；续跑批先 `delete_vector_nodes` 再插入；
+    - 新增 `_committed_chunk_count`（PG 实际行数 count，权威锚点）与 `_mark_parse_failure`（>0 → partial，==0 → failed，统一三入口 + 续跑失败）；
+    - parse/rechunk/reparse 开始解析时重置 `processed_chunk_count=0`，except 统一走 `_mark_parse_failure`；
+    - 新增 `resume_document(kb_id, doc_id)`：仅 partial 生效，`resume_from`=实际已入库行数，完成后置 completed；仅当从未 completed（chunk_count 为空）才知识库计数 +1。
+  - `repositories/document_repository.py`：新增 `count_chunks_by_doc_id`。
+  - `core/parse_queue.py`：任务类型增 `resume`（`enqueue_resume` + worker 分支调用 `resume_document`）。
+  - `routers/document.py`：`/parse` 拦截 partial（提示走继续解析/重解析，防整文档重复写）；新增 `POST /{doc_id}/resume`（仅 partial 放行）。
+  - `routers/chunk.py`：`/rechunk` 守卫放行集合加 `partial`（全量清旧重来兜底）。
+  - 前端：`frontend/src/api/document.js` 增 `resumeDocument`；`frontend/src/views/DocumentListView.vue` statusLabel 增 `partial→部分成功`、partial 行显示**继续解析**按钮、切片入口放行 `completed`/`partial`（以及旧版本遗留 `failed` 且仍有已入库切片的文档，兼容此前“解析中途失败残留切片可查看”场景）、重解析对 partial 放行。
+- 测试：`test_parse_queue`（enqueue_resume 队列项）；`test_document_router`（/parse 拦截 partial；/resume 放行/拒绝/404）；`test_chunk_router`（rechunk partial 放行）；`test_document_service`（executor resume_from 跳过前缀+先删后插、全量不删回归、`_mark_parse_failure` partial/failed 两分支、`resume_document` 完成+计数规则/非 partial 跳过）。
+- 说明与边界：续跑锚点为 **PG 实际切片行数**（count，不依赖 processed 进度字段提交时序）；确定性主键仅用于 bulk 路径（单点切片编辑 insert_single_vector 不变）；续跑假设同一文件重解析产出一致（Word docx 字节稳定、PDF 版式几何稳定 + OCR 内容不变），OCR 极端非确定性可用"重新解析"全量兜底；partial 期间保留旧 chunk_count，UI"已入库"列按 processed_chunk_count 展示真实提交数。
+- 验证：后端全量 pytest（tests 目录）**722 passed**（exit 0，基线 708 → +14）；本地无 PG 环境，状态机/续跑语义由单元+接口测试覆盖，真实联调待部署后验证。
+- 部署提醒：先执行 `alembic upgrade head`（0022 仅改约束），再重启后端；前端需重新构建（DocumentListView 按钮/标签）。
+- 需求变更（44 号方案）：PDF **扫描页（无文本层）整页 OCR**——`pdf_extractor._parse_page` 无文本层页不再一律跳过：`extract_images=True`（已配置 OCR/识别模型）时收集覆盖页面积 ≥ 20%（`SCAN_IMAGE_MIN_COVER`，过滤装饰/水印/条带）的整页图为「空文本段落 + WordImage」项，OCR/上传/分块/入库全部复用块级图片链路（`process_word_images` → `word_chunk_blocks`），纯扫描 PDF 不再误报、文字可检索；未配置模型或确无整页图（空白页）维持跳过；纯扫描未配置模型时报错文案更新为提示配置。改动：`core/pdf_extractor.py`（常量/`_scan_page_images`/`_parse_page` 分支）、`core/parser.py`（报错文案）；测试：`tests/test_pdf_extractor.py` +5（扫描页提取项/页码/skipped、未配置跳过回归、OCR 文字并入 chunk、纯图无 OCR 不产空块、空白页不 OCR）；验证：全量 pytest **727 passed**（基线 722）。
+
+## 2026-09-04
+
+- 需求：恢复 PDF 上传并实现**结构化解析 + 分块**（对齐 Word 链路；此前 PDF 被白名单禁用）。PDF 解析出标题层级/段落/表格/图片 → 逻辑块聚合 → 带 heading/heading_path/page_number/image_keys 的 chunk 入库（Milvus + ES 双写 + PG），图片识别文字并入正文且图片上传 MinIO 可预览；整篇无文本层（扫描件）解析失败并给出友好提示。方案：`docs/plan/42-pdf-parse-chunk-plan.md`（评审通过）。
+- 改动（后端）：
+  - `utils/file_utils.py`：`ALLOWED_EXTENSIONS` 加入 `.pdf`；`routers/document.py` 上传 400 文案改"支持: pdf, docx, doc"（前端本已支持 .pdf，无前端改动、无迁移）。
+  - `core/pdf_extractor.py`（新增）：PDF 版式提取流水线——PyMuPDF 逐行取文本（字号/加粗/bbox，拼接时 CJK 直接续接、ASCII 两侧补空格）+ pdfplumber 表格区域（bbox + 行列文本）；页眉/页脚/纯页码过滤、表格区域文本行去重、无绘制 rect/跨页装饰/水印/条带图片过滤；正文行按纵向间距聚段；标题判定 = `is_heading` 中文标题正则主判据 +（字号 ≥ 1.25×正文 或 加粗）短行兜底（图/表题注、目录行进黑名单）；图片字节提取后归位到所在段落/表格；无文本层页面记 skipped 跳过；返回 `(ParagraphItem 列表, 物理页数)`。
+  - `core/parser.py`：`ParagraphItem` 增可选 `page_number`；`PDFParser` 重写为结构化委托（不再按页拼 LlamaDocument、不再内联 OCR——图片识别下沉到块级 image_recognition_service）；`parse_document` 去掉 ocr_config 参数、PDF 返回 `(items, page_count)`，整篇无文本层抛 ValueError（"PDF 无可解析文本（疑似扫描件，暂不支持整页 OCR）"）。
+  - `core/word_chunker.py`：`LogicalBlock` 增 `start_page`；`chunk_blocks`/`word_chunk_blocks` 把块起始页写入 chunk 元数据 `page_number`（PDF）；Word 项无页码 → 行为不变（仍默认 1）。
+  - `services/document_service.py`：docx/doc/pdf 统一走 blocks 结构化链路（aggregate → process_word_images → word_chunk_blocks → Milvus + ES + PG），PDF 物理页数入库 `page_count`；三处解析入口（首次解析/重切片/重新解析）不再向 parse_file 传 ocr_config。
+  - `core/indexing.py`：注释更新（`chunk_documents` 不再被生产调用，函数与既有测试保留）；`services/image_recognition_service.py` 注释更新为 Word/PDF 共用。
+- 测试：`test_file_utils` / `test_document_router` 的 PDF 拒绝用例翻转为放行；新增 `test_pdf_extractor.py`（标题判定含 图/表题注与"（10）…；"列表项反例、字号/加粗兜底档位、文本拼接、表格区域容差、图片归位、合成中文 PDF 结构化集成、扫描页跳过、chunk 页码与 heading_path 透传、Word 无页码回归）；`test_document_service.py` 增 PDF/Word 统一分块链路用例（PDF 返回物理页数、chunk 带页码与标题；docx 回归 page_count=1）。
+- 验收（真实样本 `D:\Pictures\投标`）：「02 - 图片嵌入表格.pdf」文本型 2 页——pdfplumber 表格区文本去重后产出 2 个表格项、页内图片挂到表格项（imgs=1）；「身份证.pdf / 身份证2.pdf」纯扫描 → 整页跳过并抛扫描件友好错误；合成章节目录 PDF 标题识别（第一章 L1、1.1 L3）+ chunk page_number/heading_path 正确。
+- 验证：后端全量 pytest（tests 目录）**708 passed**（exit 0，基线 677 → +31）；前端无改动。
+
 ## 2026-09-04
 
 - 需求（放宽检索）：意图识别口径从"按投标主题圈定/示例列举"进一步放开——**所有专业领域/任何想获取信息、资料、专业知识的输入都走检索，只有纯日常闲聊才算普通聊天**；重新设计提示词文案。

@@ -25,13 +25,18 @@ logger = get_logger(__name__)
 
 @dataclass
 class LogicalBlock:
-    """聚合后的逻辑块：一个标题 + 其下正文、表格和图片。"""
+    """聚合后的逻辑块：一个标题 + 其下正文、表格和图片。
+
+    start_page: 块内首项来源页（PDF 由 ParagraphItem.page_number 填充；
+        Word 无页码概念为 None，分块时保持默认 page_number=1）。
+    """
     heading: str | None
     heading_level: int | None
     heading_path: list[str]
     paragraphs: list[str] = field(default_factory=list)
     tables: list[str] = field(default_factory=list)
     images: list[WordImage] = field(default_factory=list)
+    start_page: int | None = None
 
 
 # ============================================================
@@ -48,6 +53,13 @@ def aggregate_paragraphs(paragraphs: list[ParagraphItem]) -> list[LogicalBlock]:
     )
     heading_stack: list[tuple[str, int]] = []
 
+    def _note_start_page(block: LogicalBlock, item: ParagraphItem) -> None:
+        """记录块起始页（取块内首个带 page_number 的项）。"""
+        if block.start_page is None:
+            page = getattr(item, "page_number", None)
+            if page is not None:
+                block.start_page = page
+
     for item in paragraphs:
         if item.is_heading:
             if current_block.paragraphs or current_block.tables or current_block.images:
@@ -63,11 +75,14 @@ def aggregate_paragraphs(paragraphs: list[ParagraphItem]) -> list[LogicalBlock]:
                 heading_level=item.heading_level,
                 heading_path=[h[0] for h in heading_stack],
             )
+            _note_start_page(current_block, item)
             current_block.images.extend(item.images)
         elif item.is_table:
+            _note_start_page(current_block, item)
             current_block.tables.append(item.text)
             current_block.images.extend(item.images)
         else:
+            _note_start_page(current_block, item)
             current_block.paragraphs.append(item.text)
             current_block.images.extend(item.images)
 
@@ -208,14 +223,18 @@ def chunk_blocks(
         for part_text in body_splits:
             if not part_text.strip():
                 continue
+            node_meta: dict[str, Any] = {
+                "heading": block.heading or "",
+                "heading_path": heading_path_str,
+                "image_keys": list(image_keys),
+                "source_block_index": block_idx,
+            }
+            # PDF：chunk 页码 = 逻辑块起始页；Word 无页码概念（start_page=None）保持默认 page_number=1
+            if block.start_page is not None:
+                node_meta["page_number"] = block.start_page
             node = TextNode(
                 text=part_text,
-                metadata={
-                    "heading": block.heading or "",
-                    "heading_path": heading_path_str,
-                    "image_keys": list(image_keys),
-                    "source_block_index": block_idx,
-                },
+                metadata=node_meta,
             )
             all_nodes.append(node)
 

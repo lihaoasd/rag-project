@@ -29,7 +29,7 @@ async def upload_document(kb_id: str, file: UploadFile = File(...)):
         logger.warning("上传失败：不支持的文件格式 %s", file.filename)
         raise HTTPException(
             status_code=400,
-            detail="不支持的文件格式。支持: docx, doc（PDF 解析暂不支持）",
+            detail="不支持的文件格式。支持: pdf, docx, doc",
         )
 
     try:
@@ -85,6 +85,12 @@ async def parse_document(kb_id: str, doc_id: str):
     if doc["status"] == "completed":
         raise HTTPException(status_code=400, detail="文档已解析完成，无需重复解析")
 
+    if doc["status"] == "partial":
+        raise HTTPException(
+            status_code=400,
+            detail="文档解析部分成功，请使用「继续解析」续跑剩余部分，或「重新解析」全量重来",
+        )
+
     # 更新状态 → queued
     async with async_session() as session:
         repo = DocumentRepository(session)
@@ -94,6 +100,39 @@ async def parse_document(kb_id: str, doc_id: str):
     position = await parse_queue.enqueue(kb_id, doc_id)
 
     logger.info("文档已加入解析队列: doc_id=%s, queue_position=%d", doc_id, position)
+    return {"id": doc_id, "status": "queued", "queue_position": position}
+
+
+@router.post("/{doc_id}/resume", response_model=ParseResponse, status_code=202)
+async def resume_document(kb_id: str, doc_id: str):
+    """继续解析部分成功（partial）的文档：从最后已提交处续跑剩余切片。"""
+    logger.info("触发继续解析(续跑): kb_id=%s, doc_id=%s", kb_id, doc_id)
+
+    doc = await document_service.get_document(kb_id, doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+    if doc["status"] == "queued":
+        raise HTTPException(status_code=400, detail="文档已在解析队列中")
+
+    if doc["status"] == "processing":
+        raise HTTPException(status_code=400, detail="文档正在解析中")
+
+    if doc["status"] != "partial":
+        raise HTTPException(
+            status_code=400,
+            detail="仅「部分成功」状态的文档可继续解析；请使用 /parse 或 /reparse",
+        )
+
+    # 更新状态 → queued
+    async with async_session() as session:
+        repo = DocumentRepository(session)
+        await repo.update_status(doc_id, "queued")
+
+    # 加入续跑队列
+    position = await parse_queue.enqueue_resume(kb_id, doc_id)
+
+    logger.info("文档已加入续跑队列: doc_id=%s, queue_position=%d", doc_id, position)
     return {"id": doc_id, "status": "queued", "queue_position": position}
 
 

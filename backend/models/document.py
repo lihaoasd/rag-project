@@ -39,6 +39,8 @@ class DocumentChunk(Base, UUIDMixin, CreatedAtMixin):
     page_number: Mapped[int] = mapped_column(Integer, nullable=False)
     char_count: Mapped[int] = mapped_column(Integer, nullable=False)
     text_content: Mapped[str] = mapped_column(Text, nullable=False)
+    # 切片内容指纹 = MD5("{page_number}|{text}")（见 docs/plan/45，公式与 0023 回填 SQL 一致）
+    chunk_md5: Mapped[str | None] = mapped_column(String(32), nullable=True)
     milvus_pk: Mapped[str | None] = mapped_column(String(64), nullable=True)
     chunk_metadata: Mapped[dict] = mapped_column(
         "metadata",

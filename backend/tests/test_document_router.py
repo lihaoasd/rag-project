@@ -50,14 +50,20 @@ class TestUploadDocument:
             data = response.json()
             assert data["status"] == "uploaded"
 
-    def test_upload_pdf_rejected(self, client):
-        """PDF 暂不支持解析，上传直接 400 拒绝。"""
-        response = client.post(
-            f"/api/knowledge-bases/{KB_ID}/documents",
-            files={"file": ("test.pdf", b"%PDF-1.4 test content", "application/pdf")},
-        )
-        assert response.status_code == 400
-        assert "PDF" in response.json()["detail"]
+    def test_upload_pdf_accepted(self, client):
+        """PDF 已支持解析，上传走 service（mock）返回 201。"""
+        with patch("routers.document.document_service.upload_document",
+                   new_callable=AsyncMock) as mock_upload:
+            mock_upload.return_value = make_doc_dict(file_name="test.pdf", file_type="pdf")
+
+            response = client.post(
+                f"/api/knowledge-bases/{KB_ID}/documents",
+                files={"file": ("test.pdf", b"%PDF-1.4 test content", "application/pdf")},
+            )
+            assert response.status_code == 201
+            data = response.json()
+            assert data["file_type"] == "pdf"
+            assert data["status"] == "uploaded"
 
     def test_upload_no_file(self, client):
         """不传文件参数应返回 422。"""
@@ -186,11 +192,66 @@ class TestParseDocument:
             assert response.status_code == 400
             assert "已解析完成" in response.json()["detail"]
 
+    def test_parse_partial_blocked(self, client):
+        """partial（部分成功）文档禁止整文档 /parse（防重复写已提交批次）。"""
+        with patch("routers.document.document_service.get_document",
+                   new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = make_doc_dict(status="partial")
+            response = client.post(f"/api/knowledge-bases/{KB_ID}/documents/{DOC_ID}/parse")
+            assert response.status_code == 400
+            assert "部分成功" in response.json()["detail"]
+
     def test_parse_doc_not_found(self, client):
         with patch("routers.document.document_service.get_document",
                    new_callable=AsyncMock) as mock_get:
             mock_get.return_value = None
             response = client.post(f"/api/knowledge-bases/{KB_ID}/documents/{uuid.uuid4()}/parse")
+            assert response.status_code == 404
+
+
+# ============================================================
+# POST /api/knowledge-bases/{kb_id}/documents/{doc_id}/resume — 继续解析（续跑 partial）
+# ============================================================
+class TestResumeDocument:
+    def test_resume_enqueued(self, client):
+        with patch("routers.document.document_service.get_document",
+                   new_callable=AsyncMock) as mock_get, \
+             patch("routers.document.parse_queue.enqueue_resume",
+                   new_callable=AsyncMock) as mock_enqueue, \
+             patch("routers.document.async_session") as mock_session_ctx:
+
+            mock_get.return_value = make_doc_dict(status="partial")
+            mock_enqueue.return_value = 1
+            mock_session = AsyncMock()
+            mock_session_ctx.return_value.__aenter__.return_value = mock_session
+
+            response = client.post(f"/api/knowledge-bases/{KB_ID}/documents/{DOC_ID}/resume")
+            assert response.status_code == 202
+            data = response.json()
+            assert data["status"] == "queued"
+            mock_enqueue.assert_called_once_with(KB_ID, DOC_ID)
+
+    def test_resume_not_partial_rejected(self, client):
+        with patch("routers.document.document_service.get_document",
+                   new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = make_doc_dict(status="failed")
+            response = client.post(f"/api/knowledge-bases/{KB_ID}/documents/{DOC_ID}/resume")
+            assert response.status_code == 400
+            assert "仅「部分成功」状态" in response.json()["detail"]
+
+    def test_resume_already_queued(self, client):
+        with patch("routers.document.document_service.get_document",
+                   new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = make_doc_dict(status="queued")
+            response = client.post(f"/api/knowledge-bases/{KB_ID}/documents/{DOC_ID}/resume")
+            assert response.status_code == 400
+            assert "已在解析队列中" in response.json()["detail"]
+
+    def test_resume_doc_not_found(self, client):
+        with patch("routers.document.document_service.get_document",
+                   new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = None
+            response = client.post(f"/api/knowledge-bases/{KB_ID}/documents/{uuid.uuid4()}/resume")
             assert response.status_code == 404
 
 
