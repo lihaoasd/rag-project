@@ -13,12 +13,16 @@ from pydantic import BaseModel, Field
 class KnowledgeBaseCreate(BaseModel):
     name: str = Field(..., description="知识库名称")
     description: str | None = Field(None, description="知识库描述")
+    domain_profile_id: str | None = Field(
+        None, description="领域模板 id；省略默认绑定内置『通用』预设"
+    )
 
 
 class KnowledgeBaseResponse(BaseModel):
     id: str
     name: str
     description: str | None
+    domain_profile_id: str | None = None
     document_count: int
     created_at: str
     updated_at: str
@@ -27,6 +31,76 @@ class KnowledgeBaseResponse(BaseModel):
 class KnowledgeBaseListResponse(BaseModel):
     items: list[KnowledgeBaseResponse]
     total: int
+
+
+# ============================================================
+# 领域模板（v2，docs/10-generic-kb-v2-design.md）
+# ============================================================
+class DomainEntityType(BaseModel):
+    code: str = Field(..., description="实体类型 code（Neo4j label，字母开头）")
+    name: str = Field(..., description="实体类型中文名")
+    color: str = Field("#909399", description="#RRGGBB 图例颜色")
+    description: str = Field("", description="类型说明")
+    examples: list[str] = Field(default_factory=list, description="示例名称（提示词生成用）")
+
+
+class DomainRelationType(BaseModel):
+    name: str = Field(..., description="关系类型中文名（图谱边类型）")
+    description: str = Field("", description="关系说明")
+    direction_hint: str = Field("", description="方向提示，如 Person|Organization→Organization")
+
+
+class DomainProfileCreate(BaseModel):
+    name: str = Field(..., description="模板名称（唯一）")
+    description: str = Field("", description="模板说明")
+    entity_types: list[DomainEntityType] = Field(..., description="实体类型清单（3..20 个）")
+    relation_types: list[DomainRelationType] = Field(..., description="关系类型清单（≤30 个）")
+
+
+class DomainProfileUpdate(BaseModel):
+    """整包替换式更新：客户端回传完整模板内容。"""
+    name: str = Field(..., description="模板名称（唯一）")
+    description: str = Field("", description="模板说明")
+    entity_types: list[DomainEntityType] = Field(..., description="实体类型清单（3..20 个）")
+    relation_types: list[DomainRelationType] = Field(..., description="关系类型清单（≤30 个）")
+
+
+class DomainProfileResponse(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    is_preset: bool
+    entity_count: int
+    relation_count: int
+
+
+class DomainProfileDetailResponse(DomainProfileResponse):
+    """模板详情 = 列表信息 + 渲染 meta（颜色/描述/方向提示）+ 引用数。"""
+    entity_types: list[dict]
+    relation_types: list[dict]
+    used_by_kbs: int = 0
+
+
+class DomainListResponse(BaseModel):
+    items: list[DomainProfileResponse]
+    total: int
+
+
+class DomainPreviewRequest(BaseModel):
+    entity_types: list[DomainEntityType] = Field(...)
+    relation_types: list[DomainRelationType] = Field(...)
+
+
+class DomainPreviewResponse(BaseModel):
+    valid: bool
+    errors: list[str]
+    prompt: str = ""
+    entity_count: int
+    relation_count: int
+
+
+class DomainBindRequest(BaseModel):
+    domain_profile_id: str = Field(..., description="目标领域模板 id（须存在）")
 
 
 # ============================================================

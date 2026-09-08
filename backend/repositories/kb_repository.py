@@ -18,13 +18,19 @@ class KnowledgeBaseRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create(self, name: str, description: str | None = None) -> KnowledgeBase:
-        """创建知识库。"""
+    async def create(
+        self,
+        name: str,
+        description: str | None = None,
+        domain_profile_id: str | None = None,
+    ) -> KnowledgeBase:
+        """创建知识库（v2：携带领域模板绑定；None → 语义等同未绑定）。"""
         kb = KnowledgeBase(
             id=str(uuid.uuid4()),
             name=name,
             description=description,
             document_count=0,
+            domain_profile_id=domain_profile_id,
         )
         self.session.add(kb)
         await self.session.commit()

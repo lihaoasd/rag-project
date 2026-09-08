@@ -95,6 +95,24 @@ class TestDeleteKnowledgeBase:
         result = await kb_service.delete_knowledge_base(KB_ID)
         assert result is False
 
+    @pytest.mark.asyncio
+    async def test_delete_clears_graph_when_enabled(self, mock_async_session, mock_session):
+        """v2 联动：图谱启用时删除 KB 一并清空 Neo4j 数据（best-effort）。"""
+        kb = MockKB()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = kb
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session.delete = AsyncMock()
+
+        with patch("services.kb_service.settings.graph_enabled", True), \
+             patch("services.kb_service.Neo4jStore.execute_write", new_callable=AsyncMock) as mock_graph:
+            result = await kb_service.delete_knowledge_base(KB_ID)
+
+        assert result is True
+        mock_graph.assert_awaited_once()
+        assert "DETACH DELETE n" in mock_graph.await_args.args[0]
+        assert mock_graph.await_args.args[1]["kb_id"] == KB_ID
+
 
 class TestKBToDict:
     def test_kb_to_dict_fields(self):

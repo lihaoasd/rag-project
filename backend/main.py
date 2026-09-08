@@ -14,7 +14,7 @@ from core.neo4j_store import Neo4jStore
 from core.observability import setup_langfuse
 from core.database import async_session
 from repositories.document_repository import DocumentRepository
-from routers import knowledge_base, document, search, chat, chunk, prompt, model, lexicon, es_admin, graph
+from routers import knowledge_base, document, search, chat, chunk, prompt, model, lexicon, es_admin, graph, domain
 from services import es_admin_service, lexicon_service, model_service
 from utils.logging import get_logger, setup_logging
 
@@ -168,6 +168,7 @@ app.include_router(model.router)
 app.include_router(lexicon.router)
 app.include_router(es_admin.router)
 app.include_router(graph.router)
+app.include_router(domain.router)
 
 
 @app.get("/api/health")

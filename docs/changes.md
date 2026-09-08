@@ -22,6 +22,14 @@
   - `services/graph_service.py`：删除模块级 `RELATION_TYPES`/`_ENTITY_LABELS` 常量；`_build_write_statements` 增参 `entity_codes`/`valid_relations`（按 KB 模板校验）；关系端点类型缺失不再默认补 `"Event"`（v1 遗留，缺失即丢弃）；`build_file_graph`/`update_entity` 经 `domain_service.get_profile_for_kb(kb_id)` 动态解析模板；
   - 用例重构：`test_graph_extractor.py`（提示词来源改为模板断言 + 模板外类型丢弃新用例）、`test_graph_service.py`（写语句参数化 + 端点类型缺失回归）、`conftest.py` 增补 `services.domain_service.async_session` mock。
   - 验证：图谱相关 4 文件 pytest **42 passed**（3.3s）；`main` 全应用导入通过。
+- M4 API 与联动失效（方案 Step 4）：
+  - `models/schemas.py`：KB 建/响应携带 `domain_profile_id`；新增领域模板 Schema 族（实体/关系类型、创建/更新/详情/列表/预览/绑定请求）；
+  - `repositories/kb_repository.py`：create 支持 `domain_profile_id`；`services/kb_service.py`：创建省略绑定默认内置『通用』预设，`_kb_to_dict` 输出模板 id，删除 KB 时联动清空 Neo4j 图谱（补齐 v1 缺口，best-effort）；
+  - `services/domain_service.py`：新增 `DomainValidationError`/`DomainInUseError`；`list_profiles`/`create_profile`/`update_profile`/`delete_profile`/`copy_profile`/`count_profile_refs`/`bind_kb_profile`/`reset_kb_graphs_of_profile`；模板紧凑结构携带 description；模板编辑/换绑 → 引用 KB 图谱状态批量失效；
+  - `routers/domain.py`（新）：`/api/domains` 列表/创建/详情/整包更新/删除/复制 + `/preview` 实时校验并生成提示词（预设只读可复制、删除被引用模板 409）；
+  - `routers/knowledge_base.py`：创建 KB 显式绑定校验、`GET/PUT /{kb_id}/domain` 换绑（本体变化 → 图谱状态失效）；`routers/graph.py`：`GET /graph/meta` 返回生效模板 meta（画布图例/实体下拉单一来源）；`main.py` 注册 domain 路由；
+  - 用例：`test_domain_service.py` 增模板操作 8 例、`test_kb_service.py` 增 KB 删除联动清图 1 例、`helpers.py` MockKB 增 domain_profile_id。
+  - 验证：KB/图谱/领域相关 pytest **103 passed**；真实 v2 库服务级冒烟通过（默认绑通用 → 自定义 CRUD → 预设复制/保护 → 换绑投标 → 引用保护 409 → 删除，及预览校验/提示词）。
 
 ## 2026-09-08
 

@@ -16,7 +16,7 @@ from models.graph_schemas import (
     GraphSearchResponse,
     GraphStatsResponse,
 )
-from services import document_service, graph_service
+from services import document_service, domain_service, graph_service
 from services.graph_service import EntityConflictError
 from utils.logging import get_logger
 
@@ -40,6 +40,16 @@ async def graph_stats(kb_id: str):
         return await graph_service.get_graph_stats(kb_id)
     except GraphDisabledError as e:
         raise _graph_disabled_handler(e)
+
+
+@router.get("/graph/meta")
+async def graph_meta(kb_id: str):
+    """图谱本体 meta（v2 动态）：当前生效领域模板的类型/颜色/关系清单。
+
+    供画布图例、实体管理下拉与配置页展示；与构建状态无关，图谱禁用时同样可用。
+    """
+    profile = await domain_service.get_profile_for_kb(kb_id)
+    return {"kb_id": kb_id, "domain": domain_service.profile_meta(profile)}
 
 
 @router.get("/graph")

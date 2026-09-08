@@ -26,6 +26,7 @@ class MockKB:
         self.id = kwargs.get("id", KB_ID)
         self.name = kwargs.get("name", "测试知识库")
         self.description = kwargs.get("description", "测试描述")
+        self.domain_profile_id = kwargs.get("domain_profile_id", None)
         self.document_count = kwargs.get("document_count", 0)
         self.created_at = kwargs.get("created_at", None)
         self.updated_at = kwargs.get("updated_at", None)

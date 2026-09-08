@@ -5,8 +5,11 @@
 """
 import asyncio
 
+from config import settings
 from core.database import async_session
+from core.domain_presets import GENERIC_PRESET_ID
 from core.indexing import drop_kb_collection
+from core.neo4j_store import Neo4jStore
 from utils import minio_client
 from repositories.kb_repository import KnowledgeBaseRepository
 from repositories.document_repository import DocumentRepository
@@ -23,17 +26,23 @@ def _kb_to_dict(kb) -> dict:
         "id": str(kb.id),
         "name": kb.name,
         "description": kb.description,
+        "domain_profile_id": kb.domain_profile_id,
         "document_count": kb.document_count,
         "created_at": kb.created_at.isoformat() if kb.created_at else "",
         "updated_at": kb.updated_at.isoformat() if kb.updated_at else "",
     }
 
 
-async def create_knowledge_base(name: str, description: str | None = None) -> dict:
-    """创建知识库（写入 PostgreSQL）。"""
+async def create_knowledge_base(
+    name: str,
+    description: str | None = None,
+    domain_profile_id: str | None = None,
+) -> dict:
+    """创建知识库（v2：省略绑定默认『通用』预设，图谱本体确定）。"""
+    pid = domain_profile_id or GENERIC_PRESET_ID
     async with async_session() as session:
         repo = KnowledgeBaseRepository(session)
-        kb = await repo.create(name=name, description=description)
+        kb = await repo.create(name=name, description=description, domain_profile_id=pid)
         return _kb_to_dict(kb)
 
 
@@ -80,6 +89,15 @@ async def delete_knowledge_base(kb_id: str) -> bool:
 
     # 1f. 删除模型绑定（手动级联）
     await model_service.delete_kb_bindings(kb_id)
+
+    # 1g. 删除图谱数据（Neo4j 按 kb_id 隔离；v2 补齐 v1 缺口——KB 删除联动清图）
+    try:
+        if settings.graph_enabled:
+            await Neo4jStore.execute_write(
+                "MATCH (n) WHERE n.kb_id = $kb_id DETACH DELETE n", {"kb_id": kb_id}
+            )
+    except Exception as e:
+        logger.error("删除图谱数据失败（不阻断主流程）: kb_id=%s, error=%s", kb_id, e)
 
     # 2. 删除 Milvus Collection（同步操作，放到线程池）
     try:

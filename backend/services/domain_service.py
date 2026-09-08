@@ -10,6 +10,8 @@
 """
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
+
 from core.database import async_session
 from core.domain_presets import (
     BID_PRESET_ID,
@@ -22,6 +24,7 @@ from core.domain_presets import (
     RESERVED_LABELS,
 )
 from models.domain import DomainProfile
+from repositories.document_repository import DocumentRepository
 from repositories.domain_repository import DomainRepository
 from utils.logging import get_logger
 
@@ -29,6 +32,14 @@ logger = get_logger(__name__)
 
 # 缓存: {profile_id: ProfileData}；None = 未加载
 _cache: dict[str, dict] | None = None
+
+
+class DomainValidationError(ValueError):
+    """模板业务规则冲突（400：名称重复/内置预设受保护等）。"""
+
+
+class DomainInUseError(ValueError):
+    """模板仍被知识库引用等使用中冲突（409）。"""
 
 
 # ============================================================
@@ -56,6 +67,7 @@ def _to_profile_data(profile: DomainProfile) -> dict:
     return {
         "id": profile.id,
         "name": profile.name,
+        "description": profile.description or "",
         "is_preset": profile.is_preset,
         "entity_types": profile.entity_types or [],        # 原始有序清单（提示词生成用）
         "relation_types": profile.relation_types or [],    # 原始有序清单（提示词生成用）
@@ -82,6 +94,7 @@ def _preset_data(preset: dict, preset_id: str) -> dict:
     return {
         "id": preset_id,
         "name": preset["name"],
+        "description": preset.get("description", ""),
         "is_preset": True,
         "entity_types": preset["entity_types"],            # 原始有序清单（提示词生成用）
         "relation_types": preset["relation_types"],        # 原始有序清单（提示词生成用）
@@ -175,6 +188,7 @@ def profile_meta(profile: dict) -> dict:
     return {
         "id": profile["id"],
         "name": profile["name"],
+        "description": profile.get("description", ""),
         "is_preset": profile["is_preset"],
         "entity_types": [
             {"code": code, "name": meta["name"], "color": meta["color"],
@@ -262,3 +276,145 @@ async def get_profile_for_kb(kb_id: str) -> dict:
     if _cache and GENERIC_PRESET_ID in _cache:
         return _cache[GENERIC_PRESET_ID]
     return _generic_fallback()
+
+
+# ============================================================
+# 模板 CRUD / 复制 / KB 绑定（路由层调用，内部维护缓存与联动）
+# ============================================================
+
+async def list_profiles() -> list[dict]:
+    """全部模板紧凑结构（内置预设在前，其后按名称）。"""
+    await ensure_cache()
+    profiles = list(_cache_snapshot().values())
+    profiles.sort(key=lambda p: (not p["is_preset"], p["name"]))
+    return profiles
+
+
+async def create_profile(
+    name: str,
+    entity_types: list[dict],
+    relation_types: list[dict],
+    description: str = "",
+) -> dict:
+    """新建自定义模板；名称重复 → DomainValidationError。"""
+    name = (name or "").strip()
+    errors = validate_profile(name, entity_types, relation_types)
+    if errors:
+        raise DomainValidationError("；".join(errors))
+    try:
+        async with async_session() as session:
+            row = await DomainRepository(session).create(
+                name=name, entity_types=entity_types,
+                relation_types=relation_types, description=description,
+            )
+    except IntegrityError as e:
+        raise DomainValidationError(f"模板名称已存在: {name}") from e
+    invalidate_cache()
+    return _to_profile_data(row)
+
+
+async def update_profile(
+    profile_id: str,
+    name: str,
+    description: str,
+    entity_types: list[dict],
+    relation_types: list[dict],
+) -> dict | None:
+    """整包更新自定义模板（内置预设不可编辑），并联动失效引用 KB 图谱状态。"""
+    async with async_session() as session:
+        repo = DomainRepository(session)
+        row = await repo.get_by_id(profile_id)
+        if row is None:
+            return None
+        if row.is_preset:
+            raise DomainValidationError("内置预设不可编辑，可复制后修改")
+    name = (name or "").strip()
+    errors = validate_profile(name, entity_types, relation_types)
+    if errors:
+        raise DomainValidationError("；".join(errors))
+    try:
+        async with async_session() as session:
+            updated = await DomainRepository(session).update(
+                profile_id, name=name, description=description,
+                entity_types=entity_types, relation_types=relation_types,
+            )
+    except IntegrityError as e:
+        raise DomainValidationError(f"模板名称已存在: {name}") from e
+    invalidate_cache()
+    await reset_kb_graphs_of_profile(profile_id)
+    return _to_profile_data(updated)
+
+
+async def delete_profile(profile_id: str) -> bool:
+    """删除自定义模板；内置预设受保护；仍有 KB 引用 → DomainInUseError。"""
+    async with async_session() as session:
+        repo = DomainRepository(session)
+        row = await repo.get_by_id(profile_id)
+        if row is None:
+            return False
+        if row.is_preset:
+            raise DomainValidationError("内置预设不可删除")
+        refs = await repo.count_kb_refs(profile_id)
+        if refs > 0:
+            raise DomainInUseError(f"仍有 {refs} 个知识库使用该模板，请先为这些知识库更换模板")
+        await repo.delete(profile_id)
+    invalidate_cache()
+    return True
+
+
+async def count_profile_refs(profile_id: str) -> int:
+    """引用该模板的知识库数量（模板详情展示/删除校验用）。"""
+    async with async_session() as session:
+        return await DomainRepository(session).count_kb_refs(profile_id)
+
+
+async def copy_profile(profile_id: str) -> dict | None:
+    """复制模板为可编辑副本（名称『原（副本）』，冲突自动加序号）。"""
+    source = await get_profile(profile_id)
+    if source is None:
+        return None
+    await ensure_cache()
+    existing_names = {p["name"] for p in _cache_snapshot().values()}
+    base = f"{source['name']}（副本）"
+    name = base
+    i = 2
+    while name in existing_names:
+        name = f"{base} {i}"
+        i += 1
+        if i > 50:
+            raise DomainValidationError("副本命名冲突过多，请先清理同名模板")
+    return await create_profile(
+        name=name,
+        entity_types=source["entity_types"],
+        relation_types=source["relation_types"],
+        description=f"{source.get('description', '')}（副本）",
+    )
+
+
+async def reset_kb_graphs_of_profile(profile_id: str) -> int:
+    """模板变更联动：引用该模板的全部 KB 图谱状态 → none（等待重建）。"""
+    async with async_session() as session:
+        kb_ids = await DomainRepository(session).list_kb_ids_by_profile(profile_id)
+    if not kb_ids:
+        return 0
+    async with async_session() as session:
+        doc_repo = DocumentRepository(session)
+        for kb_id in kb_ids:
+            try:
+                await doc_repo.reset_graph_status_by_kb(kb_id)
+            except Exception as e:
+                logger.warning("模板变更失效 KB 图谱状态失败: kb=%s err=%s", kb_id, e)
+    logger.info("模板变更联动失效图谱: profile=%s kbs=%d", profile_id, len(kb_ids))
+    return len(kb_ids)
+
+
+async def bind_kb_profile(kb_id: str, profile_id: str) -> dict | None:
+    """KB 换绑领域模板（图谱状态联动失效）；KB 不存在返回 None。"""
+    async with async_session() as session:
+        kb = await DomainRepository(session).bind_kb(kb_id, profile_id)
+        if kb is None:
+            return None
+    # 换绑 = 本体变化：失效图谱构建状态，等待重建（方案 47 Step 4）
+    async with async_session() as session:
+        await DocumentRepository(session).reset_graph_status_by_kb(kb_id)
+    return await get_profile(profile_id)
