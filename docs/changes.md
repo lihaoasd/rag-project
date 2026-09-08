@@ -1,5 +1,15 @@
 # 修改记录
 
+## 2026-09-08（v2 · 分支 v2-generic-kb · 库 ai_bid_rag_v2）
+
+- v2 里程碑：v1 封板（tag v1.1.0）；新建 v2-generic-kb 分支与新库 ai_bid_rag_v2（迁移至 0023，10 表）。设计 `docs/10-generic-kb-v2-design.md`、开发方案 `docs/plan/47-domain-config-plan.md` 已按推荐默认定稿（§14/§1.1 默认采纳：内置通用+投标预设、存量不搬移、预设只读可复制、不做每类开关）。
+- M1 后端数据层（方案 Step 1）：
+  - 新增 `core/domain_presets.py`：领域模板种子单一事实源（通用 9 实体/12 关系、投标 9 实体/15 关系，含 code/中文名/颜色/描述/示例与方向提示）+ 校验常量（ENTITY_CODE_RE、数量边界、保留标签 Entity/Document）；
+  - 新增 `models/domain.py`（DomainProfile：UTF8JSONB 存 entity_types/relation_types，is_preset 标记内置模板）；`models/knowledge_base.py` 加 `domain_profile_id` 列（无外键，应用层校验）；`models/__init__.py` 导出；
+  - 迁移 `0024_domain_profiles.py`：建表 + KB 加列 + 索引 + 种子（固定 UUID 00000000-…-0001/0002，JSON ensure_ascii=False）；
+  - 新增 `repositories/domain_repository.py`：模板 CRUD + count_kb_refs/list_kb_ids_by_profile（删除前引用校验）+ bind_kb（KB 绑定/换绑）。
+  - 验证：迁移在 ai_bid_rag_v2 执行 exit 0；冒烟确认 alembic_version=0024、种子（通用 9/12、投标 9/15，UTF-8 精确匹配=2）、knowledge_bases.domain_profile_id 列存在；新模块导入自检通过。
+
 ## 2026-09-08
 
 - 日志降噪：`utils/logging.py` 的第三方压级名单加入 `pdfminer`/`pdfplumber` → WARNING（此前 DEBUG 启动时 pdfminer 逐 token/逐字符解析日志刷屏，单份大 PDF 可达数十万行）；`core/pdf_extractor.py` 在逐页解析时输出 `PDF 正在解析第 x/y 页`（INFO），解析进度一目了然且无库级噪音。验证：pdf_extractor + config 模块 58 passed。

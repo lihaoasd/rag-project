@@ -13,3 +13,5 @@ class KnowledgeBase(Base, UUIDMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     document_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    # 领域模板（v2）：图谱实体/关系本体来源；NULL = 未绑定（缺省按内置通用预设处理）
+    domain_profile_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
