@@ -276,7 +276,8 @@ async function loadList() {
 }
 
 async function openDetail(row, mode) {
-  editor.value = { visible: true, mode, loading: true, row, form: null }
+  // 同步给初始空表单，避免 await 期间对话框渲染 editor.form 为 null 报错
+  editor.value = { visible: true, mode, loading: true, row, form: emptyForm() }
   preview.value = null
   try {
     const detail = await getDomain(row.id)

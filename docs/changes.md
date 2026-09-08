@@ -48,6 +48,7 @@
   - 现状核查：全系统单一物理索引 `bid_chunks`（v1/v2 `.env` 均未设 `ES_INDEX_NAME`）；文档按 `kb_id` 字段区分、检索/删除均带 kb 条件 → **KB 级逻辑隔离已有，但 v1 与 v2 物理混存同一索引**（对账/清理/映射升级互相牵连）。
   - 处理（用户确认方案 A：仅配置 + 文档，**代码零改动**——索引名本就是配置项 `es_index_name ← ES_INDEX_NAME`）：v2 `backend/.env` 增加 `ES_INDEX_NAME=bid_chunks_v2`；`backend/.env.example` 补 ES 段示例；v1 环境文件不动（保持默认 `bid_chunks`）。
   - 验证：真实 ES 预建 `bid_chunks_v2` 成功；索引清单同时含 `bid_chunks` 与 `bid_chunks_v2`，v1 索引未受影响。
+- 修复 · 领域模板「查看/预览/编辑」点击无效：`openDetail` 在 `await getDomain` 期间 `editor.form` 仍为 null，而对话框（destroy-on-close 重挂载）立即渲染 `v-model="editor.form.xxx"` → 空值解引用报错致弹窗打不开；改为打开时同步初始化 `emptyForm()`，拉取成功后回填。`npm run build` 通过。
 
 ## 2026-09-08
 
