@@ -2,6 +2,14 @@
 
 ## 2026-09-08（v2 · 分支 v2-generic-kb · 库 ai_bid_rag_v2）
 
+- 词库 × 领域模板多对多映射（方案 `docs/plan/48-lexicon-domain-mapping-plan.md`、设计 `docs/10 §7` 修订 + `docs/04` 注记，评审通过后落地）：
+  - 数据层：`lexicon_terms` 删除 `category` 列；新表 `lexicon_domain_mappings`（词条×领域 → 实体 code，同域唯一约束 uq_…_term_profile、profile 索引）；迁移 `0025_lexicon_domain_mappings.py`（drop idx/category + 建表，downgrade 对称回滚）；新增 `models/lexicon_mapping.py`、`repositories/lexicon_mapping_repository.py`（list_by_profile 只取启用词条、整包 replace、按词条/模板删除、批量计数）；
+  - 服务：`services/lexicon_service.py` 去 category——缓存仅 {term: aliases}；新增 `profile_terms(profile_id)`（该模板下启用词条映射，别名并入）、`match_terms(text, terms)`（长词优先命中标准词/别名）、`list_term_mappings`/`replace_term_mappings`（写前校验 code ∈ 模板、同域唯一）；列表附带 `mappings_count`；词条/映射变更沿用图谱失效联动；`export_csv` 两列、`import_csv` 忽略旧第 3 列分类；
+  - 图谱链路：`core/graph_extractor.py` 固定分类映射删除——词库实体仅按“KB 模板下映射 code”产出，LLM 实体名归并改为 `_merge_by_code`（映射 code == LLM type 才归并）；`graph_service.search_subgraph` 候选 = 该 KB 模板映射词条 ∪ 正则 ∪ query（顺带修复该函数先前缺失的 `lexicon_service`/`_regex_match_entities` 引用）；`domain_service.delete_profile` 联动清映射；
+  - API/前端：词条级 `GET/PUT /api/lexicon/terms/{id}/domain-mappings`（整包替换）；词库页删除分类列/过滤/表单，新增“领域映射”列与映射编辑弹窗（领域下拉 → 域内实体类型下拉、同域防重复、实体选项按域懒加载），导入提示与 CSV 兼容说明更新；
+  - 兼容说明：旧分类弃置不迁移（需进图词条在页面按域补映射）；旧 3 列 CSV 导入兼容；
+  - 用例：lexicon 服务/路由新增映射用例、extractor 归并改 `_merge_by_code`（跨域 code 不归并新用例）、search_es 缓存形状同步；验证：迁移真实执行（列/表/唯一约束核对通过）、全量 pytest **794 passed**、前端 `npm run build` 通过。
+
 - v2 里程碑：v1 封板（tag v1.1.0）；新建 v2-generic-kb 分支与新库 ai_bid_rag_v2（迁移至 0023，10 表）。设计 `docs/10-generic-kb-v2-design.md`、开发方案 `docs/plan/47-domain-config-plan.md` 已按推荐默认定稿（§14/§1.1 默认采纳：内置通用+投标预设、存量不搬移、预设只读可复制、不做每类开关）。
 - M1 后端数据层（方案 Step 1）：
   - 新增 `core/domain_presets.py`：领域模板种子单一事实源（通用 9 实体/12 关系、投标 9 实体/15 关系，含 code/中文名/颜色/描述/示例与方向提示）+ 校验常量（ENTITY_CODE_RE、数量边界、保留标签 Entity/Document）；

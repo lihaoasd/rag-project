@@ -358,6 +358,14 @@ async def delete_profile(profile_id: str) -> bool:
         if refs > 0:
             raise DomainInUseError(f"仍有 {refs} 个知识库使用该模板，请先为这些知识库更换模板")
         await repo.delete(profile_id)
+    # 词库领域映射清理：模板已删除，映射失去意义（v2 docs/10 §7）
+    try:
+        from repositories.lexicon_mapping_repository import LexiconMappingRepository
+
+        async with async_session() as session:
+            await LexiconMappingRepository(session).delete_by_profile(profile_id)
+    except Exception as e:
+        logger.warning("清理词库领域映射失败（忽略）: profile=%s err=%s", profile_id, e)
     invalidate_cache()
     return True
 

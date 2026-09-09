@@ -1,5 +1,5 @@
 """
-词库 Repository — lexicon_terms 表 CRUD（分页/搜索/批量导入）。
+词库 Repository — lexicon_terms 表 CRUD（分页/搜索/批量导入；词条为全局分词/同义词词典，无分类）。
 """
 import uuid
 
@@ -22,14 +22,12 @@ class LexiconRepository:
         self,
         term: str,
         aliases: list[str] | None = None,
-        category: str = "",
         enabled: bool = True,
     ) -> LexiconTerm:
         entry = LexiconTerm(
             id=str(uuid.uuid4()),
             term=term,
             aliases=aliases or [],
-            category=category,
             enabled=enabled,
         )
         self.session.add(entry)
@@ -52,9 +50,8 @@ class LexiconRepository:
         offset: int = 0,
         limit: int = 20,
         search: str = "",
-        category: str = "",
     ) -> tuple[list[LexiconTerm], int]:
-        """分页查询词条（支持词条/别名模糊搜索与分类过滤）。"""
+        """分页查询词条（支持词条/别名模糊搜索）。"""
         stmt = select(LexiconTerm)
         count_stmt = select(func.count(LexiconTerm.id))
         if search:
@@ -65,9 +62,6 @@ class LexiconRepository:
             count_stmt = count_stmt.where(
                 LexiconTerm.term.ilike(like) | LexiconTerm.aliases.cast(func.text).ilike(like)
             )
-        if category:
-            stmt = stmt.where(LexiconTerm.category == category)
-            count_stmt = count_stmt.where(LexiconTerm.category == category)
         total = (await self.session.scalars(count_stmt)).one()
         rows = list(
             (
@@ -83,7 +77,6 @@ class LexiconRepository:
         term_id: str,
         term: str | None = None,
         aliases: list[str] | None = None,
-        category: str | None = None,
         enabled: bool | None = None,
     ) -> LexiconTerm | None:
         entry = await self.get_by_id(term_id)
@@ -93,8 +86,6 @@ class LexiconRepository:
             entry.term = term
         if aliases is not None:
             entry.aliases = aliases
-        if category is not None:
-            entry.category = category
         if enabled is not None:
             entry.enabled = enabled
         await self.session.commit()
@@ -121,14 +112,4 @@ class LexiconRepository:
                 select(func.count(LexiconTerm.id)).where(LexiconTerm.enabled.is_(True))
             )
         ).one()
-        rows = (
-            await self.session.execute(
-                select(LexiconTerm.category, func.count(LexiconTerm.id))
-                .group_by(LexiconTerm.category)
-            )
-        ).all()
-        return {
-            "total": total,
-            "enabled": enabled,
-            "categories": {cat or "": cnt for cat, cnt in rows},
-        }
+        return {"total": total, "enabled": enabled}

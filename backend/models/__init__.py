@@ -9,6 +9,7 @@ from .conversation import Conversation, Message
 from .model_config import ModelConfig, KBModelBinding
 from .prompt_template import PromptTemplate
 from .lexicon import LexiconTerm
+from .lexicon_mapping import LexiconDomainMapping
 
 __all__ = [
     "Base",
@@ -22,4 +23,5 @@ __all__ = [
     "KBModelBinding",
     "PromptTemplate",
     "LexiconTerm",
+    "LexiconDomainMapping",
 ]

@@ -1,12 +1,13 @@
 """
-实体/关系抽取管线 — 词库/规则优先 + LLM 补充 + 合并去重（v2 领域模板动态化）。
+实体/关系抽取管线 — 词库映射词条/内置正则优先 + LLM 补充 + 合并去重（v2 领域模板动态化）。
 
-流程（设计 docs/10 §3 / docs/09 §5.1）：
-1. 词库匹配（lexicon_service.match_entities，零成本）→ 高频实体，类型须在该 KB 领域模板内
+流程（docs/10 §3/§7 / docs/plan/48）：
+1. 词库映射词条（仅 KB 绑定模板下存在映射的词条才产出，类型 = 映射 code）→ 确定性实体
 2. 内置正则（金额/日期，模板含 Quantity/Time 才启用）→ 确定性实体
 3. LLM 逐 chunk 补充（提示词由领域模板生成，schema 约束）→ 长尾实体 + 关系
 4. 合并去重：全半角/空白归一化，同 (type, name) 合并来源 chunk_ids；
-   关系端点/类型按模板过滤（端点不在实体集合丢弃；类型不在模板关系清单丢弃）
+   关系端点/类型按模板过滤（端点不在实体集合丢弃；类型不在模板关系清单丢弃）；
+   LLM 实体名仅在“词条在 KB 模板下映射 code == LLM 类型”时归并到标准词
 
 返回结构：
     entities:      [{name, type, description, chunk_ids}]
@@ -62,25 +63,19 @@ def _profile_or_default(profile: dict | None) -> dict:
     return domain_service.default_profile()
 
 
-def _merge_with_lexicon(name: str, label: str) -> str:
-    """词库归并（§5.1/§5.3）：LLM 实体名与词库标准词/别名精确+包含匹配，命中归一为标准词。
+def _merge_by_code(name: str, etype: str, terms: list[dict]) -> str:
+    """LLM 实体名归并（v2 §7.3）：仅当词条在 KB 模板下映射 code == LLM 实体类型时归一为标准词。
 
     - 精确：name == 标准词 或 name ∈ 别名 → 标准词；
     - 包含：标准词/别名是 name 的子串 → 取最长命中标准词；
-    - 仅当词库分类映射的实体类型与 LLM 标签一致才归并（避免跨类型误合并）。
+    - code 不一致（词条在该域映射为其他类型）不归并，避免跨类型误合并。
     """
-    cache = lexicon_service._cache or {}
-    type_map = {
-        term: lexicon_service.LEXICON_CATEGORY_ENTITY_TYPES.get(
-            lexicon_service.normalize_category(meta["category"])
-        )
-        for term, meta in cache.items()
-    }
     candidates: list[str] = []
-    for term, meta in cache.items():
-        if type_map.get(term) != label or not term:
+    for t in terms:
+        if not t.get("term") or t.get("code") != etype:
             continue
-        aliases = meta["aliases"] or []
+        term = t["term"]
+        aliases = t.get("aliases") or []
         if name == term or name in aliases:
             return term
         if term in name or any(a and a in name for a in aliases):
@@ -194,6 +189,16 @@ async def extract_from_chunks(
     entity_codes = p["entity_codes"]
     relation_names = p["relation_names"]
 
+    # 词库映射词条：仅 KB 绑定模板下存在映射、且映射 code 在模板内（映射码失效自然过滤）
+    lexicon_terms: list[dict] = []
+    try:
+        lexicon_terms = [
+            t for t in await lexicon_service.profile_terms(p.get("id"))
+            if t.get("code") in entity_codes
+        ]
+    except Exception as e:
+        logger.warning("词库领域映射加载失败（忽略，仅走正则/LLM）: %s", e)
+
     # 实体合并桶：key=(type, name) → {name, type, description, chunk_ids}
     entity_bucket: dict[tuple[str, str], dict] = {}
     # 关系桶：key=(source, type, target) → {source, target, type, description, chunk_ids}
@@ -236,10 +241,9 @@ async def extract_from_chunks(
         chunk_id = chunk["id"]
         text = chunk["text"]
 
-        # 词库实体（v2：词条映射类型不在模板 → 跳过，防跨领域污染）
-        for ent in lexicon_service.match_entities(text):
-            if ent["type"] in entity_codes:
-                _add_entity(ent["name"], ent["type"], "", chunk_id)
+        # 词库映射词条（v2 §7：无映射/映射 code 不在模板 → 不进图）
+        for word, code in lexicon_service.match_terms(text, lexicon_terms):
+            _add_entity(word, code, "", chunk_id)
         # 正则实体（v2：模板含 Quantity/Time 类型才进图）
         for ent in _regex_match_entities(text):
             if ent["type"] in entity_codes:
@@ -257,9 +261,9 @@ async def extract_from_chunks(
                     if e.type not in entity_codes:
                         logger.debug("LLM 实体类型不在模板已跳过: %s", e.type)
                         continue
-                    # chunk 归属用原文名定位，节点名再词库归并（避免归并后标准词不在原文中）
+                    # chunk 归属用原文名定位，节点名按“同码词库映射”归并
                     hit_ids = _assign_chunk_ids(e.name, llm_batch, llm_batch_chunk_ids)
-                    name = _merge_with_lexicon(e.name, e.type)
+                    name = _merge_by_code(e.name, e.type, lexicon_terms)
                     for cid in hit_ids:
                         _add_entity(name, e.type, e.description, cid)
                 for r in output.relationships:
@@ -279,7 +283,7 @@ async def extract_from_chunks(
                     logger.debug("LLM 实体类型不在模板已跳过: %s", e.type)
                     continue
                 hit_ids = _assign_chunk_ids(e.name, llm_batch, llm_batch_chunk_ids)
-                name = _merge_with_lexicon(e.name, e.type)
+                name = _merge_by_code(e.name, e.type, lexicon_terms)
                 for cid in hit_ids:
                     _add_entity(name, e.type, e.description, cid)
             for r in output.relationships:

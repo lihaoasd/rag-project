@@ -412,14 +412,12 @@ class HealthResponse(BaseModel):
 class LexiconTermCreate(BaseModel):
     term: str = Field(..., min_length=1, max_length=255, description="词条（标准词）")
     aliases: list[str] = Field(default_factory=list, description="别名/同义词列表")
-    category: str = Field("", max_length=50, description="分类（自由文本，可空）")
     enabled: bool = Field(True, description="启用状态")
 
 
 class LexiconTermUpdate(BaseModel):
     term: str | None = Field(None, min_length=1, max_length=255)
     aliases: list[str] | None = Field(None)
-    category: str | None = Field(None, max_length=50)
     enabled: bool | None = Field(None)
 
 
@@ -427,7 +425,6 @@ class LexiconTermResponse(BaseModel):
     id: str
     term: str
     aliases: list[str]
-    category: str
     enabled: bool
     created_at: str
     updated_at: str
@@ -441,11 +438,25 @@ class LexiconTermListResponse(BaseModel):
 class LexiconStatsResponse(BaseModel):
     total: int
     enabled: int
-    categories: dict[str, int]
+
+
+class LexiconMappingItem(BaseModel):
+    domain_profile_id: str
+    domain_name: str = ""
+    entity_code: str
+    entity_name: str = ""
+
+
+class LexiconMappingsResponse(BaseModel):
+    items: list[LexiconMappingItem]
+
+
+class LexiconMappingsUpdate(BaseModel):
+    mappings: list[LexiconMappingItem] = Field(default_factory=list, description="整包替换")
 
 
 class LexiconImportRequest(BaseModel):
-    """CSV 导入：每行 `词条,别名1;别名2,分类`（表头可选）"""
+    """CSV 导入：每行 `词条,别名1;别名2`（旧文件第 3 列分类自动忽略）"""
 
     content: str = Field(..., description="CSV 文本内容（UTF-8）")
 

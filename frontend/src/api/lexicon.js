@@ -1,13 +1,13 @@
 import apiClient from './request'
 
 /**
- * 词库管理 API — 词条 CRUD、导入导出、统计
+ * 词库管理 API — 词条 CRUD、词条×领域映射、导入导出、统计
  */
 
 /** 分页查询词条 */
-export function listTerms({ page = 1, page_size = 20, search = '', category = '' } = {}) {
+export function listTerms({ page = 1, page_size = 20, search = '' } = {}) {
   return apiClient
-    .get('/lexicon/terms', { params: { page, page_size, search, category } })
+    .get('/lexicon/terms', { params: { page, page_size, search } })
     .then((res) => res.data)
 }
 
@@ -24,6 +24,18 @@ export function updateTerm(id, data) {
 /** 删除词条 */
 export function deleteTerm(id) {
   return apiClient.delete(`/lexicon/terms/${id}`)
+}
+
+/** 词条领域映射（词条 × 领域模板 → 实体类型） */
+export function getTermDomainMappings(id) {
+  return apiClient.get(`/lexicon/terms/${id}/domain-mappings`).then((res) => res.data)
+}
+
+/** 整包替换词条领域映射 */
+export function updateTermDomainMappings(id, mappings) {
+  return apiClient
+    .put(`/lexicon/terms/${id}/domain-mappings`, { mappings })
+    .then((res) => res.data)
 }
 
 /** CSV 批量导入（文本） */

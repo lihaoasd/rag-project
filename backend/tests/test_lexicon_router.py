@@ -18,15 +18,23 @@ def client():
         return TestClient(app)
 
 
-def _term_dict(term="甲公司", category="公司", enabled=True):
+def _term_dict(term="甲公司", enabled=True):
     return {
         "id": TERM_ID,
         "term": term,
         "aliases": ["甲建设集团"],
-        "category": category,
         "enabled": enabled,
         "created_at": "",
         "updated_at": "",
+    }
+
+
+def _mapping_dict(pid="p1", code="Organization"):
+    return {
+        "domain_profile_id": pid,
+        "domain_name": "通用",
+        "entity_code": code,
+        "entity_name": "组织",
     }
 
 
@@ -37,7 +45,7 @@ class TestTermsCRUD:
             m.return_value = _term_dict()
             resp = client.post(
                 "/api/lexicon/terms",
-                json={"term": "甲公司", "aliases": ["甲建设集团"], "category": "公司"},
+                json={"term": "甲公司", "aliases": ["甲建设集团"]},
             )
         assert resp.status_code == 200
         assert m.await_args.args[0] == "甲公司"
@@ -55,10 +63,10 @@ class TestTermsCRUD:
         with patch("routers.lexicon.lexicon_service.list_terms",
                    new_callable=AsyncMock) as m:
             m.return_value = {"items": [_term_dict()], "total": 1}
-            resp = client.get("/api/lexicon/terms?search=甲&category=公司")
+            resp = client.get("/api/lexicon/terms?search=甲")
         assert resp.status_code == 200
         assert resp.json()["total"] == 1
-        assert m.await_args.args == (1, 20, "甲", "公司")
+        assert m.await_args.args == (1, 20, "甲")
 
     def test_update_term(self, client):
         with patch("routers.lexicon.lexicon_service.update_term",
@@ -74,6 +82,51 @@ class TestTermsCRUD:
                    new_callable=AsyncMock):
             resp = client.delete(f"/api/lexicon/terms/{TERM_ID}")
         assert resp.status_code == 204
+
+
+class TestDomainMappings:
+    def test_get_mappings(self, client):
+        with patch("routers.lexicon.lexicon_service.list_term_mappings",
+                   new_callable=AsyncMock) as m:
+            m.return_value = [_mapping_dict()]
+            resp = client.get(f"/api/lexicon/terms/{TERM_ID}/domain-mappings")
+        assert resp.status_code == 200
+        assert resp.json()["items"][0]["entity_code"] == "Organization"
+
+    def test_put_mappings_full_replace(self, client):
+        with patch("routers.lexicon.lexicon_service.replace_term_mappings",
+                   new_callable=AsyncMock) as m:
+            m.return_value = [_mapping_dict()]
+            resp = client.put(
+                f"/api/lexicon/terms/{TERM_ID}/domain-mappings",
+                json={"mappings": [{"domain_profile_id": "p1", "entity_code": "Organization"}]},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["items"][0]["domain_profile_id"] == "p1"
+        payload = m.await_args.args[1]
+        assert payload[0]["domain_profile_id"] == "p1"
+        assert payload[0]["entity_code"] == "Organization"
+
+    def test_put_mappings_invalid_code_400(self, client):
+        with patch("routers.lexicon.lexicon_service.replace_term_mappings",
+                   new_callable=AsyncMock,
+                   side_effect=ValueError("实体类型 X 不在领域「通用」中")):
+            resp = client.put(
+                f"/api/lexicon/terms/{TERM_ID}/domain-mappings",
+                json={"mappings": [{"domain_profile_id": "p1", "entity_code": "X"}]},
+            )
+        assert resp.status_code == 400
+        assert "不在领域" in resp.json()["detail"]
+
+    def test_put_mappings_term_missing_404(self, client):
+        with patch("routers.lexicon.lexicon_service.replace_term_mappings",
+                   new_callable=AsyncMock,
+                   side_effect=ValueError("词条不存在")):
+            resp = client.put(
+                f"/api/lexicon/terms/{TERM_ID}/domain-mappings",
+                json={"mappings": []},
+            )
+        assert resp.status_code == 404
 
 
 class TestImportExport:
@@ -97,7 +150,7 @@ class TestImportExport:
     def test_export_csv(self, client):
         with patch("routers.lexicon.lexicon_service.export_csv",
                    new_callable=AsyncMock) as m:
-            m.return_value = "词条,别名,分类\n甲公司,甲建设集团,公司\n"
+            m.return_value = "词条,别名\n甲公司,甲建设集团\n"
             resp = client.get("/api/lexicon/export/csv")
         assert resp.status_code == 200
         assert resp.text.startswith("词条,别名")
@@ -105,7 +158,7 @@ class TestImportExport:
     def test_stats(self, client):
         with patch("routers.lexicon.lexicon_service.get_stats",
                    new_callable=AsyncMock) as m:
-            m.return_value = {"total": 2, "enabled": 1, "categories": {"公司": 2}}
+            m.return_value = {"total": 2, "enabled": 1}
             resp = client.get("/api/lexicon/stats")
         assert resp.status_code == 200
         assert resp.json()["total"] == 2

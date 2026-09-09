@@ -85,45 +85,38 @@ class TestAssignChunkIds:
         assert graph_extractor._assign_chunk_ids("甲公司", [], []) == []
 
 
-class TestMergeWithLexicon:
+class TestMergeByCode:
+    """LLM 实体名归并：仅当词条在 KB 模板下映射 code == LLM 类型（v2 §7.3）。"""
+
+    @staticmethod
+    def _terms():
+        return [
+            {"term": "甲公司", "aliases": ["甲建设集团"], "code": "Organization"},
+            {"term": "甲建设集团", "aliases": [], "code": "Organization"},
+        ]
+
     def test_exact_alias_merge(self):
-        lexicon_service._cache = {
-            "甲公司": {"aliases": ["甲建设集团"], "category": "organization"},
-        }
-        try:
-            assert graph_extractor._merge_with_lexicon("甲建设集团", "Organization") == "甲公司"
-        finally:
-            lexicon_service._cache = None
+        terms = [self._terms()[0]]
+        assert graph_extractor._merge_by_code("甲建设集团", "Organization", terms) == "甲公司"
 
     def test_exact_term_merge(self):
-        lexicon_service._cache = {
-            "甲公司": {"aliases": ["甲建设集团"], "category": "organization"},
-        }
-        try:
-            assert graph_extractor._merge_with_lexicon("甲公司", "Organization") == "甲公司"
-        finally:
-            lexicon_service._cache = None
+        terms = [self._terms()[0]]
+        assert graph_extractor._merge_by_code("甲公司", "Organization", terms) == "甲公司"
 
     def test_containment_merge_longest(self):
-        lexicon_service._cache = {
-            "甲公司": {"aliases": [], "category": "organization"},
-            "甲建设集团": {"aliases": [], "category": "organization"},
-        }
-        try:
-            # "甲建设集团施工队" 含两个标准词，取最长
-            assert graph_extractor._merge_with_lexicon("甲建设集团施工队", "Organization") == "甲建设集团"
-        finally:
-            lexicon_service._cache = None
+        terms = self._terms()
+        # "甲建设集团施工队" 含两个标准词，取最长
+        assert graph_extractor._merge_by_code("甲建设集团施工队", "Organization", terms) == "甲建设集团"
 
     def test_type_mismatch_not_merged(self):
-        lexicon_service._cache = {
-            "甲公司": {"aliases": [], "category": "organization"},
-        }
-        try:
-            # LLM 标签为 Project，词库是 organization → 不归并
-            assert graph_extractor._merge_with_lexicon("甲公司", "Project") == "甲公司"
-        finally:
-            lexicon_service._cache = None
+        terms = [self._terms()[0]]
+        # LLM 标签为 Project，词条在模板下映射为 Organization → 不归并
+        assert graph_extractor._merge_by_code("甲公司", "Project", terms) == "甲公司"
+
+    def test_code_mismatch_other_domain_mapping_not_merged(self):
+        # 同一词条在“医疗”模板映射 Disease，但当前 KB 模板为通用（Organization）→ 无匹配
+        terms = [{"term": "甲公司", "aliases": [], "code": "Disease"}]
+        assert graph_extractor._merge_by_code("甲公司", "Organization", terms) == "甲公司"
 
 
 class TestExtractionPromptFromProfile:
@@ -191,11 +184,10 @@ class TestExtractionPromptFromProfile:
 class TestExtractFromChunks:
     @pytest.mark.asyncio
     async def test_lexicon_and_llm_merge(self, mock_async_session, mock_session):
-        # 注入词库缓存（词条 → 分类）
-        lexicon_service._cache = {
-            "甲公司": {"aliases": ["甲建设集团"], "category": "organization"},
-            "招标文件": {"aliases": [], "category": "other"},  # other 不进图
-        }
+        # 词条×领域映射：仅“甲公司→Organization”有映射（招标文件无映射 → 不进图）
+        mapped_terms = [
+            {"term": "甲公司", "aliases": ["甲建设集团"], "code": "Organization"},
+        ]
         llm_output = ExtractionOutput(
             entities=[
                 {"name": "XX道路改造工程", "type": "Project", "description": "项目"},
@@ -208,8 +200,13 @@ class TestExtractFromChunks:
             {"id": "c1", "text": "甲公司（甲建设集团）参与 XX道路改造工程，金额 3000万元。"},
             {"id": "c2", "text": "招标文件要求……"},
         ]
+        lexicon_service._cache = {}
         try:
             with patch(
+                "core.graph_extractor.lexicon_service.profile_terms",
+                new_callable=AsyncMock,
+                return_value=mapped_terms,
+            ), patch(
                 "core.graph_extractor._llm_extract_batch",
                 new_callable=AsyncMock,
                 # 逐 chunk（默认 batch=1）：c1 报实体，c2 无实体 → 实体仅归属 c1
@@ -221,7 +218,7 @@ class TestExtractFromChunks:
 
         assert mock_llm.called
         names = {e["name"] for e in result["entities"]}
-        # 词库实体（别名归一） + LLM 实体 + 正则数量
+        # 词库映射实体（别名归一） + LLM 实体 + 正则数量
         assert "甲公司" in names
         assert "XX道路改造工程" in names
         assert any("3000" in n for n in names)
@@ -232,7 +229,7 @@ class TestExtractFromChunks:
         assert qty["type"] == "Quantity"
         org = next(e for e in result["entities"] if e["name"] == "甲公司")
         assert org["type"] == "Organization"
-        # other 分类不进图
+        # 无映射词条不进图
         assert "招标文件" not in names
         # 关系保留（端点均在实体集合，类型在通用模板关系清单内）
         assert len(result["relationships"]) == 1

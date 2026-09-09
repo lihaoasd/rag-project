@@ -15,11 +15,11 @@ import time
 
 from config import settings
 from core.database import async_session
-from core.graph_extractor import extract_from_chunks
+from core.graph_extractor import _regex_match_entities, extract_from_chunks
 from core.neo4j_store import GraphDisabledError, Neo4jStore
 from core import graph_queue
 from repositories.document_repository import DocumentRepository
-from services import domain_service
+from services import domain_service, lexicon_service
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -507,9 +507,14 @@ async def search_subgraph(kb_id: str, query: str, max_hops: int = 2, limit: int 
     max_hops = max(1, min(max_hops, 3))
     limit = max(1, min(limit, 1000))
 
-    # 1. 实体定位：词库匹配（含别名→标准词）+ 正则层（金额/日期，§6.1）
-    await lexicon_service.ensure_cache()
-    candidates = [e["name"] for e in lexicon_service.match_entities(query)]
+    # 1. 实体定位：该 KB 模板下的词库映射词条（仅名称候选，无类型要求）+ 正则层（金额/日期，§6.1）
+    profile = await domain_service.get_profile_for_kb(kb_id)
+    try:
+        terms = await lexicon_service.profile_terms(profile.get("id"))
+    except Exception as e:
+        logger.warning("词库映射加载失败（检索候选降级为 query 直配）: %s", e)
+        terms = []
+    candidates = [word for word, _ in lexicon_service.match_terms(query, terms)]
     for ent in _regex_match_entities(query):
         if ent["name"] not in candidates:
             candidates.append(ent["name"])

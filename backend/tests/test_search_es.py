@@ -43,7 +43,7 @@ class TestFulltext:
     @pytest.mark.asyncio
     async def test_fulltext_calls_es_search_with_expansion(self, mock_retrieve):
         """fulltext 单选走 ES 检索，查询词经词库扩展（OR 语义），返回高亮且不做 RRF。"""
-        lexicon_service._cache = {"甲公司": {"aliases": ["甲建设集团"], "category": "organization"}}
+        lexicon_service._cache = {"甲公司": {"aliases": ["甲建设集团"]}}
         try:
             with patch("core.es_store.es_search", new_callable=AsyncMock) as mock_es:
                 mock_es.return_value = [_es_hit(0)]

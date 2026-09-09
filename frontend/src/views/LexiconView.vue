@@ -2,7 +2,10 @@
   <div class="lexicon-view">
     <div class="page-header">
       <h2>词库管理</h2>
-      <span class="header-hint">自定义词典：供全文检索分词（需执行同步脚本并重启 ES 生效）与查询扩展（即时生效）</span>
+      <span class="header-hint">
+        全局自定义词典：供全文检索分词（IK 词典导出）与查询扩展（即时生效）；
+        词条与知识图谱的关系通过“领域映射”（词条 × 领域模板 → 实体类型）配置
+      </span>
     </div>
 
     <div class="toolbar">
@@ -10,19 +13,10 @@
         v-model="search"
         placeholder="搜索词条或别名..."
         clearable
-        style="width: 220px"
+        style="width: 240px"
         @keyup.enter="load"
         @clear="load"
       />
-      <el-select
-        v-model="categoryFilter"
-        placeholder="分类过滤"
-        clearable
-        style="width: 160px"
-        @change="load"
-      >
-        <el-option v-for="opt in CATEGORY_OPTIONS" :key="opt.value" :label="opt.label" :value="opt.value" />
-      </el-select>
       <el-button type="primary" @click="load">
         <el-icon><Search /></el-icon>查询
       </el-button>
@@ -49,18 +43,21 @@
           <span v-if="!row.aliases || row.aliases.length === 0" class="muted">-</span>
         </template>
       </el-table-column>
-      <el-table-column prop="category" label="分类" width="130">
+      <el-table-column label="领域映射" width="130">
         <template #default="{ row }">
-          <el-tag v-if="row.category" type="info" size="small">{{ categoryLabel(row.category) }}</el-tag>
-          <span v-else class="muted">-</span>
+          <el-tag v-if="row.mappings_count" type="success" size="small">
+            {{ row.mappings_count }} 个领域
+          </el-tag>
+          <span v-else class="muted">未映射</span>
         </template>
       </el-table-column>
       <el-table-column prop="updated_at" label="更新时间" width="170">
         <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="140" fixed="right">
+      <el-table-column label="操作" width="200" fixed="right">
         <template #default="{ row }">
           <el-button text type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button text type="success" size="small" @click="openMapping(row)">领域映射</el-button>
           <el-button text type="danger" size="small" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
@@ -78,12 +75,8 @@
       />
     </div>
 
-    <!-- 新增/编辑对话框 -->
-    <el-dialog
-      v-model="dialogVisible"
-      :title="editingId ? '编辑词条' : '新增词条'"
-      width="480px"
-    >
+    <!-- 新增/编辑词条对话框 -->
+    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑词条' : '新增词条'" width="480px">
       <el-form :model="form" label-width="80px">
         <el-form-item label="词条" required>
           <el-input v-model="form.term" placeholder="标准词，如：建筑工程施工总承包一级" />
@@ -99,11 +92,8 @@
             style="width: 100%"
           />
         </el-form-item>
-        <el-form-item label="分类">
-          <el-select v-model="form.category" placeholder="选择分类（决定图谱实体类型）" clearable style="width: 100%">
-            <el-option v-for="opt in CATEGORY_OPTIONS" :key="opt.value" :label="opt.label" :value="opt.value" />
-          </el-select>
-          <div class="category-hint">分类决定该词条在知识图谱中的实体类型（其他/术语类不进图谱）</div>
+        <el-form-item label="启用">
+          <el-switch v-model="form.enabled" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -112,18 +102,76 @@
       </template>
     </el-dialog>
 
+    <!-- 领域映射对话框：词条 × 领域模板 → 该模板内实体类型 -->
+    <el-dialog
+      v-model="mappingVisible"
+      :title="`领域映射：${mappingTermName || ''}`"
+      width="760px"
+      destroy-on-close
+    >
+      <div class="mapping-hint">
+        词条在“领域模板”下映射为该模板内的 1 个实体类型（同一领域至多 1 个）。
+        已映射领域：图谱抽取建实体 / LLM 实体名归并 / 图谱检索候选按此生效；
+        未映射领域该词条不进图（仍全局用于 IK 分词与查询同义词扩展）。
+      </div>
+      <div v-loading="mappingLoading" class="mapping-body">
+        <div v-for="(row, idx) in mappingRows" :key="idx" class="mapping-row">
+          <el-select
+            v-model="row.domain_profile_id"
+            filterable
+            placeholder="选择领域模板"
+            style="flex: 1"
+            @change="(pid) => onDomainChange(row, pid)"
+          >
+            <el-option
+              v-for="d in availableDomains(row)"
+              :key="d.id"
+              :label="d.name"
+              :value="d.id"
+            />
+          </el-select>
+          <el-select
+            v-model="row.entity_code"
+            filterable
+            :disabled="!row.domain_profile_id"
+            :loading="!!row.loading"
+            placeholder="选择实体类型"
+            style="flex: 1"
+          >
+            <el-option
+              v-for="e in entityOptions(row.domain_profile_id)"
+              :key="e.code"
+              :label="e.name"
+              :value="e.code"
+            />
+          </el-select>
+          <el-button text type="danger" :disabled="mappingRows.length === 1" @click="removeMappingRow(idx)">
+            删除
+          </el-button>
+        </div>
+        <el-button class="add-mapping" plain @click="addMappingRow">
+          <el-icon><Plus /></el-icon>添加领域
+        </el-button>
+      </div>
+      <template #footer>
+        <el-button @click="mappingVisible = false">取消</el-button>
+        <el-button type="primary" :loading="mappingSaving" :disabled="mappingLoading" @click="handleSaveMappings">
+          保存映射
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 批量导入对话框 -->
     <el-dialog v-model="importVisible" title="CSV 批量导入" width="560px">
       <p class="import-hint">
-        每行一个词条，格式：<code>词条,别名1;别名2,分类</code>（首行表头自动跳过）。<br />
-        分类支持枚举值（organization/project/person/location/qualification/other）或常见中文
-        （公司/项目/人员/地点/资质），自动映射，未知分类归 other。
+        每行一个词条，格式：<code>词条,别名1;别名2</code>（首行表头自动跳过）。
+        旧文件第 3 列（分类）自动忽略；词条与图谱的归属请导入后在“领域映射”中配置。
       </p>
       <el-input
         v-model="importContent"
         type="textarea"
         :rows="8"
-        placeholder="甲公司,甲建设集团;甲建设,organization&#10;乙公司,,公司"
+        placeholder="甲公司,甲建设集团;甲建设&#10;乙公司,"
       />
       <template #footer>
         <el-button @click="importVisible = false">取消</el-button>
@@ -137,38 +185,11 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus, Upload, Download, Document } from '@element-plus/icons-vue'
-import { listTerms, createTerm, updateTerm, deleteTerm, importTerms, exportCsv, exportIkDict } from '@/api/lexicon'
-
-// 词库分类枚举（存储英文枚举，展示中文；决定图谱实体类型，通用本体，见 docs/09 设计 5.2.1）
-const CATEGORY_OPTIONS = [
-  { value: 'organization', label: '公司/机构' },
-  { value: 'person', label: '人员' },
-  { value: 'place', label: '地点' },
-  { value: 'project', label: '项目' },
-  { value: 'product', label: '产品' },
-  { value: 'concept', label: '概念/资质' },
-  { value: 'other', label: '其他/术语' },
-]
-
-function categoryLabel(value) {
-  const opt = CATEGORY_OPTIONS.find((o) => o.value === value)
-  return opt ? opt.label : value || ''
-}
-
-// 历史自由文本分类 → 枚举（编辑旧词条时兼容；location/qualification 为旧投标类型）
-const CATEGORY_LEGACY = {
-  '公司': 'organization', '企业': 'organization', '单位': 'organization', '机构': 'organization',
-  '项目': 'project', '工程': 'project',
-  '人员': 'person', '人名': 'person',
-  '地点': 'place', '位置': 'place',
-  '资质': 'concept', '证书': 'concept', '标准': 'concept', '技能': 'concept',
-}
-
-function normalizeCategory(cat) {
-  if (!cat) return ''
-  if (CATEGORY_OPTIONS.some((o) => o.value === cat)) return cat
-  return CATEGORY_LEGACY[cat.trim()] || 'other'
-}
+import {
+  listTerms, createTerm, updateTerm, deleteTerm, importTerms, exportCsv, exportIkDict,
+  getTermDomainMappings, updateTermDomainMappings,
+} from '@/api/lexicon'
+import { listDomains, getDomain } from '@/api/domain'
 
 // --- State ---
 const items = ref([])
@@ -176,19 +197,28 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 const search = ref('')
-const categoryFilter = ref('')
 const loading = ref(false)
 
 const dialogVisible = ref(false)
 const editingId = ref(null)
 const saving = ref(false)
-const form = ref({ term: '', aliases: [], category: '' })
+const form = ref({ term: '', aliases: [], enabled: true })
+
+// 领域映射
+const mappingVisible = ref(false)
+const mappingLoading = ref(false)
+const mappingSaving = ref(false)
+const mappingTermId = ref(null)
+const mappingTermName = ref('')
+const mappingRows = ref([])
+const domains = ref([])                 // [{id, name, is_preset}]
+const entityOptionsCache = ref({})      // { domainId: [{code, name}] }
 
 const importVisible = ref(false)
 const importContent = ref('')
 const importing = ref(false)
 
-// --- Methods ---
+// --- 词条列表 ---
 async function load() {
   loading.value = true
   try {
@@ -196,7 +226,6 @@ async function load() {
       page: page.value,
       page_size: pageSize.value,
       search: search.value.trim(),
-      category: categoryFilter.value.trim(),
     })
     items.value = data?.items || []
     total.value = data?.total || 0
@@ -208,7 +237,7 @@ async function load() {
 }
 
 function resetForm() {
-  form.value = { term: '', aliases: [], category: '' }
+  form.value = { term: '', aliases: [], enabled: true }
   editingId.value = null
 }
 
@@ -222,7 +251,7 @@ function openEdit(row) {
   form.value = {
     term: row.term,
     aliases: [...(row.aliases || [])],
-    category: normalizeCategory(row.category),
+    enabled: row.enabled,
   }
   dialogVisible.value = true
 }
@@ -253,7 +282,7 @@ async function handleSave() {
 
 async function handleDelete(row) {
   try {
-    await ElMessageBox.confirm(`确认删除词条「${row.term}」？`, '删除确认', { type: 'warning' })
+    await ElMessageBox.confirm(`确认删除词条「${row.term}」？其领域映射将一并删除。`, '删除确认', { type: 'warning' })
     await deleteTerm(row.id)
     ElMessage.success('已删除')
     load()
@@ -264,6 +293,104 @@ async function handleDelete(row) {
   }
 }
 
+// --- 领域映射 ---
+async function ensureDomains() {
+  if (domains.value.length) return
+  const data = await listDomains()
+  domains.value = data?.items || []
+}
+
+async function ensureEntityOptions(profileId) {
+  if (!profileId || entityOptionsCache.value[profileId]) return
+  const detail = await getDomain(profileId)
+  entityOptionsCache.value[profileId] = (detail?.entity_types || []).map((e) => ({
+    code: e.code,
+    name: e.name,
+  }))
+}
+
+function entityOptions(profileId) {
+  return entityOptionsCache.value[profileId] || []
+}
+
+function availableDomains(row) {
+  const used = mappingRows.value
+    .filter((r) => r !== row && r.domain_profile_id)
+    .map((r) => r.domain_profile_id)
+  return domains.value.filter((d) => !used.includes(d.id))
+}
+
+async function openMapping(row) {
+  mappingLoading.value = true
+  mappingVisible.value = true
+  mappingTermId.value = row.id
+  mappingTermName.value = row.term
+  mappingRows.value = []
+  try {
+    await ensureDomains()
+    const data = await getTermDomainMappings(row.id)
+    const existing = data?.items || []
+    for (const m of existing) {
+      await ensureEntityOptions(m.domain_profile_id)
+    }
+    mappingRows.value = existing.map((m) => ({
+      domain_profile_id: m.domain_profile_id,
+      entity_code: m.entity_code,
+      loading: false,
+    }))
+    if (mappingRows.value.length === 0) {
+      mappingRows.value = [{ domain_profile_id: '', entity_code: '', loading: false }]
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '加载领域映射失败')
+  } finally {
+    mappingLoading.value = false
+  }
+}
+
+async function onDomainChange(row, pid) {
+  row.entity_code = ''
+  row.loading = true
+  try {
+    await ensureEntityOptions(pid)
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '加载实体类型失败')
+  } finally {
+    row.loading = false
+  }
+}
+
+function addMappingRow() {
+  mappingRows.value.push({ domain_profile_id: '', entity_code: '', loading: false })
+}
+
+function removeMappingRow(idx) {
+  mappingRows.value.splice(idx, 1)
+}
+
+async function handleSaveMappings() {
+  const partial = mappingRows.value.find((r) => (r.domain_profile_id && !r.entity_code) || (!r.domain_profile_id && r.entity_code))
+  if (partial) {
+    ElMessage.warning('存在未完成的映射行：请选择领域后选择实体类型，或删除该行')
+    return
+  }
+  const mappings = mappingRows.value
+    .filter((r) => r.domain_profile_id && r.entity_code)
+    .map((r) => ({ domain_profile_id: r.domain_profile_id, entity_code: r.entity_code }))
+  mappingSaving.value = true
+  try {
+    await updateTermDomainMappings(mappingTermId.value, mappings)
+    ElMessage.success('领域映射已保存')
+    mappingVisible.value = false
+    load()
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '保存领域映射失败')
+  } finally {
+    mappingSaving.value = false
+  }
+}
+
+// --- 导入 / 导出 ---
 function openImport() {
   importContent.value = ''
   importVisible.value = true
@@ -378,6 +505,32 @@ onMounted(load)
   justify-content: flex-end;
 }
 
+.mapping-hint {
+  color: var(--color-text-secondary, #909399);
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  background: #f5f7fa;
+  border-radius: 4px;
+}
+
+.mapping-body {
+  min-height: 40px;
+}
+
+.mapping-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.add-mapping {
+  width: 100%;
+  margin-top: 2px;
+}
+
 .import-hint {
   color: var(--color-text-secondary, #909399);
   font-size: 13px;
@@ -388,12 +541,5 @@ onMounted(load)
   background: #f5f7fa;
   padding: 1px 5px;
   border-radius: 3px;
-}
-
-.category-hint {
-  font-size: 12px;
-  color: var(--color-text-secondary, #909399);
-  line-height: 1.5;
-  margin-top: 4px;
 }
 </style>
