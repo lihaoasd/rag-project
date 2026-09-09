@@ -227,14 +227,51 @@ KB 创建请求 `KnowledgeBaseCreate` 增加 `domain_profile_id`（必填，默�
 
 - `GraphView`：`ENTITY_TYPE_OPTIONS`/`TYPE_COLORS` 常量删除，初始化拉 `graph/meta`；图例 = meta.entity_types（name+color）；实体分布 chip 用 name；编辑弹窗类型下拉 = meta entity name（值 code）；兜底色 `#909399`。
 - 实体列表/详情/编辑（后端 `update_entity` 白名单改模板）联动同上。
-- `LexiconView`：MVP 分类下拉**不变**（全局 7 枚举）；提示文案补充："词条分类映射到图谱实体类型，仅当该 KB 领域含对应类型才生效"。
+- `LexiconView`：删除“分类”（列/过滤/表单），改为词条“领域映射”编辑——选领域模板后再选该模板内的实体类型（见 §7）；文案说明词库仍全局服务 IK 分词与查询同义词扩展。
 
 ---
 
-## 7. 词库策略（2.0 规则 + 2.1 展望）
+## 7. 词库策略（词条 × 领域模板 多对多映射，取代全局固定分类）
 
-- **2.0**：词库保持全局（表、页面、IK/CSV 导出均不变）。图谱构建时词库命中实体按"全局分类→label"，命中 label 不在 KB 模板则**跳过不进图**（§3.3）——投标词不会污染医疗 KB 的图。
-- **2.1（二期，不在本设计实施）**：词库按领域隔离（表加 `domain_profile_id NULL=全局`、分类枚举随模板、页面过滤、导出分域）；届时再评估查询扩展的域化。
+> 本修订取代上文 §3.3 “词库命中按模板过滤（全局分类→label）”与早期 §7 2.0/2.1 表述；落地见 `docs/plan/48-lexicon-domain-mapping-plan.md`。
+
+### 7.1 冲突与决策
+
+v2 实体类型由“KB → 领域模板”决定（code 用户可自定义）；词库原“全局固定分类 → 固定实体 label（organization→Organization…）”与该模型**结构性冲突**：词条是全局对象，无法预先表达“在哪个领域属于哪种实体”。
+
+**决策**：词库与领域模板建立**多对多映射**，替代全局固定分类；词库其余职责（IK 分词导出、查询同义词扩展）保持全局不变。
+
+### 7.2 数据模型
+
+- `lexicon_terms`（保持不变）：`term` + `aliases` + `enabled`；
+- 新增表 `lexicon_domain_mappings`：
+  - `id`(str uuid)、`lexicon_term_id`、`domain_profile_id`、`entity_code`、时间戳；
+  - **唯一约束 (lexicon_term_id, domain_profile_id)**：词条 × 领域至多 1 个 code；
+  - 无外键（项目去外键风格，应用层保证一致性）；
+  - 写入校验：`entity_code` 必须是该 `domain_profile` 模板的实体 code 之一；
+  - 删除联动：删除词条/删除模板 → 删除其映射；模板**复制**不复制映射（映射绑定原 profile id）；
+- 删除 `lexicon_terms.category` 列及其索引（历史数据弃置）。
+
+### 7.3 图谱链路语义
+
+- **抽取**：KB → 模板 P；词库命中（term/aliases 最长匹配）且该词条在 P 下有映射 → 建实体 `(标准词, 映射code)`；无映射 → 不进图；
+- **LLM 实体名归并**：仅当 LLM 实体 type == 词条在该 KB 模板下的映射 code 时归并到标准词；
+- **图谱检索（search_subgraph）**：入口候选 = P 下存在映射的词条（term/aliases 命中 query）∪ 正则 ∪ query 兜底；
+- **联动失效**：词条或其领域映射变更 → 沿用现有“文档图谱状态置 none”机制（保守可全量 invalidate）；
+- 模板编辑删除了某 code：存量映射 code 在抽取期按 `code ∉ 模板` 自然丢弃（不报错），页面可重配。
+
+### 7.4 UI / API 概要
+
+- 词条“领域映射”编辑：行式（领域模板下拉 → 该模板实体类型下拉），保存为整包替换；
+- 列表展示映射概况（数量或 tag 明细）；
+- 接口：新增词条级 领域映射 GET/PUT（整包）；词库列表/统计响应不含 category；
+- IK 词典导出、查询扩展、CSV 导出（`词条,别名` 两列）/导入（第 3 列忽略以兼容旧文件）不变。
+
+### 7.5 迁移与兼容
+
+- alembic `0025_lexicon_domain_mappings.py`：删 category 索引/列 + 建映射表与唯一索引；
+- 存量词条旧分类**弃置**（不进图），用户按需在页面补映射（不自动迁移）；
+- 语义兼容：分词/同义词扩展不依赖映射，历史词条不受影响。
 
 ---
 
