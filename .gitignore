@@ -44,3 +44,4 @@ logs/
 
 # WorkBuddy local data
 .workbuddy/
+.pytest_cache/
