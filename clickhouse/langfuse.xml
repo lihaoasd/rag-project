@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<!-- Langfuse 需要的 ClickHouse 配置：
+     1) 内嵌 Keeper（ReplicatedMergeTree / ON CLUSTER 依赖的协调服务）
+     2) 单节点 default 集群，供 langfuse 迁移的 "ON CLUSTER default" 使用 -->
+<clickhouse>
+    <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>1</server_id>
+        <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+        <coordination_settings>
+            <operation_timeout_ms>10000</operation_timeout_ms>
+            <session_timeout_ms>30000</session_timeout_ms>
+            <raft_logs_level>information</raft_logs_level>
+        </coordination_settings>
+        <raft_configuration>
+            <server>
+                <id>1</id>
+                <hostname>clickhouse</hostname>
+                <port>9234</port>
+            </server>
+        </raft_configuration>
+    </keeper_server>
+
+    <remote_servers>
+        <default>
+            <shard>
+                <replica>
+                    <host>clickhouse</host>
+                    <port>9000</port>
+                </replica>
+            </shard>
+        </default>
+    </remote_servers>
+
+    <!-- ReplicatedMergeTree 路径宏：单分片单副本 -->
+    <macros>
+        <shard>01</shard>
+        <replica>replica1</replica>
+    </macros>
+</clickhouse>

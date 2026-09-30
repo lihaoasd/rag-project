@@ -1,0 +1,212 @@
+# ============================================================
+# 本地 Docker 基础设施编排（仅中间件依赖）
+# 用途：前端/后端由你在宿主机自行启动，本文件只负责把
+#       PostgreSQL / Milvus / MinIO / Elasticsearch(IK) / Neo4j 跑起来。
+#
+# 使用：
+#   docker compose -f docker-compose.infra.yml up -d
+#   docker compose -f docker-compose.infra.yml down          # 停止（保留数据）
+#   docker compose -f docker-compose.infra.yml down -v       # 停止并清除数据卷
+#
+# 后端 backend/.env 中的地址已指向本机 localhost 对应端口。
+# 注：Embedding 使用线上模型（不在本地起 Xinference），见 backend/.env 说明。
+# ============================================================
+
+name: bid-rag-infra
+
+services:
+  # === PostgreSQL（业务库：KB/文档/切片/配置/模型） ===
+  postgres:
+    image: postgres:16-alpine
+    container_name: bid_pg
+    environment:
+      POSTGRES_DB: ai_bid_rag
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_bid_rag"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # === Milvus（向量库：稠密 + BM25 稀疏）
+  # 说明：对象存储直接复用下方 minio 容器（本镜像嵌入 MinIO 不可用，官方单机也推荐外接），
+  #       etcd 用容器内嵌（已验证可用）。Milvus 在 minio 内使用自己的 bucket，与应用互不干扰。
+  milvus:
+    image: milvusdb/milvus:v2.4.9
+    container_name: bid_milvus
+    command: ["milvus", "run", "standalone"]
+    depends_on:
+      - minio
+    environment:
+      ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: /var/lib/milvus/etcd
+      MINIO_ADDRESS: minio
+      MINIO_PORT: "9000"
+      MINIO_ACCESS_KEY_ID: minioadmin
+      MINIO_SECRET_ACCESS_KEY: minioadmin
+    ports:
+      - "19530:19530"   # 应用连接（gRPC/REST）
+      - "9091:9091"     # 可选：metrics / health
+    volumes:
+      - milvus:/var/lib/milvus
+    restart: unless-stopped
+
+  # === MinIO（对象存储：原始文档 + chunk 图片；bucket 由后端启动自动创建） ===
+  minio:
+    image: minio/minio:latest
+    container_name: bid_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web 控制台（默认无需登录校验时可忽略）
+    volumes:
+      - minio:/data
+    restart: unless-stopped
+
+  # === Elasticsearch（全文检索：ES 8.13.4 + IK 分词，明文 http 无认证） ===
+  elasticsearch:
+    build: ./elasticsearch
+    image: bid-es:8.13.4-ik
+    container_name: bid_es
+    environment:
+      cluster.name: bid-es
+      discovery.type: single-node
+      xpack.security.enabled: "false"          # 后端以 http://localhost:9200 明文访问，故关闭安全
+      xpack.security.enrollment.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      network.host: 0.0.0.0
+      ingest.geoip.downloader.enabled: "false" # 避免启动时下载 geoip 数据库
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+
+  # === Neo4j（知识图谱，GRAPH_ENABLED=false 时后端不连接，可选） ===
+  neo4j:
+    image: neo4j:5.21.0
+    container_name: bid_neo4j
+    environment:
+      NEO4J_AUTH: neo4j/password123
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_server_memory_heap_max__size: 1g
+    ports:
+      - "7474:7474"   # Neo4j Browser
+      - "7687:7687"   # Bolt（应用连接）
+    volumes:
+      - neo4jdata:/data
+      - neo4jlogs:/logs
+    restart: unless-stopped
+
+  # === Redis（Langfuse worker 事件队列） ===
+  redis:
+    image: redis:latest
+    container_name: bid_redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "16379:6379"   # 宿主 6379 落在 Windows 保留端口段，改 16379；容器内部仍是 6379
+    volumes:
+      - redisdata:/data
+    restart: unless-stopped
+
+  # === ClickHouse（Langfuse v4 存储 trace/事件，必须） ===
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12
+    container_name: bid_clickhouse
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse
+    ports:
+      - "8123:8123"   # HTTP（Langfuse 连接）
+      - "19000:9000"  # 原生 TCP（宿主 9000 被 MinIO 占用，改 19000；可选调试）
+    volumes:
+      - clickhousedata:/var/lib/clickhouse
+      - ./clickhouse/langfuse.xml:/etc/clickhouse-server/config.d/langfuse.xml:ro
+    restart: unless-stopped
+
+  # === Langfuse（LLM 可观测：全链路追踪；元数据存 bid_pg 的 langfuse 库，事件存 ClickHouse） ===
+  langfuse:
+    image: langfuse/langfuse:4
+    container_name: bid_langfuse
+    depends_on:
+      - postgres
+      - redis
+      - clickhouse
+    ports:
+      - "3000:3000"
+    environment:
+      HOSTNAME: 0.0.0.0
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: isiaeavylnxmjihetnreyanmeowoexvf
+      SALT: iycvakwqlfjnbsja
+      ENCRYPTION_KEY: 307e56a8586848c4254cc6dbe464de4a1c4851d6b8a90252b7a0e3dc901f9dd5
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/langfuse
+      DIRECT_URL: postgresql://postgres:postgres@postgres:5432/langfuse
+      REDIS_URL: redis://redis:6379
+      REDIS_CONNECTION_STRING: redis://redis:6379
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://default:clickhouse@clickhouse:9000
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: bid-langfuse-events
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: ""
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minioadmin
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: minioadmin
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+    restart: unless-stopped
+
+  # === Langfuse worker（异步消费事件队列，必须有它数据才会落库） ===
+  langfuse-worker:
+    image: langfuse/langfuse-worker:4
+    container_name: bid_langfuse_worker
+    depends_on:
+      - postgres
+      - redis
+      - clickhouse
+    environment:
+      NEXTAUTH_SECRET: isiaeavylnxmjihetnreyanmeowoexvf
+      SALT: iycvakwqlfjnbsja
+      ENCRYPTION_KEY: 307e56a8586848c4254cc6dbe464de4a1c4851d6b8a90252b7a0e3dc901f9dd5
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/langfuse
+      DIRECT_URL: postgresql://postgres:postgres@postgres:5432/langfuse
+      REDIS_URL: redis://redis:6379
+      REDIS_CONNECTION_STRING: redis://redis:6379
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: bid-langfuse-events
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: ""
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minioadmin
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: minioadmin
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  milvus:
+  minio:
+  esdata:
+  neo4jdata:
+  neo4jlogs:
+  redisdata:
+  clickhousedata:
