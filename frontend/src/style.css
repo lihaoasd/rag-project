@@ -177,6 +177,22 @@ body, #app {
 
 .el-button:not(.is-circle):not(.is-round) { border-radius: 10px; }
 
+/* 默认按钮 — 深色文字，悬停浅底深字（避免蓝底蓝字） */
+.el-button:not(.el-button--primary):not(.is-text):not(.is-link) {
+  --el-button-text-color: #334155;
+  --el-button-hover-text-color: var(--color-primary-deep);
+  --el-button-hover-bg-color: #EFF6FD;
+  --el-button-hover-border-color: #BFD9F0;
+  --el-button-active-bg-color: #E2F0FC;
+}
+
+/* 文字型主色按钮 — 用深蓝保证浅底可读（不影响成功/危险等其他语义色） */
+.el-button.is-text.el-button--primary, .el-button.is-link.el-button--primary {
+  --el-button-text-color: var(--color-primary-deep);
+  --el-button-hover-text-color: var(--color-primary);
+  --el-button-hover-bg-color: rgba(14, 165, 233, 0.08);
+}
+
 /* 输入框 / 文本域 — 磨砂 + 聚焦光晕 */
 .el-input__wrapper,
 .el-textarea__inner {
