@@ -32,7 +32,7 @@
         <el-table-column prop="file_name" label="文件名" min-width="200">
           <template #default="{ row }">
             <div class="file-cell">
-              <el-icon :size="18" color="#10B981"><Document /></el-icon>
+              <el-icon :size="18" color="var(--color-primary)"><Document /></el-icon>
               <span>{{ row.file_name }}</span>
             </div>
           </template>

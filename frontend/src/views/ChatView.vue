@@ -344,7 +344,7 @@ onMounted(async () => {
 }
 
 .message.assistant .message-content {
-  background: #F1F5F9;
+  background: var(--color-bubble-assistant);
   color: var(--color-text-primary);
   border-bottom-left-radius: 4px;
 }
@@ -371,15 +371,15 @@ onMounted(async () => {
 .markdown-body :deep(ol) { margin: 0 0 8px; padding-left: 20px; }
 .markdown-body :deep(li) { margin: 2px 0; }
 .markdown-body :deep(code) {
-  background: #E2E8F0;
+  background: var(--color-code-inline-bg);
   padding: 2px 5px;
   border-radius: 3px;
   font-family: 'Consolas', 'Monaco', monospace;
   font-size: 13px;
 }
 .markdown-body :deep(pre) {
-  background: #1E293B;
-  color: #E2E8F0;
+  background: var(--color-code-bg);
+  color: var(--color-code-text);
   padding: 12px;
   border-radius: 6px;
   overflow-x: auto;
@@ -390,13 +390,13 @@ onMounted(async () => {
   margin: 0 0 8px;
   padding: 4px 12px;
   border-left: 3px solid var(--color-primary);
-  background: #E2E8F0;
+  background: var(--color-code-inline-bg);
   color: var(--color-text-secondary);
 }
 .markdown-body :deep(table) { border-collapse: collapse; margin: 0 0 8px; }
 .markdown-body :deep(th),
-.markdown-body :deep(td) { border: 1px solid #CBD5E1; padding: 6px 10px; }
-.markdown-body :deep(th) { background: #E2E8F0; }
+.markdown-body :deep(td) { border: 1px solid var(--color-border); padding: 6px 10px; }
+.markdown-body :deep(th) { background: var(--color-code-inline-bg); }
 .markdown-body :deep(a) { color: var(--color-primary); }
 
 .cursor-blink {
@@ -414,9 +414,9 @@ onMounted(async () => {
 .message-sources {
   margin-top: 8px;
   padding: 10px 14px;
-  background: #FFFBEB;
+  background: var(--color-sources-bg);
   border-radius: var(--radius-sm);
-  border: 1px solid #FDE68A;
+  border: 1px solid var(--color-sources-border);
   font-size: 12px;
 }
 

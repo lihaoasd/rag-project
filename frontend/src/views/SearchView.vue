@@ -507,15 +507,15 @@ onMounted(async () => {
 }
 
 .result-text :deep(mark) {
-  background: #D1FAE5;
-  color: var(--color-primary-dark);
+  background: var(--color-highlight-bg);
+  color: var(--color-highlight-text);
   padding: 0 3px;
   border-radius: 3px;
 }
 
 .result-text :deep(em) {
-  background: #D1FAE5;
-  color: var(--color-primary-dark);
+  background: var(--color-highlight-bg);
+  color: var(--color-highlight-text);
   padding: 0 3px;
   border-radius: 3px;
   font-style: normal;
