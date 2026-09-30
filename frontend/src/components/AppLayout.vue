@@ -38,10 +38,9 @@
       </div>
 
       <div class="aside-footer">
-        <el-tooltip :content="collapsed ? '展开 / 收起导航' : '收起导航'" placement="right">
+        <el-tooltip :content="collapsed ? '展开导航' : '收起导航'" placement="right">
           <button class="collapse-btn" @click="collapsed = !collapsed">
-            <el-icon :size="16"><component :is="collapsed ? 'Expand' : 'Fold'" /></el-icon>
-            <span v-if="!collapsed">收起导航</span>
+            <el-icon :size="15"><component :is="collapsed ? 'Expand' : 'Fold'" /></el-icon>
           </button>
         </el-tooltip>
         <div v-if="!collapsed" class="aside-status">
@@ -323,21 +322,20 @@ onBeforeUnmount(() => {
 .aside-footer { padding: 12px; flex-shrink: 0; white-space: nowrap; }
 
 .collapse-btn {
-  width: 100%;
-  height: 40px;
-  border: 1px solid var(--glass-border-strong);
-  background: rgba(255, 255, 255, 0.5);
+  width: 34px;
+  height: 34px;
+  border: none;
+  background: transparent;
   border-radius: 10px;
   color: var(--color-text-secondary);
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  font-size: 13px;
+  margin: 0 auto;
   cursor: pointer;
   transition: all 0.2s ease;
 }
-.collapse-btn:hover { color: var(--color-primary); background: rgba(255, 255, 255, 0.8); border-color: #BFD9F0; }
+.collapse-btn:hover { color: var(--color-primary); background: var(--sidebar-hover-bg); }
 
 .aside-status { padding: 10px 6px 2px; }
 .status-line { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--color-text-secondary); }
