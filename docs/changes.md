@@ -1,6 +1,23 @@
 # 修改记录
 
+## 2026-09-30（模型配置模块：供应商管理）
+
+- 新增独立「模型供应商」实体，支持供应商添加/挂载模型，统一维护连接信息：
+  - 数据层：新增 `model_providers` 表（名称/平台/API Base/Key/参数/启用）；`model_configs` 加 `provider_id` 列 + 索引（无 FK，与项目惯例一致）；迁移 `0026_model_providers.py` 按 platform 分组自动归拢历史模型到供应商（组内一致的连接信息置空跟随供应商，不一致的保留模型覆盖，不丢信息）；`models/__init__.py` 导出 `ModelProvider`。
+  - 解析层：`core/model_factory.py` `_config_to_dict` 合并供应商连接（启用供应商提供 platform/api_base/api_key，模型自身非空字段覆盖，params 合并模型优先），返回 `provider_id`/`provider_name`；`services/model_service.py` 展示层同步合并。
+  - 业务/API：`model_service` 新增供应商 CRUD（创建 name 唯一、停用供应商不可挂模型、删除前校验引用），`create_model`/`update_model` 支持 `provider_id`（平台空继承供应商、解绑用 null）；`models/schemas.py` 新增 Provider schema 族并扩展 ModelConfig schema；`routers/model.py` 新增 `/api/models/providers` 路由（列表/创建/详情/更新/删除）。
+  - 前端：`api/model.js` 新增供应商 API；`ModelConfigView.vue` 增加「供应商管理」对话框（CRUD + 模型数统计）、模型表单「所属供应商」下拉（自动带出平台、连接信息留空继承、测试连接复用供应商配置）、列表新增供应商列。
+  - 验证：模型相关 pytest（model_factory + model_service + schemas + models）**80 passed**；真实开发库执行迁移 exit 0，`alembic current`=0026，供应商 2 个、模型 2 个全部归拢；运行时 `resolve_default_model_config` 正确合并供应商连接；前端 `npm run build` 通过。
+
+## 2026-09-30（模型配置模块：从供应商拉取模型批量添加）
+
+- 支持从供应商 OpenAI 兼容 `/models` 端点拉取可用模型并批量添加到模型配置：
+  - 后端：`services/model_service.py` 新增 `fetch_provider_models(provider_id)`——调用供应商 `api_base + /models`（Authorization Bearer，`api_key` 支持 `${ENV}` 占位符），解析 `data[].id/owned_by` 去重返回；`routers/model.py` 新增 `POST /api/models/providers/{provider_id}/fetch-models`；`models/schemas.py` 新增 `ProviderModelItem`/`ProviderModelListResponse`。
+  - 前端：`api/model.js` 新增 `fetchProviderModels`；`ModelConfigView.vue` 供应商管理每行加「拉取模型」——弹窗选择类型（默认 LLM）+ 勾选模型后「添加所选」批量 `createModel`（name=模型 ID、挂到当前供应商、连接信息继承供应商）。
+  - 验证：`test_model_service.py` 新增 `TestFetchProviderModels` 4 例（成功解析/端点拼接、环境变量 Key、无 API Base、异常响应），模型相关 pytest **115 passed**；前端 `npm run build` 通过。
+
 ## 2026-09-08（v2 · 分支 v2-generic-kb · 库 ai_bid_rag_v2）
+
 
 - 词库 × 领域模板多对多映射（方案 `docs/plan/48-lexicon-domain-mapping-plan.md`、设计 `docs/10 §7` 修订 + `docs/04` 注记，评审通过后落地）：
   - 数据层：`lexicon_terms` 删除 `category` 列；新表 `lexicon_domain_mappings`（词条×领域 → 实体 code，同域唯一约束 uq_…_term_profile、profile 索引）；迁移 `0025_lexicon_domain_mappings.py`（drop idx/category + 建表，downgrade 对称回滚）；新增 `models/lexicon_mapping.py`、`repositories/lexicon_mapping_repository.py`（list_by_profile 只取启用词条、整包 replace、按词条/模板删除、批量计数）；

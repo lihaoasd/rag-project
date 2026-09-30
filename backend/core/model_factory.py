@@ -40,17 +40,38 @@ def resolve_api_key(api_key: str | None) -> str | None:
 
 
 def _config_to_dict(mc: ModelConfig) -> dict:
-    """ORM 对象 → 模型配置 dict。"""
+    """ORM 对象 → 模型配置 dict（合并供应商连接信息，模型自身非空字段覆盖）。
+
+    - 有启用供应商时：platform 取供应商，api_base/api_key 模型非空覆盖否则继承，
+      params 合并（模型优先）。
+    - 无供应商或供应商停用时：回退模型自身字段（兼容未归拢的旧模型）。
+    """
+    provider = getattr(mc, "provider", None)
+    provider_active = provider is not None and getattr(provider, "is_active", True)
+
+    platform = mc.platform
+    api_base = mc.api_base
+    api_key = mc.api_key
+    params = mc.params or {}
+
+    if provider_active:
+        platform = provider.platform or mc.platform
+        api_base = mc.api_base or provider.api_base
+        api_key = mc.api_key or provider.api_key
+        params = {**(provider.params or {}), **(mc.params or {})}
+
     return {
         "id": str(mc.id),
         "name": mc.name,
         "model_type": mc.model_type,
-        "platform": mc.platform,
+        "platform": platform,
         "model": mc.model,
-        "api_base": mc.api_base,
-        "api_key": mc.api_key,
-        "params": mc.params or {},
+        "api_base": api_base,
+        "api_key": api_key,
+        "params": params,
         "is_default": mc.is_default,
+        "provider_id": str(provider.id) if provider is not None else None,
+        "provider_name": getattr(provider, "name", None) if provider is not None else None,
     }
 
 

@@ -55,6 +55,41 @@ export function testModel(data) {
 }
 
 /**
+ * 获取模型供应商列表（含各供应商下模型数）
+ */
+export function listProviders() {
+  return apiClient.get('/models/providers').then((res) => res.data)
+}
+
+/**
+ * 创建模型供应商
+ */
+export function createProvider(data) {
+  return apiClient.post('/models/providers', data).then((res) => res.data)
+}
+
+/**
+ * 更新模型供应商
+ */
+export function updateProvider(id, data) {
+  return apiClient.put(`/models/providers/${id}`, data).then((res) => res.data)
+}
+
+/**
+ * 删除模型供应商
+ */
+export function deleteProvider(id) {
+  return apiClient.delete(`/models/providers/${id}`)
+}
+
+/**
+ * 从供应商 OpenAI 兼容 /models 端点拉取可用模型列表
+ */
+export function fetchProviderModels(providerId) {
+  return apiClient.post(`/models/providers/${providerId}/fetch-models`).then((res) => res.data)
+}
+
+/**
  * 获取知识库各类型模型的绑定与最终生效配置
  */
 export function getKbModels(kbId) {

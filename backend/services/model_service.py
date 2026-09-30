@@ -1,16 +1,16 @@
 """
-模型配置业务逻辑 — model_configs CRUD + 默认互斥 + 知识库绑定（含 Embedding 锁定）。
+模型配置业务逻辑 — 模型供应商 CRUD + model_configs CRUD + 默认互斥 + 知识库绑定（含 Embedding 锁定）。
 """
 import asyncio
 import time
 import uuid
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 
 from core.database import async_session
 from core.model_factory import create_embedding, create_llm, create_reranker, create_vision_llm, resolve_api_key
 from models.knowledge_base import KnowledgeBase
-from models.model_config import ModelConfig, KBModelBinding
+from models.model_config import ModelConfig, ModelProvider, KBModelBinding
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -20,19 +20,46 @@ MODEL_TYPES = ["llm", "embedding", "rerank", "vision", "ocr"]
 KB_BINDABLE_TYPES = ["llm", "embedding", "vision", "ocr"]
 
 
+def _provider_to_dict(p: ModelProvider) -> dict:
+    """供应商 ORM 对象 → 响应字典。"""
+    return {
+        "id": str(p.id),
+        "name": p.name,
+        "platform": p.platform,
+        "api_base": p.api_base,
+        "api_key": p.api_key,
+        "params": p.params,
+        "is_active": p.is_active,
+        "created_at": p.created_at.isoformat() if p.created_at else "",
+        "updated_at": p.updated_at.isoformat() if p.updated_at else "",
+    }
+
+
 def _to_dict(mc: ModelConfig) -> dict:
-    """ORM 对象 → 响应字典。"""
+    """ORM 对象 → 响应字典（合并供应商连接信息，前端展示实际生效值）。"""
+    provider = getattr(mc, "provider", None)
+    provider_active = provider is not None and getattr(provider, "is_active", True)
+    api_base, api_key = mc.api_base, mc.api_key
+    if provider_active:
+        platform = provider.platform or mc.platform
+        api_base = mc.api_base or provider.api_base
+        api_key = mc.api_key or provider.api_key
+        params = {**(provider.params or {}), **(mc.params or {})}
+    else:
+        platform, params = mc.platform, mc.params
     return {
         "id": str(mc.id),
         "name": mc.name,
         "model_type": mc.model_type,
-        "platform": mc.platform,
+        "platform": platform,
         "model": mc.model,
-        "api_base": mc.api_base,
-        "api_key": mc.api_key,
-        "params": mc.params,
+        "api_base": api_base,
+        "api_key": api_key,
+        "params": params,
         "is_default": mc.is_default,
         "is_active": mc.is_active,
+        "provider_id": str(provider.id) if provider is not None else None,
+        "provider_name": getattr(provider, "name", None) if provider is not None else None,
         "created_at": mc.created_at.isoformat() if mc.created_at else "",
         "updated_at": mc.updated_at.isoformat() if mc.updated_at else "",
     }
@@ -67,6 +94,181 @@ async def _clear_defaults(session, model_type: str) -> None:
     )
 
 
+# ============================================================
+# 模型供应商 CRUD
+# ============================================================
+async def list_providers() -> list[dict]:
+    """供应商列表（含各供应商下模型数）。"""
+    async with async_session() as session:
+        result = await session.execute(select(ModelProvider).order_by(ModelProvider.created_at))
+        providers = result.scalars().all()
+        count_result = await session.execute(
+            select(ModelConfig.provider_id, func.count())
+            .where(ModelConfig.provider_id.isnot(None))
+            .group_by(ModelConfig.provider_id)
+        )
+        counts = {str(pid): cnt for pid, cnt in count_result.all()}
+        out = []
+        for p in providers:
+            d = _provider_to_dict(p)
+            d["model_count"] = counts.get(str(p.id), 0)
+            out.append(d)
+        return out
+
+
+async def get_provider(provider_id: str) -> dict | None:
+    """供应商详情（含模型数）。"""
+    async with async_session() as session:
+        result = await session.execute(select(ModelProvider).where(ModelProvider.id == provider_id))
+        p = result.scalar_one_or_none()
+        if p is None:
+            return None
+        count_result = await session.execute(
+            select(func.count()).where(ModelConfig.provider_id == provider_id)
+        )
+        d = _provider_to_dict(p)
+        d["model_count"] = count_result.scalar_one() or 0
+        return d
+
+
+async def create_provider(
+    name: str,
+    platform: str,
+    api_base: str | None = None,
+    api_key: str | None = None,
+    params: dict | None = None,
+    is_active: bool = True,
+) -> dict:
+    """创建模型供应商（name 唯一）。"""
+    async with async_session() as session:
+        exist = await session.execute(select(ModelProvider).where(ModelProvider.name == name))
+        if exist.scalar_one_or_none() is not None:
+            raise ValueError(f"供应商名称已存在: {name}")
+        p = ModelProvider(
+            id=str(uuid.uuid4()),
+            name=name,
+            platform=platform,
+            api_base=api_base,
+            api_key=api_key,
+            params=params,
+            is_active=is_active,
+        )
+        session.add(p)
+        await session.commit()
+        await session.refresh(p)
+        logger.info("模型供应商创建成功: id=%s, name=%s", p.id, name)
+        return _provider_to_dict(p)
+
+
+async def update_provider(provider_id: str, **kwargs) -> dict | None:
+    """更新模型供应商字段。"""
+    async with async_session() as session:
+        result = await session.execute(select(ModelProvider).where(ModelProvider.id == provider_id))
+        p = result.scalar_one_or_none()
+        if p is None:
+            return None
+        if kwargs.get("name") and kwargs["name"] != p.name:
+            exist = await session.execute(
+                select(ModelProvider).where(ModelProvider.name == kwargs["name"])
+            )
+            if exist.scalar_one_or_none() is not None:
+                raise ValueError(f"供应商名称已存在: {kwargs['name']}")
+        allowed = ["name", "platform", "api_base", "api_key", "params", "is_active"]
+        for field in allowed:
+            if field in kwargs and kwargs[field] is not None:
+                setattr(p, field, kwargs[field])
+        await session.commit()
+        await session.refresh(p)
+        logger.info("模型供应商更新成功: id=%s", provider_id)
+        return _provider_to_dict(p)
+
+
+async def delete_provider(provider_id: str) -> tuple[bool, str | None]:
+    """删除供应商。供应商下仍有模型时禁止删除。"""
+    async with async_session() as session:
+        result = await session.execute(select(ModelProvider).where(ModelProvider.id == provider_id))
+        p = result.scalar_one_or_none()
+        if p is None:
+            return False, "供应商不存在"
+        ref = await session.execute(
+            select(ModelConfig).where(ModelConfig.provider_id == provider_id).limit(1)
+        )
+        if ref.scalar_one_or_none() is not None:
+            return False, "该供应商下仍有模型，请先移除或改挂其他供应商"
+        await session.delete(p)
+        await session.commit()
+        logger.info("模型供应商删除成功: id=%s", provider_id)
+        return True, None
+
+
+async def fetch_provider_models(provider_id: str) -> dict:
+    """从供应商的 OpenAI 兼容 /models 端点拉取可用模型列表（不落库）。
+
+    返回: {"provider_id", "provider_name", "total", "models": [{"id", "owned_by"}]}
+    """
+    import httpx
+
+    async with async_session() as session:
+        result = await session.execute(select(ModelProvider).where(ModelProvider.id == provider_id))
+        p = result.scalar_one_or_none()
+    if p is None:
+        raise ValueError("供应商不存在")
+
+    api_base = (p.api_base or "").strip().rstrip("/")
+    if not api_base:
+        raise ValueError("该供应商未配置 API Base，无法拉取模型")
+    api_key = resolve_api_key(p.api_key)
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    url = f"{api_base}/models"
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.TimeoutException:
+        raise ValueError("拉取模型超时（15 秒）")
+    except httpx.HTTPStatusError as e:
+        raise ValueError(f"拉取模型失败: HTTP {e.response.status_code}")
+    except Exception as e:
+        logger.warning("拉取供应商模型失败: provider=%s, error=%s", p.name, e)
+        raise ValueError(f"拉取模型失败: {e}")
+
+    items = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise ValueError("供应商返回格式异常：未找到 data 模型数组")
+
+    models: list[dict] = []
+    seen: set[str] = set()
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        mid = it.get("id")
+        if mid and mid not in seen:
+            seen.add(mid)
+            models.append({"id": mid, "owned_by": it.get("owned_by", "") or ""})
+
+    return {
+        "provider_id": provider_id,
+        "provider_name": p.name,
+        "total": len(models),
+        "models": models,
+    }
+
+
+async def _load_provider(session, provider_id: str | None) -> ModelProvider | None:
+    """校验并加载供应商（存在且启用），返回 None 表示未传 provider_id。"""
+    if not provider_id:
+        return None
+    result = await session.execute(select(ModelProvider).where(ModelProvider.id == provider_id))
+    p = result.scalar_one_or_none()
+    if p is None:
+        raise ValueError("供应商不存在")
+    if not p.is_active:
+        raise ValueError("停用的供应商不能挂载模型，请先启用")
+    return p
+
+
 async def create_model(
     name: str,
     model_type: str,
@@ -77,9 +279,18 @@ async def create_model(
     params: dict | None = None,
     is_default: bool = False,
     is_active: bool = True,
+    provider_id: str | None = None,
 ) -> dict:
-    """创建模型配置。若设默认，先取消同类型其他默认。"""
+    """创建模型配置。
+
+    若指定 provider_id：平台为空时继承供应商平台；api_base/api_key 为空则运行时继承供应商，
+    模型只存差异覆盖（供应商统一改连接信息对跟随模型生效）。
+    若设默认，先取消同类型其他默认。
+    """
     async with async_session() as session:
+        provider = await _load_provider(session, provider_id)
+        if provider is not None and not platform:
+            platform = provider.platform
         if is_default:
             await _clear_defaults(session, model_type)
         mc = ModelConfig(
@@ -93,6 +304,7 @@ async def create_model(
             params=params,
             is_default=is_default,
             is_active=is_active,
+            provider_id=provider_id,
         )
         session.add(mc)
         await session.commit()
@@ -102,7 +314,10 @@ async def create_model(
 
 
 async def update_model(model_id: str, **kwargs) -> dict | None:
-    """更新模型配置字段。is_default 由 False→True 时触发互斥；默认模型停用时同步取消默认。"""
+    """更新模型配置字段。is_default 由 False→True 时触发互斥；默认模型停用时同步取消默认。
+
+    更新 provider_id 时：平台未显式指定则继承新供应商平台；停用供应商不可挂载模型。
+    """
     async with async_session() as session:
         result = await session.execute(select(ModelConfig).where(ModelConfig.id == model_id))
         mc = result.scalar_one_or_none()
@@ -114,11 +329,21 @@ async def update_model(model_id: str, **kwargs) -> dict | None:
 
         allowed = [
             "name", "model_type", "platform", "model",
-            "api_base", "api_key", "params", "is_default", "is_active",
+            "api_base", "api_key", "params", "is_default", "is_active", "provider_id",
         ]
         for field in allowed:
             if field in kwargs and kwargs[field] is not None:
                 setattr(mc, field, kwargs[field])
+
+        # 显式解绑供应商（provider_id=null）
+        if "provider_id" in kwargs and kwargs["provider_id"] is None:
+            mc.provider_id = None
+
+        # 供应商变更：校验存在且启用；平台未显式指定则继承新供应商平台
+        if kwargs.get("provider_id"):
+            provider = await _load_provider(session, kwargs["provider_id"])
+            if provider is not None and not kwargs.get("platform"):
+                mc.platform = provider.platform
 
         # 默认模型被停用时取消默认，避免出现不可用的默认
         if kwargs.get("is_active") is False and mc.is_default:
@@ -415,13 +640,14 @@ async def startup_model_check(timeout: float = 15.0) -> list[dict]:
     async def _check_one(mc: ModelConfig) -> dict:
         start = time.perf_counter()
         try:
+            merged = _to_dict(mc)  # 合并供应商连接信息（模型继承供应商后 api_base/api_key 在供应商侧）
             res = await test_model(
-                model_type=mc.model_type,
-                platform=mc.platform,
-                model=mc.model,
-                api_base=mc.api_base,
-                api_key=mc.api_key,
-                params=mc.params,
+                model_type=merged["model_type"],
+                platform=merged["platform"],
+                model=merged["model"],
+                api_base=merged["api_base"],
+                api_key=merged["api_key"],
+                params=merged["params"],
             )
             latency_ms = round((time.perf_counter() - start) * 1000)
             return {

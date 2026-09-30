@@ -329,15 +329,64 @@ class PromptPreviewResponse(BaseModel):
 # ============================================================
 # 模型配置
 # ============================================================
+class ModelProviderCreate(BaseModel):
+    """创建模型供应商请求"""
+    name: str = Field(..., min_length=1, max_length=100, description="供应商名称（唯一）")
+    platform: str = Field(..., min_length=1, max_length=50, description="平台标识，如 openai/deepseek/zhipu/xinference")
+    api_base: str | None = Field(None, description="API 地址（供应商统一连接信息，模型可继承）")
+    api_key: str | None = Field(None, description="API Key（或 ${ENV} 占位符）")
+    params: dict | None = Field(None, description="供应商默认参数（模型 params 可覆盖）")
+    is_active: bool = Field(True, description="是否启用（停用后其下模型不继承连接信息）")
+
+
+class ModelProviderUpdate(BaseModel):
+    """更新模型供应商请求"""
+    name: str | None = Field(None, min_length=1, max_length=100)
+    platform: str | None = Field(None, min_length=1, max_length=50)
+    api_base: str | None = Field(None)
+    api_key: str | None = Field(None)
+    params: dict | None = Field(None)
+    is_active: bool | None = Field(None)
+
+
+class ModelProviderResponse(BaseModel):
+    """模型供应商响应"""
+    id: str
+    name: str
+    platform: str
+    api_base: str | None
+    api_key: str | None
+    params: dict | None
+    is_active: bool = True
+    model_count: int = 0
+    created_at: str
+    updated_at: str
+
+
+class ProviderModelItem(BaseModel):
+    """供应商可用的一个模型"""
+    id: str = Field(..., description="模型标识（用于添加到模型配置）")
+    owned_by: str = Field("", description="归属信息（可选）")
+
+
+class ProviderModelListResponse(BaseModel):
+    """从供应商 /models 拉取的模型列表响应"""
+    provider_id: str
+    provider_name: str
+    total: int
+    models: list[ProviderModelItem]
+
+
 class ModelConfigCreate(BaseModel):
     """创建模型配置请求"""
     name: str = Field(..., min_length=1, max_length=100, description="配置名称")
     model_type: str = Field(..., description="模型类型: llm/embedding/rerank/vision/ocr")
-    platform: str = Field(..., min_length=1, max_length=50, description="平台标识")
+    platform: str = Field("", max_length=50, description="平台标识；指定 provider_id 且留空时继承供应商平台")
     model: str = Field(..., min_length=1, max_length=100, description="模型名称")
-    api_base: str | None = Field(None, description="API 地址")
-    api_key: str | None = Field(None, description="API Key（或 ${ENV} 占位符）")
+    api_base: str | None = Field(None, description="API 地址（留空且挂供应商时继承供应商）")
+    api_key: str | None = Field(None, description="API Key（留空且挂供应商时继承供应商）")
     params: dict | None = Field(None, description="类型特定参数")
+    provider_id: str | None = Field(None, description="所属供应商 id（可选）；挂供应商后连接信息继承供应商")
     is_default: bool = Field(False, description="是否设为该类型全局默认")
     is_active: bool = Field(True, description="是否启用（停用后不参与解析与启动自检）")
 
@@ -346,11 +395,12 @@ class ModelConfigUpdate(BaseModel):
     """更新模型配置请求"""
     name: str | None = Field(None, min_length=1, max_length=100)
     model_type: str | None = Field(None)
-    platform: str | None = Field(None, min_length=1, max_length=50)
+    platform: str | None = Field(None, max_length=50)
     model: str | None = Field(None, min_length=1, max_length=100)
     api_base: str | None = Field(None)
     api_key: str | None = Field(None)
     params: dict | None = Field(None)
+    provider_id: str | None = Field(None, description="所属供应商 id（null 解绑）")
     is_default: bool | None = Field(None)
     is_active: bool | None = Field(None, description="是否启用")
 
@@ -367,6 +417,8 @@ class ModelConfigResponse(BaseModel):
     params: dict | None
     is_default: bool
     is_active: bool = True
+    provider_id: str | None = None
+    provider_name: str | None = None
     created_at: str
     updated_at: str
 

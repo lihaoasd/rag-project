@@ -6,7 +6,7 @@ from .knowledge_base import KnowledgeBase
 from .domain import DomainProfile
 from .document import Document, DocumentChunk
 from .conversation import Conversation, Message
-from .model_config import ModelConfig, KBModelBinding
+from .model_config import ModelConfig, ModelProvider, KBModelBinding
 from .prompt_template import PromptTemplate
 from .lexicon import LexiconTerm
 from .lexicon_mapping import LexiconDomainMapping
@@ -20,6 +20,7 @@ __all__ = [
     "Conversation",
     "Message",
     "ModelConfig",
+    "ModelProvider",
     "KBModelBinding",
     "PromptTemplate",
     "LexiconTerm",

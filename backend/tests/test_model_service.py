@@ -1,6 +1,8 @@
 """
 Model Service 模型连接测试 单元测试。
 """
+import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -392,3 +394,91 @@ class TestStartupModelCheck:
         assert len(results) == 1
         assert results[0]["success"] is False
         assert "boom" in results[0]["message"]
+
+
+# ============================================================
+# 拉取供应商模型（/models 端点）
+# ============================================================
+def _mock_httpx_models(payload):
+    """mock httpx.AsyncClient 返回给定 /models 响应 payload，返回 client 用于断言 URL。"""
+    from types import SimpleNamespace as _NS
+
+    client = AsyncMock()
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = payload
+    resp.raise_for_status.return_value = None
+    client.get.return_value = resp
+    acm = MagicMock()
+    acm.__aenter__.return_value = client
+    acm.__aexit__.return_value = False
+    patcher = patch("httpx.AsyncClient", return_value=acm)
+    patcher.start()
+    return client, patcher
+
+
+class TestFetchProviderModels:
+    @pytest.mark.asyncio
+    async def test_fetch_success(self, mock_session):
+        """从供应商 api_base + /models 拉取并解析模型列表。"""
+        p = SimpleNamespace(id="p1", name="DeepSeek", api_base="https://api.deepseek.com/v1", api_key="sk-abc")
+        result_mock = MagicMock()
+        result_mock.scalar_one_or_none.return_value = p
+        mock_session.execute = AsyncMock(return_value=result_mock)
+
+        client, patcher = _mock_httpx_models({
+            "data": [{"id": "deepseek-chat", "owned_by": "deepseek"}, {"id": "deepseek-reasoner"}]
+        })
+        try:
+            out = await model_service.fetch_provider_models("p1")
+        finally:
+            patcher.stop()
+
+        assert out["provider_id"] == "p1"
+        assert out["provider_name"] == "DeepSeek"
+        assert out["total"] == 2
+        assert out["models"][0]["id"] == "deepseek-chat"
+        assert out["models"][1]["owned_by"] == ""
+        # 端点 = api_base(去尾 /) + /models
+        assert client.get.call_args.args[0] == "https://api.deepseek.com/v1/models"
+
+    @pytest.mark.asyncio
+    async def test_fetch_uses_env_api_key(self, mock_session):
+        """api_key 为 ${ENV} 占位符时解析环境变量后再请求。"""
+        p = SimpleNamespace(id="p1", name="X", api_base="http://x/v1", api_key="${FAKE_KEY}")
+        result_mock = MagicMock()
+        result_mock.scalar_one_or_none.return_value = p
+        mock_session.execute = AsyncMock(return_value=result_mock)
+
+        with patch.dict(os.environ, {"FAKE_KEY": "sk-env"}, clear=True):
+            client, patcher = _mock_httpx_models({"data": [{"id": "m1"}]})
+            try:
+                await model_service.fetch_provider_models("p1")
+            finally:
+                patcher.stop()
+        headers = client.get.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer sk-env"
+
+    @pytest.mark.asyncio
+    async def test_fetch_no_api_base_raises(self, mock_session):
+        p = SimpleNamespace(id="p1", name="X", api_base=None, api_key=None)
+        result_mock = MagicMock()
+        result_mock.scalar_one_or_none.return_value = p
+        mock_session.execute = AsyncMock(return_value=result_mock)
+
+        with pytest.raises(ValueError, match="API Base"):
+            await model_service.fetch_provider_models("p1")
+
+    @pytest.mark.asyncio
+    async def test_fetch_bad_payload_raises(self, mock_session):
+        p = SimpleNamespace(id="p1", name="X", api_base="http://x/v1", api_key=None)
+        result_mock = MagicMock()
+        result_mock.scalar_one_or_none.return_value = p
+        mock_session.execute = AsyncMock(return_value=result_mock)
+
+        client, patcher = _mock_httpx_models({"object": "list"})  # 无 data 数组
+        try:
+            with pytest.raises(ValueError, match="data"):
+                await model_service.fetch_provider_models("p1")
+        finally:
+            patcher.stop()
