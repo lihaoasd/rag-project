@@ -6,7 +6,7 @@
         <div class="logo-icon">
           <el-icon :size="20"><Document /></el-icon>
         </div>
-        <span>投标文档 RAG</span>
+        <span>文档 RAG</span>
       </div>
       <el-menu
         :default-active="activeRoute"
@@ -70,7 +70,7 @@
     <!-- 主内容 -->
     <el-container>
       <el-header class="app-header">
-        <span class="app-title">投标文档 RAG 智能问答系统</span>
+        <span class="app-title">文档 RAG 智能问答系统</span>
       </el-header>
       <el-main class="app-main">
         <router-view />
