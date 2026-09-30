@@ -186,11 +186,40 @@ body, #app {
   --el-button-active-bg-color: #E2F0FC;
 }
 
-/* 文字型主色按钮 — 用深蓝保证浅底可读（不影响成功/危险等其他语义色） */
-.el-button.is-text.el-button--primary, .el-button.is-link.el-button--primary {
+/* 文字型小操作按钮 → 柔和药丸样式（编辑/设为默认/删除等） */
+.el-button.is-text.el-button--small {
+  border-radius: 8px;
+  padding: 6px 11px;
+  font-weight: 500;
+  border: 1px solid;
+  transition: all 0.2s ease;
+}
+.el-button.is-text.el-button--small.el-button--primary {
   --el-button-text-color: var(--color-primary-deep);
-  --el-button-hover-text-color: var(--color-primary);
-  --el-button-hover-bg-color: rgba(14, 165, 233, 0.08);
+  --el-button-hover-text-color: var(--color-primary-deep);
+  background: rgba(14, 165, 233, 0.10);
+  border-color: rgba(14, 165, 233, 0.28);
+}
+.el-button.is-text.el-button--small.el-button--primary:hover {
+  background: rgba(14, 165, 233, 0.18);
+}
+.el-button.is-text.el-button--small.el-button--success {
+  --el-button-text-color: #047857;
+  --el-button-hover-text-color: #047857;
+  background: rgba(16, 185, 129, 0.10);
+  border-color: rgba(16, 185, 129, 0.28);
+}
+.el-button.is-text.el-button--small.el-button--success:hover {
+  background: rgba(16, 185, 129, 0.18);
+}
+.el-button.is-text.el-button--small.el-button--danger {
+  --el-button-text-color: #BE123C;
+  --el-button-hover-text-color: #BE123C;
+  background: rgba(239, 68, 68, 0.10);
+  border-color: rgba(239, 68, 68, 0.28);
+}
+.el-button.is-text.el-button--small.el-button--danger:hover {
+  background: rgba(239, 68, 68, 0.18);
 }
 
 /* 输入框 / 文本域 — 磨砂 + 聚焦光晕 */
